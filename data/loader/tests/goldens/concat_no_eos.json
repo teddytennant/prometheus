@@ -1,0 +1,15 @@
+{
+  "eos_id": 1,
+  "docs": [[10, 11, 12], [20, 21]],
+  "packing": {
+    "packing_id": "golden-concat-no-eos",
+    "sequence_length": 4,
+    "strategy": "concat_eos",
+    "eos_between_docs": false,
+    "pad_id": 0
+  },
+  "expected": [
+    {"tokens": [10, 11, 12, 20], "mask": [1, 1, 1, 1], "document_ids": null},
+    {"tokens": [21, 0, 0, 0], "mask": [1, 0, 0, 0], "document_ids": null}
+  ]
+}

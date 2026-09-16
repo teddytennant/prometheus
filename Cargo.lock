@@ -1152,6 +1152,7 @@ dependencies = [
 name = "prometheus-loader"
 version = "0.0.1"
 dependencies = [
+ "prometheus-contracts",
  "serde",
  "serde_json",
  "tempfile",
