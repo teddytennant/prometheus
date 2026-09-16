@@ -1,0 +1,21 @@
+[package]
+name = "prometheus-slurm"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Slurm backend for NCShare H200 verification"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+# GPU-only tests (none in H7: this crate mocks Slurm on CPU). Reserved so
+# `cargo test --features gpu` is well-defined for later V-stage crates.
+gpu = []

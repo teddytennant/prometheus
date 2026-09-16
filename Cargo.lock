@@ -514,6 +514,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-slurm"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
