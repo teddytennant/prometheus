@@ -11,10 +11,19 @@ Do not hand-write payload dataclasses on either side of a boundary. Call
 
 from __future__ import annotations
 
+import copy
+import json
 from collections.abc import Mapping
+from datetime import datetime
 from enum import StrEnum
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
+
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
+
+from ._generate import write_python, write_rust
 
 __all__ = [
     "CONTRACTS_ROOT",
@@ -62,42 +71,129 @@ class SchemaId(StrEnum):
     EVENT_LOG = "prometheus.event_log"
 
 
-class ValidationError(Exception):
-    """Payload does not match the schema named by its schema_id and schema_version."""
+class ValidationError(ValueError):
+    """Raised when a payload does not match its schema."""
 
 
-class UnknownSchemaError(Exception):
-    """schema_id or schema_version is not in the registry."""
+class UnknownSchemaError(KeyError):
+    """Raised when ``schema_id`` or ``schema_version`` is not in the registry."""
 
 
-class MigrationError(Exception):
-    """No migration path from the payload's version to the requested version."""
+class MigrationError(ValueError):
+    """Raised when no migration path exists between two schema versions."""
+
+
+def _short_name(schema_id: str) -> str:
+    return str(schema_id).removeprefix("prometheus.")
+
+
+def _coerce_schema_id(schema_id: str) -> SchemaId:
+    try:
+        return SchemaId(str(schema_id))
+    except ValueError as exc:
+        raise UnknownSchemaError(str(schema_id)) from exc
+
+
+def _coerce_version(version: int) -> int:
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise UnknownSchemaError(str(version))
+    return version
 
 
 def schema_path(schema_id: str, version: int) -> Path:
-    """Return the JSON Schema file for ``schema_id`` at ``version``.
+    """Return the JSON Schema path for ``schema_id`` at ``version``.
 
-    File layout: ``schemas/v{version}/{short_name}.schema.json`` where
-    ``short_name`` is ``schema_id`` with the ``prometheus.`` prefix stripped
-    and dots replaced by underscores.
+    Raises ``UnknownSchemaError`` if that pair is not on disk.
     """
-    raise NotImplementedError
+    sid = _coerce_schema_id(schema_id)
+    ver = _coerce_version(version)
+    path = SCHEMA_DIR / f"v{ver}" / f"{_short_name(sid)}.schema.json"
+    if not path.is_file():
+        raise UnknownSchemaError(f"{sid}@v{ver}")
+    return path
 
 
 def load_schema(schema_id: str, version: int) -> dict[str, Any]:
-    """Load and return the JSON Schema document for ``schema_id`` at ``version``."""
-    raise NotImplementedError
+    """Load and return the JSON Schema object for ``schema_id`` at ``version``."""
+    path = schema_path(schema_id, version)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _is_datetime(instance: object) -> bool:
+    if not isinstance(instance, str):
+        return True
+    text = instance[:-1] + "+00:00" if instance.endswith("Z") else instance
+    try:
+        datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+@lru_cache(maxsize=1)
+def _format_checker() -> FormatChecker:
+    checker = Draft202012Validator.FORMAT_CHECKER
+    if "date-time" in checker.checkers:
+        return checker
+    merged = FormatChecker()
+    merged.checkers = dict(checker.checkers)
+    merged.checkers["date-time"] = (_is_datetime, ())
+    return merged
+
+
+@cache
+def _registry(version: int) -> Registry:
+    version_dir = SCHEMA_DIR / f"v{version}"
+    resources: list[tuple[str, Resource]] = []
+    if version_dir.is_dir():
+        for path in sorted(version_dir.glob("*.json")):
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            schema_uri = doc.get("$id")
+            if isinstance(schema_uri, str):
+                resources.append((schema_uri, Resource.from_contents(doc)))
+    return Registry().with_resources(resources)
+
+
+def _payload_schema_ref(payload: Mapping[str, Any]) -> tuple[SchemaId, int]:
+    if "schema_id" not in payload:
+        raise ValidationError("missing schema_id")
+    schema_id = payload["schema_id"]
+    if not isinstance(schema_id, str):
+        raise ValidationError("schema_id must be a string")
+    try:
+        sid = SchemaId(schema_id)
+    except ValueError as exc:
+        raise UnknownSchemaError(schema_id) from exc
+
+    if "schema_version" not in payload:
+        raise ValidationError("missing schema_version")
+    version = payload["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValidationError("schema_version must be an integer")
+    if version not in supported_versions(sid):
+        raise UnknownSchemaError(f"{sid}@v{version}")
+    return sid, version
 
 
 def validate(payload: Mapping[str, Any]) -> None:
-    """Validate ``payload`` against the schema it names.
+    """Raise ``ValidationError`` if ``payload`` does not match its schema.
 
-    ``payload`` must contain ``schema_id`` (a ``SchemaId`` value) and
-    ``schema_version`` (a positive integer). Readers accept every past
-    version that still has a schema file. Raises ``ValidationError`` on
-    mismatch, ``UnknownSchemaError`` if the pair is not registered.
+    ``schema_id`` and ``schema_version`` select the schema. Unknown pairs raise
+    ``UnknownSchemaError``.
     """
-    raise NotImplementedError
+    if not isinstance(payload, Mapping):
+        raise ValidationError("payload must be an object")
+    sid, version = _payload_schema_ref(payload)
+    schema = load_schema(sid, version)
+    validator = Draft202012Validator(
+        schema,
+        registry=_registry(version),
+        format_checker=_format_checker(),
+    )
+    errors = list(validator.iter_errors(payload))
+    if errors:
+        messages = "; ".join(error.message for error in errors)
+        raise ValidationError(messages)
 
 
 def migrate(payload: Mapping[str, Any], to_version: int) -> dict[str, Any]:
@@ -107,22 +203,48 @@ def migrate(payload: Mapping[str, Any], to_version: int) -> dict[str, Any]:
     ``MigrationError`` if no path exists. v1 is the first version, so the
     only defined path at F1 is v1 -> v1.
     """
-    raise NotImplementedError
+    if not isinstance(payload, Mapping):
+        raise ValidationError("payload must be an object")
+    from_version = payload.get("schema_version")
+    if isinstance(from_version, bool) or not isinstance(from_version, int):
+        raise ValidationError("schema_version must be an integer")
+    if from_version == to_version:
+        return copy.deepcopy(dict(payload))
+    raise MigrationError(f"no migration from v{from_version} to v{to_version}")
 
 
 def current_version(schema_id: str) -> int:
     """Highest schema_version that has a schema file for ``schema_id``."""
-    raise NotImplementedError
+    return max(supported_versions(schema_id))
 
 
 def supported_versions(schema_id: str) -> list[int]:
     """Sorted list of schema_version values that can be loaded for ``schema_id``."""
-    raise NotImplementedError
+    sid = _coerce_schema_id(schema_id)
+    short = _short_name(sid)
+    found: list[int] = []
+    if SCHEMA_DIR.is_dir():
+        for child in SCHEMA_DIR.iterdir():
+            if not child.is_dir() or not child.name.startswith("v"):
+                continue
+            suffix = child.name[1:]
+            if not suffix.isdigit():
+                continue
+            if (child / f"{short}.schema.json").is_file():
+                found.append(int(suffix))
+    if not found:
+        raise UnknownSchemaError(str(sid))
+    return sorted(found)
 
 
 def load_golden(schema_id: str, version: int, name: str = "default") -> dict[str, Any]:
     """Load a golden payload from ``goldens/v{version}/{short_name}.{name}.json``."""
-    raise NotImplementedError
+    sid = _coerce_schema_id(schema_id)
+    ver = _coerce_version(version)
+    path = GOLDEN_DIR / f"v{ver}" / f"{_short_name(sid)}.{name}.json"
+    if not path.is_file():
+        raise UnknownSchemaError(f"{sid}@v{ver}/{name}")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def generate_python(out_dir: Path) -> None:
@@ -132,7 +254,7 @@ def generate_python(out_dir: Path) -> None:
     import those modules; they do not hand-write dataclasses that mirror
     the schemas.
     """
-    raise NotImplementedError
+    write_python(Path(out_dir))
 
 
 def generate_rust(out_dir: Path) -> None:
@@ -140,11 +262,12 @@ def generate_rust(out_dir: Path) -> None:
 
     Generated files are the only place Rust payload types are defined.
     """
-    raise NotImplementedError
+    write_rust(Path(out_dir))
 
 
 def generate_all() -> None:
     """Generate Python types under ``contracts/generated`` and Rust types
     under ``crates/contracts/src/generated``.
     """
-    raise NotImplementedError
+    generate_python(CONTRACTS_ROOT / "generated")
+    generate_rust(CONTRACTS_ROOT.parent / "crates" / "contracts" / "src" / "generated")
