@@ -1,0 +1,16 @@
+{
+  "schema_id": "prometheus.tokenizer",
+  "schema_version": 1,
+  "algorithm": "byte_fallback_bpe",
+  "vocab_size": 128000,
+  "byte_fallback": true,
+  "special_tokens": {
+    "bos": 0,
+    "eos": 1,
+    "pad": 2,
+    "unk": 3,
+    "latent": 4
+  },
+  "vocab_hash": "0df1b7fd0b4abcaad1178f510d5c25c432a2fdef64075ff75f5ed9a931d36fed",
+  "frozen": true
+}
