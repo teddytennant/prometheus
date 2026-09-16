@@ -9,6 +9,8 @@ dependencies = [
     "pydantic>=2.9",
     "referencing>=0.36",
     "rfc3339-validator>=0.1.4",
+    "jax>=0.4",
+    "numpy>=1.26",
 ]
 
 [dependency-groups]
