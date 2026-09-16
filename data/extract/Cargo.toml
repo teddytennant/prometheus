@@ -1,0 +1,16 @@
+[package]
+name = "prometheus-extract"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Ingest and extraction for HTML, PDF, and LaTeX (spec 7, 15.5 B1)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
