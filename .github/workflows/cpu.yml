@@ -1,0 +1,39 @@
+name: cpu
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Sync Python deps
+        run: uv sync --group dev
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo checks
+        run: |
+          members=$(python3 -c "import pathlib,tomllib; print(len(tomllib.loads(pathlib.Path('Cargo.toml').read_text()).get('workspace',{}).get('members') or []))")
+          if [ "$members" = "0" ]; then
+            echo "empty cargo workspace; skipping rust checks"
+            exit 0
+          fi
+          cargo fmt --all -- --check
+          cargo test --workspace
+          cargo clippy --workspace -- -D warnings
