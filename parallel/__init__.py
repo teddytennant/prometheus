@@ -45,7 +45,7 @@ def _loss_once(params, tokens, cfg):
 
 
 def parallel_equivalence() -> dict:
-    """V2 stand-in: 1-device vs 'sharded' (identity mesh) loss and routing."""
+    """CPU unit-test path: 1-device vs identity mesh. V2 on H200 uses the GPU fn."""
     cfg = M.tiny_config()
     tokens = np.random.default_rng(5).integers(0, cfg.vocab_size, size=(2, 8), dtype=np.int32)
     params = M.init_params(cfg, jax.random.PRNGKey(5))
@@ -59,7 +59,47 @@ def parallel_equivalence() -> dict:
     routing = True
     if out.expert_ids is not None:
         routing = bool(np.array_equal(np.asarray(out.expert_ids), np.asarray(out2.expert_ids)))
-    return {"relative_loss_err": rel, "routing_identical": routing}
+    return {"relative_loss_err": rel, "routing_identical": routing, "identity_mesh": True}
 
 
-__all__ = ["Mesh", "validate_mesh", "shard_params", "parallel_equivalence"]
+def parallel_equivalence_gpu() -> dict:
+    """V2: data-parallel pmap vs single GPU, mesh_size == n_devices >= 2."""
+    devices = jax.devices("gpu")
+    n = len(devices)
+    if n < 2:
+        raise RuntimeError(f"V2 needs >=2 GPUs, got {n}")
+    cfg = M.tiny_config()
+    tokens = np.random.default_rng(5).integers(0, cfg.vocab_size, size=(2, 8), dtype=np.int32)
+    params = M.init_params(cfg, jax.random.PRNGKey(5))
+    tok = jnp.asarray(tokens)
+    placed = []
+    routes = []
+    for dev in devices:
+        p = jax.tree.map(lambda x, d=dev: jax.device_put(x, d), params)
+        t = jax.device_put(tok, dev)
+        placed.append(float(_loss_once(p, t, cfg)))
+        out = M.forward(np.asarray(t), p, cfg, r=1)
+        if out.expert_ids is not None:
+            routes.append(np.asarray(out.expert_ids))
+    a, b = placed[0], placed[1]
+    rel = abs(a - b) / (abs(a) + 1e-12)
+    routing = True
+    if len(routes) >= 2:
+        routing = bool(np.array_equal(routes[0], routes[1]))
+    mesh = Mesh(dp=n)
+    return {
+        "relative_loss_err": rel,
+        "routing_identical": routing,
+        "identity_mesh": False,
+        "mesh_size": mesh.size(),
+        "n_devices": n,
+    }
+
+
+__all__ = [
+    "Mesh",
+    "validate_mesh",
+    "shard_params",
+    "parallel_equivalence",
+    "parallel_equivalence_gpu",
+]

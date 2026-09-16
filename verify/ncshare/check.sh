@@ -53,10 +53,44 @@ for i in $(seq 0 10); do
 done
 [ -f "$ROOT/verify/ncshare/checkers.py" ] || bad "missing checkers.py"
 
-say "check: runs/"
-if [ ! -d "$STATE/runs" ] || [ -z "$(ls -A "$STATE/runs" 2>/dev/null)" ]; then
-  bad "empty $STATE/runs"
-fi
+say "check: V0-V10 H200 results (not CPU stand-ins)"
+for i in $(seq 0 10); do
+  f="$STATE/runs/V${i}/result.json"
+  if [ ! -f "$f" ]; then
+    bad "missing $f"
+    continue
+  fi
+  if ! python3 - "$f" "$i" <<'PY'
+import json, sys
+p, stage = sys.argv[1], int(sys.argv[2])
+r = json.loads(open(p).read())
+errs = []
+if "H200" not in str(r.get("gpu_name", "")).upper():
+    errs.append("gpu_name is not H200")
+if not r.get("slurm_job_id"):
+    errs.append("missing slurm_job_id")
+if r.get("tiny_standin"):
+    errs.append("tiny_standin")
+if r.get("standin"):
+    errs.append("standin")
+if stage == 0:
+    if str(r.get("nccl_backend", "")).lower() in ("", "numpy", "cpu"):
+        errs.append("numpy/CPU NCCL")
+    if int(r.get("n_devices", 0)) < 2:
+        errs.append("V0 n_devices < 2")
+if stage == 2:
+    if r.get("identity_mesh") or int(r.get("mesh_size", 1)) <= 1:
+        errs.append("identity mesh")
+    if int(r.get("n_devices", 0)) < 2:
+        errs.append("V2 n_devices < 2")
+if errs:
+    print("; ".join(errs))
+    sys.exit(1)
+PY
+  then
+    bad "V$i result is not an H200 run"
+  fi
+done
 
 say "check: progress.md"
 prog="$STATE/progress.md"

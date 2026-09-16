@@ -1,6 +1,7 @@
 """Exit-criterion checkers for V0 to V10 (spec 16.2).
 
 Each checker reads a result JSON written by the job, not an agent summary.
+CPU stand-ins (identity mesh, numpy NCCL, tiny_standin soak) are rejected.
 """
 
 from __future__ import annotations
@@ -23,16 +24,37 @@ def load(path: str | Path) -> dict[str, Any]:
     return data
 
 
+def require_h200(r: dict[str, Any]) -> None:
+    if r.get("tiny_standin"):
+        raise CheckError("tiny_standin rejected")
+    if r.get("standin"):
+        raise CheckError("CPU stand-in rejected")
+    name = str(r.get("gpu_name", ""))
+    if "H200" not in name.upper():
+        raise CheckError("not an H200 result")
+    if not r.get("slurm_job_id"):
+        raise CheckError("missing slurm_job_id")
+
+
 def check_v0(r: dict[str, Any]) -> None:
+    require_h200(r)
+    backend = str(r.get("nccl_backend", "")).lower()
+    if backend in ("", "numpy", "cpu"):
+        raise CheckError("numpy/CPU NCCL stand-in")
+    if int(r.get("n_devices", 0)) < 2:
+        raise CheckError("NCCL all_reduce needs >=2 GPUs")
     if "bus_bandwidth_gbps" not in r:
         raise CheckError("missing bus_bandwidth_gbps")
     if float(r["bus_bandwidth_gbps"]) <= 0:
         raise CheckError("bandwidth not measured")
     if "kvm_present" not in r:
         raise CheckError("missing kvm_present")
+    if not r.get("nccl_intra_ok"):
+        raise CheckError("NCCL intra-node all_reduce failed")
 
 
 def check_v1(r: dict[str, Any]) -> None:
+    require_h200(r)
     if float(r.get("logit_max_abs_err", 1)) > 1e-5:
         raise CheckError("logits miss 1e-5")
     if not r.get("grad_check"):
@@ -42,6 +64,13 @@ def check_v1(r: dict[str, Any]) -> None:
 
 
 def check_v2(r: dict[str, Any]) -> None:
+    require_h200(r)
+    if r.get("identity_mesh"):
+        raise CheckError("identity mesh rejected")
+    if int(r.get("mesh_size", 1)) <= 1:
+        raise CheckError("identity mesh rejected")
+    if int(r.get("n_devices", 0)) < 2:
+        raise CheckError("parallel equivalence needs >=2 GPUs")
     if float(r.get("relative_loss_err", 1)) > 1e-6:
         raise CheckError("parallel loss mismatch")
     if not r.get("routing_identical"):
@@ -49,6 +78,7 @@ def check_v2(r: dict[str, Any]) -> None:
 
 
 def check_v3(r: dict[str, Any]) -> None:
+    require_h200(r)
     rel = float(r.get("fp8_vs_bf16_rel", 1))
     if rel > 0.005:
         raise CheckError("FP8 loss not within 0.5% of BF16")
@@ -57,6 +87,7 @@ def check_v3(r: dict[str, Any]) -> None:
 
 
 def check_v4(r: dict[str, Any]) -> None:
+    require_h200(r)
     if not r.get("resume_bitwise_equal"):
         raise CheckError("resume not bitwise-equal")
     if not r.get("sdc_caught_flip"):
@@ -66,6 +97,7 @@ def check_v4(r: dict[str, Any]) -> None:
 
 
 def check_v5(r: dict[str, Any]) -> None:
+    require_h200(r)
     if not r.get("loss_matches_ladder"):
         raise CheckError("loss curve missed ladder fit")
     if not r.get("ckpt_resume_across_jobs"):
@@ -73,6 +105,7 @@ def check_v5(r: dict[str, Any]) -> None:
 
 
 def check_v6(r: dict[str, Any]) -> None:
+    require_h200(r)
     if not r.get("no_collapse"):
         raise CheckError("curriculum collapsed")
     if not r.get("accuracy_rises_with_budget"):
@@ -82,6 +115,7 @@ def check_v6(r: dict[str, Any]) -> None:
 
 
 def check_v7(r: dict[str, Any]) -> None:
+    require_h200(r)
     if not r.get("reward_rose"):
         raise CheckError("reward did not rise")
     if not r.get("drift_halted"):
@@ -91,6 +125,7 @@ def check_v7(r: dict[str, Any]) -> None:
 
 
 def check_v8(r: dict[str, Any]) -> None:
+    require_h200(r)
     if float(r.get("logprob_max_abs_err", 1)) > 1e-3:
         raise CheckError("SGLang vs JAX log-probs off")
     if not r.get("tiered_restore_match"):
@@ -98,6 +133,7 @@ def check_v8(r: dict[str, Any]) -> None:
 
 
 def check_v9(r: dict[str, Any]) -> None:
+    require_h200(r)
     if not r.get("planted_positive_replicated"):
         raise CheckError("planted positive not replicated")
     if not r.get("planted_negative_recorded"):
@@ -105,6 +141,9 @@ def check_v9(r: dict[str, Any]) -> None:
 
 
 def check_v10(r: dict[str, Any]) -> None:
+    require_h200(r)
+    if r.get("tiny_standin"):
+        raise CheckError("tiny_standin rejected")
     if r.get("lost_tasks", 1) != 0:
         raise CheckError("lost tasks")
     if r.get("duplicated_outputs", 1) != 0:
@@ -112,7 +151,7 @@ def check_v10(r: dict[str, Any]) -> None:
     if r.get("dead_tokens", 1) != 0:
         raise CheckError("dead tokens")
     hours = float(r.get("hours", 0))
-    if hours < 72 and not r.get("tiny_standin"):
+    if hours < 72:
         raise CheckError("soak under 72h")
 
 

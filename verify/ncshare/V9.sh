@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# V9 job template (spec 16.2). Exit criterion: planted positive found and replicated; planted negative recorded negative
+# V9 job template (spec 16.2). This file is the sbatch body.
+# Off-cluster it submits; on-cluster it runs the stage on the H200 allocation.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-STAGE=V9
-OUT="${PROMETHEUS_STATE:-$HOME/.local/state/prometheus-build}/runs/${STAGE}"
-mkdir -p "$OUT"
-cd "$ROOT"
+STAGE_N=9
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+  exec "$HERE/submit.sh" "$STAGE_N"
+fi
+ROOT="${PROMETHEUS_ROOT:-/work/ttennant1/prometheus}"
+PY="${JAX_VENV:-/hpc/home/ttennant1/arxiv-jax/venv}/bin/python"
+OUT="${RESULT_JSON:-$PWD/result.json}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-uv run python "$ROOT/verify/ncshare/run_stage.py" --stage 9 --out "$OUT/result.json"
-uv run python "$ROOT/verify/ncshare/checkers.py" --stage 9 --result "$OUT/result.json"
+export JAX_PLATFORMS=cuda
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+cd "$ROOT"
+"$PY" "$ROOT/verify/ncshare/run_stage.py" --stage "$STAGE_N" --out "$OUT"
+"$PY" "$ROOT/verify/ncshare/checkers.py" --stage "$STAGE_N" --result "$OUT"
