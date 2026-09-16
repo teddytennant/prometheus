@@ -2,7 +2,7 @@
 
 import pytest
 
-from verify.ncshare.checkers import CHECKERS, CheckError, check_v0, check_v2, check_v10
+from verify.ncshare.checkers import CHECKERS, CheckError, check_v0, check_v2, check_v5, check_v10
 
 H200 = {
     "gpu_name": "NVIDIA H200",
@@ -43,6 +43,45 @@ def test_v2_rejects_identity_mesh():
     }
     with pytest.raises(CheckError, match="identity mesh"):
         check_v2(base)
+
+
+def test_v5_rejects_overfit_standin():
+    with pytest.raises(CheckError, match="20B"):
+        check_v5(
+            {
+                **H200,
+                "loss_matches_ladder": True,
+                "ckpt_resume_across_jobs": True,
+                "tokens_seen": 20 * 4 * 8,
+                "n_devices": 8,
+                "ckpt_job_ids": ["1", "2"],
+                "active_params": 1.5e8,
+            }
+        )
+    with pytest.raises(CheckError, match="8 GPUs"):
+        check_v5(
+            {
+                **H200,
+                "n_devices": 2,
+                "loss_matches_ladder": True,
+                "ckpt_resume_across_jobs": True,
+                "tokens_seen": 2e10,
+                "ckpt_job_ids": ["1", "2"],
+                "active_params": 1.5e8,
+            }
+        )
+    with pytest.raises(CheckError, match="across jobs"):
+        check_v5(
+            {
+                **H200,
+                "n_devices": 8,
+                "loss_matches_ladder": True,
+                "ckpt_resume_across_jobs": True,
+                "tokens_seen": 2e10,
+                "ckpt_job_ids": ["1"],
+                "active_params": 1.5e8,
+            }
+        )
 
 
 def test_v10_rejects_tiny_standin():
@@ -87,7 +126,16 @@ def test_all_checkers_have_positive():
             "sdc_caught_flip": True,
             "spike_skipped_shard": True,
         },
-        5: {**H200, "loss_matches_ladder": True, "ckpt_resume_across_jobs": True},
+        5: {
+            **H200,
+            "n_devices": 8,
+            "loss_matches_ladder": True,
+            "ckpt_resume_across_jobs": True,
+            "tokens_seen": 2e10,
+            "ckpt_job_ids": ["100", "101"],
+            "active_params": 1.5e8,
+            "tiny": False,
+        },
         6: {
             **H200,
             "no_collapse": True,

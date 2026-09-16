@@ -54,13 +54,29 @@ def lab_dry_run() -> dict:
     }
 
 
+def v5_rung0() -> dict:
+    """Spec 16.2 V5: rung-0 train with ckpt/resume. Not a 20-step overfit."""
+    from train.rung0 import run
+
+    ckpt = os.environ.get("CKPT_DIR", "v5_ckpt")
+    return run(ckpt)
+
+
 def soak_probe(seconds: float | None = None) -> dict:
-    """GPU soak: real device work, no tiny_standin. Hours is wall time of this run."""
+    """GPU soak: real device work. Hours accumulate across jobs via SOAK_STATE."""
     import jax
     import jax.numpy as jnp
 
     if jax.default_backend() != "gpu":
         raise RuntimeError("V10 soak requires a GPU")
+    state_path = Path(os.environ.get("SOAK_STATE", "soak_state.json"))
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    prev = json.loads(state_path.read_text()) if state_path.exists() else {}
+    hours0 = float(prev.get("hours", 0.0))
+    tasks0 = int(prev.get("tasks", 0))
+    lost0 = int(prev.get("lost_tasks", 0))
+    dup0 = int(prev.get("duplicated_outputs", 0))
+    dead0 = int(prev.get("dead_tokens", 0))
     seconds = float(os.environ.get("SOAK_SECONDS", seconds if seconds is not None else 60))
     key = jax.random.PRNGKey(0)
     w = jax.random.normal(key, (1024, 1024), dtype=jnp.float32)
@@ -83,34 +99,43 @@ def soak_probe(seconds: float | None = None) -> dict:
         mat.block_until_ready()
         val = float(s)
         if val != val:
-            return {
-                "lost_tasks": 1,
-                "duplicated_outputs": 0,
-                "dead_tokens": 1,
-                "hours": (time.time() - t0) / 3600.0,
+            hours = hours0 + (time.time() - t0) / 3600.0
+            out = {
+                "lost_tasks": lost0 + 1,
+                "duplicated_outputs": dup0,
+                "dead_tokens": dead0 + 1,
+                "hours": hours,
                 "tiny_standin": False,
-                "tasks": i,
+                "tasks": tasks0 + i,
             }
+            state_path.write_text(json.dumps(out, indent=2))
+            return out
         if i in seen:
-            return {
-                "lost_tasks": 0,
-                "duplicated_outputs": 1,
-                "dead_tokens": 0,
-                "hours": (time.time() - t0) / 3600.0,
+            hours = hours0 + (time.time() - t0) / 3600.0
+            out = {
+                "lost_tasks": lost0,
+                "duplicated_outputs": dup0 + 1,
+                "dead_tokens": dead0,
+                "hours": hours,
                 "tiny_standin": False,
-                "tasks": i,
+                "tasks": tasks0 + i,
             }
+            state_path.write_text(json.dumps(out, indent=2))
+            return out
         seen.add(i)
         i += 1
-    hours = (time.time() - t0) / 3600.0
-    return {
-        "lost_tasks": 0,
-        "duplicated_outputs": 0,
-        "dead_tokens": 0,
+    hours = hours0 + (time.time() - t0) / 3600.0
+    out = {
+        "lost_tasks": lost0,
+        "duplicated_outputs": dup0,
+        "dead_tokens": dead0,
         "hours": hours,
         "tiny_standin": False,
-        "tasks": i,
+        "tasks": tasks0 + i,
     }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(out, indent=2))
+    return out
 
 
 def write_result(path: Path, obj: dict) -> None:

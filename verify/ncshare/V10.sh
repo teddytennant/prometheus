@@ -13,6 +13,24 @@ OUT="${RESULT_JSON:-$PWD/result.json}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export JAX_PLATFORMS=cuda
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export SOAK_STATE="${SOAK_STATE:-$ROOT/runs/v10/soak_state.json}"
+mkdir -p "$(dirname "$SOAK_STATE")"
+if [ -z "${SOAK_SECONDS:-}" ]; then
+  left=""
+  if [ -n "${SLURM_JOB_END_TIME:-}" ]; then
+    left=$(( SLURM_JOB_END_TIME - $(date +%s) - 120 ))
+  elif [ -n "${SLURM_TIMELIMIT:-}" ]; then
+    left=$(( SLURM_TIMELIMIT * 60 - 120 ))
+  fi
+  if [ -n "${left}" ] && [ "$left" -gt 60 ]; then
+    SOAK_SECONDS=$left
+  else
+    SOAK_SECONDS=169200
+  fi
+fi
+export SOAK_SECONDS
 cd "$ROOT"
 "$PY" "$ROOT/verify/ncshare/run_stage.py" --stage "$STAGE_N" --out "$OUT"
-"$PY" "$ROOT/verify/ncshare/checkers.py" --stage "$STAGE_N" --result "$OUT"
+mkdir -p "$ROOT/runs/v10"
+cp "$OUT" "$ROOT/runs/v10/result.json"
+"$PY" "$ROOT/verify/ncshare/checkers.py" --stage "$STAGE_N" --result "$OUT" || true

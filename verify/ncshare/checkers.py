@@ -98,10 +98,22 @@ def check_v4(r: dict[str, Any]) -> None:
 
 def check_v5(r: dict[str, Any]) -> None:
     require_h200(r)
-    if not r.get("loss_matches_ladder"):
-        raise CheckError("loss curve missed ladder fit")
+    if r.get("tiny") or r.get("tiny_standin"):
+        raise CheckError("V5 tiny stand-in")
+    if int(r.get("n_devices") or 0) < 8:
+        raise CheckError("V5 needs 8 GPUs")
+    if float(r.get("tokens_seen") or 0) < 2e10:
+        raise CheckError("V5 needs 20B tokens")
+    jobs = r.get("ckpt_job_ids")
+    if not isinstance(jobs, list) or len({str(j) for j in jobs}) < 2:
+        raise CheckError("ckpt/resume across jobs failed")
     if not r.get("ckpt_resume_across_jobs"):
         raise CheckError("ckpt/resume across jobs failed")
+    if not r.get("loss_matches_ladder"):
+        raise CheckError("loss curve missed ladder fit")
+    n_params = float(r.get("active_params") or r.get("n_params") or 0)
+    if n_params < 5e7:
+        raise CheckError("rung0 too small")
 
 
 def check_v6(r: dict[str, Any]) -> None:

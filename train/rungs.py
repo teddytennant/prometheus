@@ -33,14 +33,16 @@ def chinchilla_loss(n_params: float, n_tokens: float, a=6.49, b=7.2, e=0.3) -> f
 
 
 def rung0_tiny_fit() -> dict:
-    """Stand-in for V5: Muon overfit slope vs the ladder prior."""
+    """CPU overfit slope vs the ladder prior. Not a V5 result."""
     from train import overfit_one_batch
 
     fit = overfit_one_batch(steps=20)
     prior = chinchilla_loss(RUNG0.active_params, 20 * 4 * 8)
     return {
         "loss_matches_ladder": bool(fit["ok"]),
-        "ckpt_resume_across_jobs": True,
+        "ckpt_resume_across_jobs": False,
+        "tokens_seen": 20 * 4 * 8,
+        "tiny": True,
         "losses": [fit["loss_start"], fit["loss_end"]],
         "prior": prior,
         "rung0_config": rung_config(RUNG0).n_layers,

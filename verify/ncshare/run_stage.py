@@ -139,9 +139,9 @@ def _stage4() -> dict:
 
 
 def _stage5() -> dict:
-    from train.rungs import rung0_tiny_fit
+    from verify.ncshare.probes import v5_rung0
 
-    return rung0_tiny_fit()
+    return v5_rung0()
 
 
 def _stage6() -> dict:

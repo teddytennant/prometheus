@@ -90,6 +90,9 @@ PY
   then
     bad "V$i result is not an H200 run"
   fi
+  if ! python3 "$ROOT/verify/ncshare/checkers.py" --stage "$i" --result "$f"; then
+    bad "V$i checker failed spec 16.2"
+  fi
 done
 
 say "check: progress.md"
