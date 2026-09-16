@@ -23,6 +23,8 @@ pub const MAX_CONCURRENT_JOBS: u32 = 2;
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(45);
 pub const DEFAULT_PARTITION: &str = "gpu";
 pub const DEFAULT_REMOTE_ROOT: &str = "/work/ttennant1/prometheus";
+/// NCShare login host (`CLUSTER` default in prometheus-build/ncshare.sh).
+pub const DEFAULT_CLUSTER: &str = "ncshare";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -95,8 +97,23 @@ pub struct ClientConfig {
 
 impl Default for ClientConfig {
     fn default() -> Self {
-        unimplemented!("ClientConfig::default")
+        Self {
+            cluster: DEFAULT_CLUSTER.to_string(),
+            remote_root: PathBuf::from(DEFAULT_REMOTE_ROOT),
+            partition: DEFAULT_PARTITION.to_string(),
+            state_dir: default_state_dir(),
+            query_timeout: QUERY_TIMEOUT,
+            max_concurrent: MAX_CONCURRENT_JOBS,
+        }
     }
+}
+
+fn default_state_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".local/state/prometheus-slurm")
 }
 
 /// Talks to Slurm on the NCShare login node over SSH.
@@ -126,7 +143,7 @@ impl Client {
         self.record_job_name(&req.run_id, &name)?;
 
         let script = req.script.to_string_lossy().into_owned();
-        let gres = format!("--gres=gpu:{}", req.gpus);
+        let gres = format!("--gres=gpu:h200:{}", req.gpus);
         let stdout = self.run_slurm(&[
             "sbatch",
             "-J",
@@ -194,7 +211,8 @@ impl Client {
 
     /// Copy `remote_root/<run_id>/` to `dest`.
     pub fn fetch(&self, run_id: &str, dest: &Path) -> Result<()> {
-        fs::create_dir_all(dest).map_err(|e| Error::Other(format!("mkdir {}: {e}", dest.display())))?;
+        fs::create_dir_all(dest)
+            .map_err(|e| Error::Other(format!("mkdir {}: {e}", dest.display())))?;
         let remote = self
             .cfg
             .remote_root
@@ -248,9 +266,8 @@ impl Client {
             .map_err(|e| Error::Other(format!("write {}: {e}", name_path.display())))?;
         let ids_path = self.job_ids_path(run_id);
         if !ids_path.exists() {
-            fs::write(&ids_path, "").map_err(|e| {
-                Error::Other(format!("create {}: {e}", ids_path.display()))
-            })?;
+            fs::write(&ids_path, "")
+                .map_err(|e| Error::Other(format!("create {}: {e}", ids_path.display())))?;
         }
         Ok(())
     }
@@ -392,5 +409,22 @@ pub fn parse_state(raw: &str) -> Option<JobState> {
         "NODE_FAIL" => Some(JobState::NodeFail),
         "OUT_OF_MEMORY" => Some(JobState::OutOfMemory),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_config_default_does_not_panic() {
+        let cfg = ClientConfig::default();
+        assert_eq!(cfg.partition, DEFAULT_PARTITION);
+        assert_eq!(cfg.remote_root, PathBuf::from(DEFAULT_REMOTE_ROOT));
+        assert_eq!(cfg.query_timeout, QUERY_TIMEOUT);
+        assert_eq!(cfg.max_concurrent, MAX_CONCURRENT_JOBS);
+        assert_eq!(cfg.cluster, DEFAULT_CLUSTER);
+        assert!(!cfg.cluster.is_empty());
+        assert!(!cfg.state_dir.as_os_str().is_empty());
     }
 }
