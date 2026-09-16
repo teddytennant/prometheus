@@ -1,0 +1,2 @@
+# Phrases that must appear in order in extracted PDF text.
+Hello PDF
