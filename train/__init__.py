@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from train.loop import overfit_one_batch, v1_parity
+from train.loop import overfit_one_batch, v1_gpu, v1_parity
 from train.muon import OptState, init_opt_state, newton_schulz, qk_clip
 from train.schedule import TrainConfig, wsd_lr
 from train.step import cross_entropy, loss_fn, train_step, z_loss
@@ -19,5 +19,6 @@ __all__ = [
     "loss_fn",
     "train_step",
     "overfit_one_batch",
+    "v1_gpu",
     "v1_parity",
 ]

@@ -107,17 +107,9 @@ def _stage0() -> dict:
 
 
 def _stage1() -> dict:
-    from train import overfit_one_batch, v1_parity
+    from train import v1_gpu
 
-    parity = v1_parity()
-    overfit = overfit_one_batch()
-    return {
-        "logit_max_abs_err": float(parity["max_abs_err"]),
-        "grad_check": bool(parity["grad_check"]),
-        "overfit_one_batch": bool(overfit["ok"]),
-        "loss_start": overfit["loss_start"],
-        "loss_end": overfit["loss_end"],
-    }
+    return v1_gpu()
 
 
 def _stage2() -> dict:

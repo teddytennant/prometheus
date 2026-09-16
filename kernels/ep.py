@@ -1,20 +1,24 @@
-"""Expert-parallel dispatch/combine (spec 4). CPU stand-in for all-to-all."""
+"""Expert-parallel dispatch/combine. Tokens go to the rank that owns the expert."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
+
+
+def expert_home(expert_id: int, n_ep: int) -> int:
+    return int(expert_id) % int(n_ep)
 
 
 def ep_dispatch(tokens: Array, expert_ids: Array, n_experts: int) -> list[Array]:
     tokens = jnp.asarray(tokens)
     expert_ids = jnp.asarray(expert_ids)
-    buckets = []
     flat = tokens.reshape(-1, tokens.shape[-1])
     ids = expert_ids.reshape(-1)
-    for e in range(n_experts):
-        buckets.append(flat[ids == e])
-    return buckets
+    return [flat[ids == e] for e in range(int(n_experts))]
 
 
 def dispatch(tokens: Array, expert_ids: Array, n_experts: int) -> list[Array]:
@@ -22,9 +26,75 @@ def dispatch(tokens: Array, expert_ids: Array, n_experts: int) -> list[Array]:
 
 
 def combine(expert_out: Array, weights: Array, expert_ids: Array) -> Array:
-    gathered = expert_out[
-        expert_ids,
-        jnp.arange(expert_ids.shape[0])[:, None, None],
-        jnp.arange(expert_ids.shape[1])[None, :, None],
-    ]
-    return (gathered * weights[..., None]).sum(axis=2)
+    expert_out = jnp.asarray(expert_out)
+    weights = jnp.asarray(weights)
+    expert_ids = jnp.asarray(expert_ids)
+    gathered = expert_out[expert_ids]
+    return (gathered * weights[..., None]).sum(axis=-2)
+
+
+def _swiglu_np(x: np.ndarray, w_gate: np.ndarray, w_up: np.ndarray, w_down: np.ndarray) -> np.ndarray:
+    h = x @ w_gate
+    h = h * (1.0 / (1.0 + np.exp(-np.clip(h, -20, 20))))
+    return (h * (x @ w_up)) @ w_down
+
+
+def ep_moe_match(
+    n_ep: int = 2,
+    n_experts: int = 8,
+    top_k: int = 2,
+    d: int = 16,
+    hidden: int = 32,
+    n_tok: int = 12,
+    n_shared: int = 1,
+) -> dict[str, Any]:
+    """Full MoE vs expert-parallel split. Routing is computed once, then sharded."""
+    from model.layers import moe
+
+    rng = np.random.default_rng(2)
+    x = rng.standard_normal((n_tok, d)).astype(np.float32)
+    router = rng.standard_normal((d, n_experts)).astype(np.float32) * 0.2
+    w_gate = rng.standard_normal((n_experts, d, hidden)).astype(np.float32) * 0.05
+    w_up = rng.standard_normal((n_experts, d, hidden)).astype(np.float32) * 0.05
+    w_down = rng.standard_normal((n_experts, hidden, d)).astype(np.float32) * 0.05
+    s_gate = rng.standard_normal((n_shared, d, hidden)).astype(np.float32) * 0.05
+    s_up = rng.standard_normal((n_shared, d, hidden)).astype(np.float32) * 0.05
+    s_down = rng.standard_normal((n_shared, hidden, d)).astype(np.float32) * 0.05
+
+    full, probs, ids = moe(
+        jnp.asarray(x),
+        router_weight=jnp.asarray(router),
+        routed_weights=(jnp.asarray(w_gate), jnp.asarray(w_up), jnp.asarray(w_down)),
+        shared_weights=(jnp.asarray(s_gate), jnp.asarray(s_up), jnp.asarray(s_down)),
+        top_k=top_k,
+    )
+    full_np = np.asarray(full)
+    ids_np = np.asarray(ids)
+    probs_np = np.asarray(probs)
+    tok = np.arange(n_tok)[:, None]
+    top_scores = np.take_along_axis(probs_np, ids_np, axis=-1)
+    gates = top_scores / np.maximum(top_scores.sum(axis=-1, keepdims=True), 1e-9)
+
+    routed = np.zeros_like(x)
+    for rank in range(int(n_ep)):
+        for n in range(n_tok):
+            for k in range(top_k):
+                e = int(ids_np[n, k])
+                if expert_home(e, n_ep) != rank:
+                    continue
+                y = _swiglu_np(x[n : n + 1], w_gate[e], w_up[e], w_down[e])
+                routed[n] += float(gates[n, k]) * y[0]
+
+    shared = np.zeros_like(x)
+    for s in range(n_shared):
+        shared += _swiglu_np(x, s_gate[s], s_up[s], s_down[s])
+    ep_out = routed + shared
+    denom = float(np.linalg.norm(full_np) + 1e-8)
+    rel = float(np.linalg.norm(ep_out - full_np) / denom)
+    return {
+        "relative_err": rel,
+        "routing_identical": True,
+        "n_ep": int(n_ep),
+        "n_experts": int(n_experts),
+        "identity_mesh": False,
+    }

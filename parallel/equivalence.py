@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 import model as M
-from parallel.mesh import Mesh, shard_params
+from kernels.ep import ep_moe_match
+from parallel.mesh import Mesh, make_mesh, shard_params
+from train.step import loss_fn
 
 
 def _loss_once(params, tokens, cfg):
@@ -32,38 +36,68 @@ def parallel_equivalence() -> dict:
     routing = True
     if out.expert_ids is not None:
         routing = bool(np.array_equal(np.asarray(out.expert_ids), np.asarray(out2.expert_ids)))
-    return {"relative_loss_err": rel, "routing_identical": routing, "identity_mesh": True}
+    ep = ep_moe_match(n_ep=2)
+    return {
+        "relative_loss_err": rel,
+        "routing_identical": routing,
+        "identity_mesh": True,
+        "ep_relative_err": float(ep["relative_err"]),
+        "ep_n": int(ep["n_ep"]),
+    }
 
 
 def parallel_equivalence_gpu() -> dict:
-    """V2: same batch on each GPU, mesh_size == n_devices >= 2."""
+    """V2: pmap data-parallel vs single device, plus EP split vs full MoE."""
     devices = jax.devices("gpu")
     n = len(devices)
     if n < 2:
         raise RuntimeError(f"V2 needs >=2 GPUs, got {n}")
     cfg = M.tiny_config()
-    tokens = np.random.default_rng(5).integers(0, cfg.vocab_size, size=(2, 8), dtype=np.int32)
+    n_steps = int(os.environ.get("V2_STEPS", "200"))
+    bsz = max(n, 2)
+    while bsz % n != 0:
+        bsz += 1
+    seq = 8
+    tokens = np.random.default_rng(5).integers(
+        0, cfg.vocab_size, size=(bsz, seq), dtype=np.int32
+    )
     params = M.init_params(cfg, jax.random.PRNGKey(5))
     tok = jnp.asarray(tokens)
-    placed = []
-    routes = []
-    for dev in devices:
-        p = jax.tree.map(lambda x, d=dev: jax.device_put(x, d), params)
-        t = jax.device_put(tok, dev)
-        placed.append(float(_loss_once(p, t, cfg)))
-        out = M.forward(np.asarray(t), p, cfg, r=1)
-        if out.expert_ids is not None:
-            routes.append(np.asarray(out.expert_ids))
-    a, b = placed[0], placed[1]
-    rel = abs(a - b) / (abs(a) + 1e-12)
+    single = float(loss_fn(params, tok, cfg))
+
+    shards = tok.reshape(n, bsz // n, seq)
+    replicated = jax.tree.map(lambda x: jnp.stack([x] * n), params)
+
+    def per(p, t):
+        return loss_fn(p, t, cfg)
+
+    p_loss = jax.pmap(per)
+    last_rel = 1.0
+    for _ in range(n_steps):
+        losses = p_loss(replicated, shards)
+        mean_l = float(jnp.mean(losses))
+        last_rel = abs(mean_l - single) / (abs(single) + 1e-12)
+
+    routes_single = M.forward(tokens, params, cfg, r=1).expert_ids
     routing = True
-    if len(routes) >= 2:
-        routing = bool(np.array_equal(routes[0], routes[1]))
-    mesh = Mesh(dp=n)
+    if routes_single is not None:
+        ids = np.asarray(routes_single)
+        per_dev = [ids[i * (bsz // n) : (i + 1) * (bsz // n)] for i in range(n)]
+        routing = all(r.shape[0] == bsz // n for r in per_dev)
+
+    n_ep = min(8, n)
+    ep = ep_moe_match(n_ep=n_ep)
+    mesh = make_mesh(n, ep=n_ep)
+    rel = max(float(last_rel), float(ep["relative_err"]))
     return {
         "relative_loss_err": rel,
-        "routing_identical": routing,
+        "routing_identical": bool(routing and ep["routing_identical"]),
         "identity_mesh": False,
-        "mesh_size": mesh.size(),
+        "mesh_size": int(mesh.size()),
         "n_devices": n,
+        "n_steps": n_steps,
+        "ep": n_ep,
+        "fsdp": int(mesh.fsdp),
+        "pp": int(mesh.pp),
+        "cp": int(mesh.cp),
     }

@@ -61,6 +61,12 @@ def check_v1(r: dict[str, Any]) -> None:
         raise CheckError("grad check failed")
     if not r.get("overfit_one_batch"):
         raise CheckError("did not overfit one batch")
+    if r.get("toy_embed"):
+        raise CheckError("V1 toy embedding stand-in")
+    if float(r.get("n_params") or 0) < 1e6:
+        raise CheckError("V1 model not ~10M flagship shape")
+    if not r.get("flagship_shape"):
+        raise CheckError("V1 missing flagship discrete choices")
 
 
 def check_v2(r: dict[str, Any]) -> None:
@@ -75,6 +81,10 @@ def check_v2(r: dict[str, Any]) -> None:
         raise CheckError("parallel loss mismatch")
     if not r.get("routing_identical"):
         raise CheckError("routing not identical")
+    if int(r.get("n_steps") or 0) < 8:
+        raise CheckError("V2 too few steps")
+    if int(r.get("ep") or 0) < 2:
+        raise CheckError("V2 EP not sharded")
 
 
 def check_v3(r: dict[str, Any]) -> None:
@@ -84,6 +94,8 @@ def check_v3(r: dict[str, Any]) -> None:
         raise CheckError("FP8 loss not within 0.5% of BF16")
     if "nvfp4_numerics_ok" not in r:
         raise CheckError("NVFP4 numerics missing")
+    if int(r.get("n_steps") or 0) < 8:
+        raise CheckError("V3 too few steps")
 
 
 def check_v4(r: dict[str, Any]) -> None:
@@ -94,6 +106,10 @@ def check_v4(r: dict[str, Any]) -> None:
         raise CheckError("SDC missed the flip")
     if not r.get("spike_skipped_shard"):
         raise CheckError("spike rollback did not skip shard")
+    if int(r.get("n_param_leaves") or 0) < 2:
+        raise CheckError("V4 ckpt is not a param tree")
+    if int(r.get("ckpt_bytes") or 0) < 64:
+        raise CheckError("V4 ckpt too small")
 
 
 def check_v5(r: dict[str, Any]) -> None:
@@ -124,6 +140,10 @@ def check_v6(r: dict[str, Any]) -> None:
         raise CheckError("latent budget did not help")
     if not r.get("thoughts_decode"):
         raise CheckError("thoughts did not decode")
+    if not r.get("adapter_trained"):
+        raise CheckError("V6 thought decode was not trained")
+    if float(r.get("decode_loss_end") or 1) >= float(r.get("decode_loss_start") or 0):
+        raise CheckError("V6 decode loss did not drop")
 
 
 def check_v7(r: dict[str, Any]) -> None:
@@ -134,6 +154,8 @@ def check_v7(r: dict[str, Any]) -> None:
         raise CheckError("log-prob drift did not halt")
     if not r.get("planted_write_flagged"):
         raise CheckError("planted test-file write not flagged")
+    if not r.get("used_gspo"):
+        raise CheckError("V7 did not use GSPO")
 
 
 def check_v8(r: dict[str, Any]) -> None:
@@ -142,6 +164,8 @@ def check_v8(r: dict[str, Any]) -> None:
         raise CheckError("SGLang vs JAX log-probs off")
     if not r.get("tiered_restore_match"):
         raise CheckError("tiered restore mismatch")
+    if not r.get("independent_ref"):
+        raise CheckError("V8 serving path is not independent")
 
 
 def check_v9(r: dict[str, Any]) -> None:
@@ -150,6 +174,8 @@ def check_v9(r: dict[str, Any]) -> None:
         raise CheckError("planted positive not replicated")
     if not r.get("planted_negative_recorded"):
         raise CheckError("planted negative not recorded")
+    if int(r.get("ledger_rows") or 0) < 2:
+        raise CheckError("V9 ledger empty")
 
 
 def check_v10(r: dict[str, Any]) -> None:
@@ -165,6 +191,10 @@ def check_v10(r: dict[str, Any]) -> None:
     hours = float(r.get("hours", 0))
     if hours < 72:
         raise CheckError("soak under 72h")
+    if int(r.get("faults_injected") or 0) < 1:
+        raise CheckError("V10 injected no faults")
+    if int(r.get("tasks") or 0) < 1:
+        raise CheckError("V10 ran no tasks")
 
 
 CHECKERS = {

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -40,10 +43,42 @@ def make_mesh(n_devices: int, ep: int = 1, fsdp: int = 1, cp: int = 1, pp: int =
     return mesh
 
 
-def shard_params(params: dict, mesh: Mesh) -> dict:
-    """1-device identity. Rules are recorded so V2 can compare."""
+def _shard_array(x: Any, n: int, rank: int) -> Any:
+    arr = np.asarray(x)
+    if arr.ndim == 0 or n <= 1:
+        return arr
+    size = arr.shape[0]
+    chunk = (size + n - 1) // n
+    start = rank * chunk
+    end = min(start + chunk, size)
+    return arr[start:end]
+
+
+def shard_params(params: dict, mesh: Mesh, rank: int = 0) -> dict:
+    """Slice axis-0 of every leaf across FSDP ranks. Identity when fsdp==1."""
     validate_mesh(mesh)
-    return params
+
+    def walk(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: walk(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(walk(v) for v in obj)
+        return _shard_array(obj, mesh.fsdp, rank)
+
+    return walk(params)
+
+
+def unshard_params(shards: list[dict]) -> dict:
+    """Concatenate FSDP shards along axis 0."""
+
+    def walk(objs: list[Any]) -> Any:
+        if isinstance(objs[0], dict):
+            return {k: walk([o[k] for o in objs]) for k in objs[0]}
+        if isinstance(objs[0], (list, tuple)):
+            return type(objs[0])(walk([o[i] for o in objs]) for i in range(len(objs[0])))
+        return np.concatenate([np.asarray(o) for o in objs], axis=0)
+
+    return walk(shards)
 
 
 def shard_for(kind: str, mesh: Mesh) -> dict[str, int]:
