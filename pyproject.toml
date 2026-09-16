@@ -17,12 +17,16 @@ dev = [
     "ruff>=0.8",
     "jsonschema>=4.23",
     "pydantic>=2.9",
+    "numpy>=1.26",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]
+markers = [
+    "gpu: V1 H200 GPU tests (JAX vs numpy reference); skipped without a GPU",
+]
 
 [tool.ruff]
 line-length = 100
