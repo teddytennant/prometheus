@@ -1,0 +1,18 @@
+{
+  "eos_id": 9,
+  "docs": [[10], [20, 21]],
+  "packing": {
+    "packing_id": "golden-document-mask-pad",
+    "sequence_length": 5,
+    "strategy": "document_mask",
+    "eos_between_docs": true,
+    "pad_id": 0
+  },
+  "expected": [
+    {
+      "tokens": [10, 9, 20, 21, 0],
+      "mask": [1, 1, 1, 1, 0],
+      "document_ids": [0, 0, 1, 1, 0]
+    }
+  ]
+}
