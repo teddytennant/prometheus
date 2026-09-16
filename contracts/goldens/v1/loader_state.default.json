@@ -1,0 +1,12 @@
+{
+  "schema_id": "prometheus.loader_state",
+  "schema_version": 1,
+  "epoch": 0,
+  "step": 1024,
+  "shuffle_seed": 7,
+  "shard_index": 3,
+  "shard_offset": 4096,
+  "consumed_token_count": 8388608,
+  "data_mix_hash": "1f0368a7fbed2400c8f3b14febfddf1631b879b336c784b08ad2619dbdb5ab59",
+  "packing_remainder_hash": "ac760c60d7980c43c3a2c6f6651d125d759c1ecb910a01141e758550414bdc73"
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/reward_response",
+  "title": "Reward API response: score and evidence out (spec 9.4, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "request_id",
+    "task_id",
+    "score",
+    "passed",
+    "scorer_id",
+    "scored_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.reward_response"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "score": {
+      "type": "number"
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "hash": {
+          "$ref": "_defs.schema.json#/$defs/sha256"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "tampering",
+          "test_write",
+          "timeout",
+          "env_crash",
+          "unverifiable"
+        ]
+      }
+    },
+    "scorer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scored_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    }
+  }
+}

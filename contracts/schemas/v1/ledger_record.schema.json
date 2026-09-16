@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/ledger_record",
+  "title": "Self-improvement ledger row (spec 14.6, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "experiment_id",
+    "hypothesis",
+    "prediction",
+    "config_hash",
+    "author_role",
+    "created_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.ledger_record"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "experiment_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hypothesis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prediction": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "results": {
+      "type": "object"
+    },
+    "delta_rci": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "replication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "unreplicated",
+            "matched",
+            "failed",
+            "running"
+          ]
+        },
+        "n": {
+          "$ref": "_defs.schema.json#/$defs/nonneg_int"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "gpu_hours": {
+      "type": "number",
+      "minimum": 0
+    },
+    "author_role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rung": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 5
+    },
+    "created_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    },
+    "closed_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    }
+  }
+}

@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/rollout",
+  "title": "RL rollout: tokens, latents, routing ids, log-probs, policy version, env snapshot (spec 9, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "rollout_id",
+    "policy_version",
+    "task_id",
+    "env_snapshot_id",
+    "created_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.rollout"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "rollout_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "env_snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tokens": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "token_artifact": {
+      "$ref": "_defs.schema.json#/$defs/artifact"
+    },
+    "latents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "dim",
+        "artifact"
+      ],
+      "properties": {
+        "count": {
+          "$ref": "_defs.schema.json#/$defs/nonneg_int"
+        },
+        "dim": {
+          "$ref": "_defs.schema.json#/$defs/pos_int"
+        },
+        "artifact": {
+          "$ref": "_defs.schema.json#/$defs/artifact"
+        }
+      }
+    },
+    "routing_ids": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "routing_artifact": {
+      "$ref": "_defs.schema.json#/$defs/artifact"
+    },
+    "log_probs_artifact": {
+      "$ref": "_defs.schema.json#/$defs/artifact"
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "chain",
+            "tree",
+            "graph"
+          ]
+        },
+        "node_count": {
+          "$ref": "_defs.schema.json#/$defs/pos_int"
+        },
+        "edge_count": {
+          "$ref": "_defs.schema.json#/$defs/nonneg_int"
+        }
+      }
+    },
+    "staleness_k": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "reward": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "reward_evidence_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "created_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    },
+    "completed_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    }
+  }
+}

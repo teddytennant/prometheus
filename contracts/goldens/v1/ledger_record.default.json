@@ -1,0 +1,20 @@
+{
+  "schema_id": "prometheus.ledger_record",
+  "schema_version": 1,
+  "experiment_id": "exp-0001",
+  "hypothesis": "Reverie loss beats token-only at equal FLOPs on rung 0.",
+  "prediction": "val_bpb drops at least 0.02",
+  "config_hash": "e439a2c91523b7b6c230e590d4675bd4da58bf050eb41b6723e33496e644eb41",
+  "results": {
+    "val_bpb": 1.23
+  },
+  "delta_rci": null,
+  "replication": {
+    "status": "unreplicated",
+    "n": 0
+  },
+  "gpu_hours": 1.5,
+  "author_role": "researcher",
+  "rung": 0,
+  "created_at": "2026-09-16T12:00:00Z"
+}

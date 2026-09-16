@@ -1,0 +1,10 @@
+{
+  "schema_id": "prometheus.reward_request",
+  "schema_version": 1,
+  "request_id": "rew-0001",
+  "task_id": "task-math-0001",
+  "rollout_id": "roll-0001",
+  "trajectory_hash": "df4d832092e8878123a97d334652a1b44bfc48e5c4035adcceb00b25487e7001",
+  "verifier_id": "sympy-exact",
+  "env_snapshot_id": "snap-0001"
+}

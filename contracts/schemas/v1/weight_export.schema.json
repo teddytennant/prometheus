@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/weight_export",
+  "title": "JAX shard export to SGLang FP8/FP4 (spec 13, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "export_id",
+    "source_checkpoint_id",
+    "target",
+    "dtype",
+    "tokenizer_id",
+    "model_config_hash",
+    "shards",
+    "created_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.weight_export"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "export_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_checkpoint_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string",
+      "enum": [
+        "sglang"
+      ]
+    },
+    "dtype": {
+      "type": "string",
+      "enum": [
+        "bf16",
+        "fp8",
+        "nvfp4"
+      ]
+    },
+    "tokenizer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_config_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "shards": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "dtype",
+          "content_hash"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "dtype": {
+            "$ref": "_defs.schema.json#/$defs/dtype"
+          },
+          "content_hash": {
+            "$ref": "_defs.schema.json#/$defs/sha256"
+          },
+          "scale_hash": {
+            "$ref": "_defs.schema.json#/$defs/sha256"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "routing_table_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "numeric_parity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_abs_err": {
+          "type": "number"
+        },
+        "suite_id": {
+          "type": "string"
+        }
+      }
+    },
+    "created_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    }
+  }
+}

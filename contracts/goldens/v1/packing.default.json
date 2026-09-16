@@ -1,0 +1,10 @@
+{
+  "schema_id": "prometheus.packing",
+  "schema_version": 1,
+  "packing_id": "pretrain-8k-concat",
+  "sequence_length": 8192,
+  "strategy": "concat_eos",
+  "eos_between_docs": true,
+  "pad_id": 2,
+  "drop_short_below": 64
+}

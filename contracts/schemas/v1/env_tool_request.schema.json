@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/env_tool_request",
+  "title": "Env tool call (spec 9.5, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "call_id",
+    "env_snapshot_id",
+    "tool",
+    "payload"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.env_tool_request"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "call_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "env_snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tool": {
+      "type": "string",
+      "enum": [
+        "shell",
+        "editor",
+        "python",
+        "browser",
+        "lean",
+        "notes",
+        "subagent"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "timeout_s": {
+      "$ref": "_defs.schema.json#/$defs/pos_int"
+    },
+    "parent_call_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/_defs.schema.json",
+  "title": "Shared definitions",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256."
+    },
+    "datetime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp, RFC 3339."
+    },
+    "schema_id": {
+      "type": "string",
+      "pattern": "^prometheus\\.[a-z0-9_]+$"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "nonneg_int": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pos_int": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dtype": {
+      "type": "string",
+      "enum": [
+        "fp32",
+        "bf16",
+        "fp16",
+        "fp8",
+        "nvfp4",
+        "int8",
+        "int32"
+      ]
+    },
+    "mesh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dp",
+        "fsdp",
+        "ep",
+        "pp",
+        "cp"
+      ],
+      "properties": {
+        "dp": {
+          "$ref": "#/$defs/pos_int"
+        },
+        "fsdp": {
+          "$ref": "#/$defs/pos_int"
+        },
+        "ep": {
+          "$ref": "#/$defs/pos_int"
+        },
+        "pp": {
+          "$ref": "#/$defs/pos_int"
+        },
+        "cp": {
+          "$ref": "#/$defs/pos_int"
+        },
+        "tp": {
+          "$ref": "#/$defs/pos_int"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_hash",
+        "bytes"
+      ],
+      "properties": {
+        "content_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "$ref": "#/$defs/nonneg_int"
+        },
+        "path": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "url_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "snapshot_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "collection_id": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        }
+      }
+    },
+    "decontamination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "clean",
+            "flagged",
+            "not_applicable"
+          ]
+        },
+        "against": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "method_hash": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

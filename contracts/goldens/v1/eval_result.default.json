@@ -1,0 +1,23 @@
+{
+  "schema_id": "prometheus.eval_result",
+  "schema_version": 1,
+  "result_id": "eval-gsm8k-r0",
+  "suite": "gsm8k",
+  "split": "test",
+  "checkpoint_id": "r0-step-1024",
+  "metrics": {
+    "pass_at_1": 0.0,
+    "n": 1319
+  },
+  "n_items": 1319,
+  "per_item_hash": "2c9a93d84ad4df28371eab9ca3e915b257ae530b5d77e66a548628892464c228",
+  "config_hash": "018aaacfa4f04e1b7dd0a4f569794a42f06608802cef96f65faf302d62619d5f",
+  "decontamination": {
+    "status": "clean",
+    "against": [
+      "gsm8k"
+    ]
+  },
+  "job_id": "fv-eval-1",
+  "created_at": "2026-09-16T12:00:00Z"
+}

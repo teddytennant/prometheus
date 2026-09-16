@@ -1,0 +1,16 @@
+{
+  "schema_id": "prometheus.event_log",
+  "schema_version": 1,
+  "seq": 0,
+  "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "hash": "32bcd1d59c9308c4af387f6acf923abfd549ccdc5a2d8ec42e832df9fabc2d7d",
+  "timestamp": "2026-09-16T12:00:00Z",
+  "event_type": "session.start",
+  "task_id": null,
+  "attempt": null,
+  "node_id": "local",
+  "payload": {
+    "cycle": 1
+  },
+  "payload_hash": "7922cd56a5d8ad9b9870c54eb5a820101ea890761bc0d59ff557ac86f0d3f768"
+}

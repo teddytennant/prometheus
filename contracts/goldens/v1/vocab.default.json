@@ -1,0 +1,19 @@
+{
+  "schema_id": "prometheus.vocab",
+  "schema_version": 1,
+  "tokenizer_id": "byte-bpe-128k-r0",
+  "vocab_size": 128000,
+  "special_token_ids": {
+    "bos": 0,
+    "eos": 1,
+    "pad": 2,
+    "unk": 3
+  },
+  "artifact": {
+    "content_hash": "97b4fb5acfad509581184c223176dbb218d2d2573b16995310a85a333d7ed77d",
+    "bytes": 2048000,
+    "path": "artifacts/vocab.jsonl",
+    "media_type": "application/jsonl"
+  },
+  "format": "jsonl"
+}

@@ -1,0 +1,29 @@
+{
+  "schema_id": "prometheus.task_spec",
+  "schema_version": 1,
+  "task_id": "task-math-0001",
+  "domain": "math",
+  "env_snapshot_id": "snap-0001",
+  "verifier_id": "sympy-exact",
+  "factory_id": "gsm8k-factory",
+  "difficulty": {
+    "elo": 1200.0,
+    "band": "easy"
+  },
+  "horizon": {
+    "max_tool_calls": 8,
+    "max_tokens": 2048,
+    "walltime_s": 30
+  },
+  "hidden_tests_hash": "53b796bfeeedf877789511f068cddb4e987d0d730588907ca66bcebfe6ed4c20",
+  "public_statement_hash": "f98cd7e04e4208fffa41e13a001796025476be19da407eeb23ec2745097c6604",
+  "provenance": {
+    "source": "gsm8k",
+    "license": "mit",
+    "author": "openai"
+  },
+  "tags": [
+    "grade-school",
+    "exact-match"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/packing",
+  "title": "Sequence packing config for a data mix (spec 7).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "packing_id",
+    "sequence_length",
+    "strategy",
+    "eos_between_docs",
+    "pad_id"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.packing"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "packing_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence_length": {
+      "$ref": "_defs.schema.json#/$defs/pos_int"
+    },
+    "strategy": {
+      "type": "string",
+      "enum": [
+        "concat_eos",
+        "document_mask",
+        "single_document"
+      ]
+    },
+    "eos_between_docs": {
+      "type": "boolean"
+    },
+    "pad_id": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "drop_short_below": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

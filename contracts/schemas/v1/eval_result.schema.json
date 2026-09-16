@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/eval_result",
+  "title": "Held-out eval result (spec 11, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "result_id",
+    "suite",
+    "split",
+    "checkpoint_id",
+    "metrics",
+    "n_items",
+    "created_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.eval_result"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "result_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "suite": {
+      "type": "string",
+      "minLength": 1
+    },
+    "split": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checkpoint_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      },
+      "minProperties": 1
+    },
+    "n_items": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "per_item_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "config_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "decontamination": {
+      "$ref": "_defs.schema.json#/$defs/decontamination"
+    },
+    "job_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    }
+  }
+}

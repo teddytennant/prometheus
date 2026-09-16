@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/tokenizer",
+  "title": "Frozen tokenizer metadata (spec 7.1, 15.4)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "tokenizer_id",
+    "algorithm",
+    "vocab_size",
+    "byte_fallback",
+    "special_tokens",
+    "vocab_hash",
+    "frozen"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.tokenizer"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "tokenizer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "algorithm": {
+      "type": "string",
+      "enum": [
+        "byte_fallback_bpe"
+      ],
+      "description": "128k BPE plus byte fallback, frozen before rung 0."
+    },
+    "vocab_size": {
+      "$ref": "_defs.schema.json#/$defs/pos_int"
+    },
+    "byte_fallback": {
+      "type": "boolean"
+    },
+    "special_tokens": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "required": [
+        "bos",
+        "eos",
+        "pad",
+        "unk"
+      ],
+      "properties": {
+        "bos": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eos": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pad": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unk": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latent_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latent_end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "arc_grid_token_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "vocab_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "frozen": {
+      "type": "boolean"
+    },
+    "frozen_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    },
+    "corpus_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    }
+  }
+}

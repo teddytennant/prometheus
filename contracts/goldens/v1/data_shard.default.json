@@ -1,0 +1,48 @@
+{
+  "schema_id": "prometheus.data_shard",
+  "schema_version": 1,
+  "shard_id": "fineweb-00001",
+  "parquet_schema_version": 1,
+  "source": "fineweb",
+  "mix_bucket": "pretrain-r0",
+  "document_count": 1000,
+  "token_count": 2000000,
+  "packing_id": "pretrain-8k-concat",
+  "columns": [
+    {
+      "name": "tokens",
+      "type": "list<int32>"
+    },
+    {
+      "name": "document_id",
+      "type": "string"
+    },
+    {
+      "name": "source",
+      "type": "string"
+    },
+    {
+      "name": "quality_score",
+      "type": "float32"
+    }
+  ],
+  "provenance": {
+    "source": "fineweb",
+    "license": "odc-by",
+    "url_hash": "9db73a19f946d777e6acbce4fc8e44dd4a37a8ee74d85b191fa7668597de9900",
+    "snapshot_date": "2026-01-15",
+    "collection_id": "fineweb-edu"
+  },
+  "decontamination": {
+    "status": "clean",
+    "against": [
+      "gsm8k",
+      "humaneval",
+      "aime"
+    ],
+    "method_hash": "84a8e9a8ccee0d51e1219076b7f2f9cf3e64ec2c47feb25dea6e8d70da5da92e"
+  },
+  "content_hash": "57ffac9be38e98503439e6be83af7a2be9de045836d50df7bd94956383452675",
+  "created_at": "2026-09-16T12:00:00Z",
+  "bytes": 50000000
+}

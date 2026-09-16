@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/task_spec",
+  "title": "Env snapshot, verifier id, difficulty, provenance (spec 9.5, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "task_id",
+    "domain",
+    "env_snapshot_id",
+    "verifier_id",
+    "factory_id",
+    "hidden_tests_hash",
+    "provenance"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.task_spec"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "math",
+        "code",
+        "science",
+        "security",
+        "arc",
+        "agent",
+        "other"
+      ]
+    },
+    "env_snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verifier_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "factory_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "difficulty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "elo": {
+          "type": "number"
+        },
+        "band": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        }
+      }
+    },
+    "horizon": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_tool_calls": {
+          "$ref": "_defs.schema.json#/$defs/pos_int"
+        },
+        "max_tokens": {
+          "$ref": "_defs.schema.json#/$defs/pos_int"
+        },
+        "walltime_s": {
+          "$ref": "_defs.schema.json#/$defs/pos_int"
+        }
+      }
+    },
+    "hidden_tests_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "public_statement_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "provenance": {
+      "$ref": "_defs.schema.json#/$defs/provenance"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
