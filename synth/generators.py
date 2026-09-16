@@ -10,6 +10,8 @@ OPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
+    ast.FloorDiv: operator.floordiv,
+    ast.USub: operator.neg,
 }
 
 
@@ -38,6 +40,8 @@ def eval_expr(expr: str) -> int:
 def _eval(node: ast.AST) -> int:
     if isinstance(node, ast.Constant):
         return int(node.value)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in OPS:
+        return int(OPS[type(node.op)](_eval(node.operand)))
     if isinstance(node, ast.BinOp) and type(node.op) in OPS:
         return int(OPS[type(node.op)](_eval(node.left), _eval(node.right)))
     raise ValueError("unsupported")

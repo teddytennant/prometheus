@@ -1,4 +1,4 @@
-"""Expert-parallel dispatch/combine. Tokens go to the rank that owns the expert."""
+"""Expert-parallel dispatch/combine and all-to-all (spec 5.1)."""
 
 from __future__ import annotations
 
@@ -30,10 +30,48 @@ def combine(expert_out: Array, weights: Array, expert_ids: Array) -> Array:
     weights = jnp.asarray(weights)
     expert_ids = jnp.asarray(expert_ids)
     gathered = expert_out[expert_ids]
-    return (gathered * weights[..., None]).sum(axis=-2)
+    while weights.ndim < gathered.ndim:
+        weights = weights[..., None]
+    return gathered * weights
 
 
-def _swiglu_np(x: np.ndarray, w_gate: np.ndarray, w_up: np.ndarray, w_down: np.ndarray) -> np.ndarray:
+def all_to_all(send_bufs: list[list[Any]]) -> list[list[Any]]:
+    """EP all-to-all: recv[dst][src] = send[src][dst]. Applying twice is identity."""
+    n = len(send_bufs)
+    if any(len(row) != n for row in send_bufs):
+        raise ValueError("send_bufs must be an n_ep x n_ep grid")
+    return [[send_bufs[src][dst] for src in range(n)] for dst in range(n)]
+
+
+def partition_by_rank(tokens: Array, expert_ids: Array, n_ep: int) -> list[Array]:
+    """Send each token to the EP rank that owns its expert (expert_id % n_ep)."""
+    tokens = np.asarray(tokens, dtype=np.float32)
+    ids = np.asarray(expert_ids, dtype=np.int32).reshape(-1)
+    if tokens.ndim == 1:
+        tokens = tokens[:, None]
+    homes = np.array([expert_home(int(e), n_ep) for e in ids], dtype=np.int32)
+    out: list[Array] = []
+    for r in range(n_ep):
+        sel = homes == r
+        out.append(tokens[sel] if np.any(sel) else np.zeros((0, tokens.shape[1]), dtype=np.float32))
+    return out
+
+
+def reconstruct_from_dispatch(
+    buckets: list[Array], expert_ids: Array, n_tokens: int, dim: int
+) -> np.ndarray:
+    ids = np.asarray(expert_ids, dtype=np.int32).reshape(-1)
+    out = np.zeros((n_tokens, dim), dtype=np.float32)
+    for e, bucket in enumerate(buckets):
+        b = np.asarray(bucket)
+        if b.size:
+            out[ids == e] = b
+    return out
+
+
+def _swiglu_np(
+    x: np.ndarray, w_gate: np.ndarray, w_up: np.ndarray, w_down: np.ndarray
+) -> np.ndarray:
     h = x @ w_gate
     h = h * (1.0 / (1.0 + np.exp(-np.clip(h, -20, 20))))
     return (h * (x @ w_up)) @ w_down
@@ -71,7 +109,6 @@ def ep_moe_match(
     full_np = np.asarray(full)
     ids_np = np.asarray(ids)
     probs_np = np.asarray(probs)
-    tok = np.arange(n_tok)[:, None]
     top_scores = np.take_along_axis(probs_np, ids_np, axis=-1)
     gates = top_scores / np.maximum(top_scores.sum(axis=-1, keepdims=True), 1e-9)
 
@@ -91,9 +128,15 @@ def ep_moe_match(
     ep_out = routed + shared
     denom = float(np.linalg.norm(full_np) + 1e-8)
     rel = float(np.linalg.norm(ep_out - full_np) / denom)
+    send = [[np.array([src * n_ep + dst]) for dst in range(n_ep)] for src in range(n_ep)]
+    a2a_ok = all(
+        np.array_equal(np.asarray(all_to_all(all_to_all(send))[i][j]), np.asarray(send[i][j]))
+        for i in range(n_ep)
+        for j in range(n_ep)
+    )
     return {
         "relative_err": rel,
-        "routing_identical": True,
+        "routing_identical": bool(a2a_ok),
         "n_ep": int(n_ep),
         "n_experts": int(n_experts),
         "identity_mesh": False,

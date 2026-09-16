@@ -63,42 +63,20 @@ def fault_probe() -> dict:
 
 
 def lab_dry_run() -> dict:
-    """One 14.6 cycle: planted ideas written to the SQLite ledger and read back."""
+    """One 14.6 cycle: pre-register, run, replicate, eval-gate, ledger."""
     import tempfile
 
     from harness.ledger import Ledger
+    from train.lab import planted_cycle
 
     path = Path(tempfile.mkdtemp(prefix="v9-ledger-")) / "ledger.sqlite"
+    out = planted_cycle(path)
     led = Ledger(path)
-    led.append(
-        {
-            "experiment_id": "plant-pos",
-            "author_role": "worker",
-            "rung": 0,
-            "sign": "positive",
-            "replicated": True,
-            "recorded": "positive",
-        }
-    )
-    led.append(
-        {
-            "experiment_id": "plant-neg",
-            "author_role": "worker",
-            "rung": 0,
-            "sign": "negative",
-            "replicated": False,
-            "recorded": "negative",
-        }
-    )
-    pos = led.get("plant-pos")
-    neg = led.get("plant-neg")
     n = led.count()
     led.close()
     return {
-        "planted_positive_replicated": bool(
-            pos and pos["replicated"] and pos["recorded"] == "positive"
-        ),
-        "planted_negative_recorded": bool(neg and neg["recorded"] == "negative"),
+        "planted_positive_replicated": bool(out["planted_positive_replicated"]),
+        "planted_negative_recorded": bool(out["planted_negative_recorded"]),
         "ledger_rows": n,
         "ledger_path": str(path),
     }

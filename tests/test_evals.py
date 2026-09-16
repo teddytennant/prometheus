@@ -445,3 +445,65 @@ def test_rephrased_probe_is_a_suite_item_not_a_side_channel() -> None:
     assert index.is_clean(_NEAR_COPY) is False
     assert index.is_clean(_PROMPT) is False
     assert index.is_clean(_UNRELATED) is True
+
+
+def test_forecasting_scores_and_runner() -> None:
+    import math
+
+    assert evals.brier(0.5, 1) == 0.25
+    assert evals.log_score(0.5, 1) == math.log(0.5)
+    assert evals.paper_pnl(0.4, 1.0) == pytest.approx(0.6)
+    assert evals.leak_probe(0.2, 0.9) == pytest.approx(0.7)
+    item = evals.EvalItem(
+        item_id="f1",
+        suite="forecasting",
+        split="test",
+        prompt="will X happen?",
+        answer="1",
+        metadata={"outcome": 1, "price": 0.4, "p_clean": 0.4},
+    )
+    cfg = evals.EvalConfig(
+        suite="forecasting",
+        split=evals.Split.TEST,
+        checkpoint_id="r0",
+        harness_version="harness-v1",
+    )
+    payload = evals.run_forecasting([item], lambda _i: 0.4, config=cfg)
+    _accept_eval_result(payload)
+    assert payload["suite"] == "forecasting"
+    for name in evals.FORECASTING_METRICS:
+        assert name in payload["metrics"]
+    assert payload["metrics"]["brier"] == pytest.approx(0.36)
+    assert payload["metrics"]["paper_pnl"] == pytest.approx(0.6)
+
+
+def test_latent_scaling_matched_flop() -> None:
+    out = evals.latent_scaling(
+        acc_by_budget={1: 0.2, 2: 0.3, 4: 0.4, 8: 0.5, 16: 0.6},
+        discrete_acc=0.45,
+        flop_by_budget={1: 1, 2: 2, 4: 4, 8: 8, 16: 16},
+        flop_discrete=8,
+    )
+    assert out["matched_budget"] == 8
+    assert out["beats_discrete_at_matched_flop"] is True
+    assert out["rises_with_budget"] is True
+    assert out["accuracy"][16] == 0.6
+
+
+def test_attach_efficiency_and_canaries() -> None:
+    payload = evals.result_envelope(**_envelope_kwargs())
+    out = evals.attach_efficiency(
+        payload, tokens_to_solve=10, latent_steps=4, recurrence_iterations=4
+    )
+    _accept_eval_result(out)
+    assert out["metrics"]["tokens_to_solve"] == 10.0
+    assert out["metrics"]["latent_steps"] == 4.0
+    cans = evals.contamination_canaries(2)
+    assert len(cans) == 2
+    assert all(c.metadata["probe"] == "canary" for c in cans)
+    tokens = [c.metadata["token"] for c in cans]
+    hits = evals.scan_canaries(cans[0].prompt, tokens)
+    assert tokens[0] in hits
+    assert tokens[1] not in hits
+    clean = evals.scan_canaries("unrelated corpus", tokens)
+    assert clean == []

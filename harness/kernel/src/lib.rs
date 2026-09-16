@@ -1,23 +1,27 @@
-//! Capability + budget kernel (spec 15.2 H10). Never grant without a budget.
+//! Kernel capability tokens (spec 14.3, 15.5 L1).
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+mod caps;
+
+pub use caps::{sign_update, Kernel};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Cap {
-    Gpu,
+    Fs,
     Net,
-    FsWrite,
+    Exec,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Grant {
     pub cap: Cap,
     pub budget: u64,
 }
 
-pub fn grant(cap: Cap, budget: u64) -> Result<Grant, String> {
-    if budget == 0 {
-        return Err("no budget".into());
+pub fn grant(g: &Grant, used: u64) -> Result<u64, String> {
+    if used > g.budget {
+        return Err("budget".into());
     }
-    Ok(Grant { cap, budget })
+    Ok(g.budget - used)
 }
 
 #[cfg(test)]
@@ -26,7 +30,11 @@ mod tests {
 
     #[test]
     fn zero_budget_denied() {
-        assert!(grant(Cap::Gpu, 0).is_err());
-        assert!(grant(Cap::Gpu, 1).is_ok());
+        let g = Grant {
+            cap: Cap::Net,
+            budget: 0,
+        };
+        assert!(grant(&g, 1).is_err());
+        assert_eq!(grant(&g, 0).unwrap(), 0);
     }
 }

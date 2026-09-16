@@ -1,5 +1,11 @@
 //! Session router + KV tiering stand-in (spec 8, 15.5 C5).
-//! SGLang runtime itself is the Python fork; this crate owns routing.
+//! Request state machine, buckets, routing capture, MTP (spec 13).
+
+mod engine;
+
+pub use engine::{
+    argmax, mtp_accept, DecodeKind, Engine, KvBlock, KvTier, Request, RECURRENCE_BUCKETS,
+};
 
 use std::collections::HashMap;
 

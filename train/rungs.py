@@ -20,11 +20,28 @@ RUNG1 = Rung(1, 1e9, 1.5e10, 2e11)
 
 
 def rung_config(rung: Rung) -> M.ModelConfig:
-    """Flagship-shaped but tiny enough to instantiate on CPU for rung 0."""
+    """CPU-testable configs. GPU shapes live in train.rung0 / train.rung1."""
     if rung.index == 0:
         return M.tiny_config()
-    cfg = M.tiny_config()
-    return cfg
+    if rung.index == 1:
+        return M.tiny_config()
+    raise ValueError(rung.index)
+
+
+def gpu_config(rung: int) -> M.ModelConfig:
+    if rung == 0:
+        from train.rung0 import rung0_gpu_config
+
+        return rung0_gpu_config()
+    if rung == 1:
+        from train.rung1 import rung1_gpu_config
+
+        return rung1_gpu_config()
+    raise ValueError(rung)
+
+
+def table() -> list[Rung]:
+    return [RUNG0, RUNG1, Rung(2, 8e9, 1.2e11, 1.5e12), Rung(3, 4e10, 7e11, 6e12)]
 
 
 def chinchilla_loss(n_params: float, n_tokens: float, a=6.49, b=7.2, e=0.3) -> float:

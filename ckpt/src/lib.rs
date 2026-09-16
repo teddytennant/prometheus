@@ -1,5 +1,9 @@
 //! In-memory checkpoint + content hash (spec 5.4, 15.5 A6).
-//! 90TB sharded ckpt and Grace offload are S3 (cluster-conditional).
+//! Sharded A/B replicas, SDC quarantine, persist, healed join (spec 5.5).
+
+mod sharded;
+
+pub use sharded::{CkptError, Replica, ReplicaId, Shard, ShardedCheckpoint};
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -15,13 +19,20 @@ pub struct Checkpoint {
 impl Checkpoint {
     pub fn new(step: u64, payload: Vec<u8>) -> Self {
         let hash = sha(&payload);
-        Self { step, payload, hash }
+        Self {
+            step,
+            payload,
+            hash,
+        }
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(dir)?;
         fs::write(dir.join("payload.bin"), &self.payload)?;
-        fs::write(dir.join("meta.json"), format!(r#"{{"step":{},"hash":"{}"}}"#, self.step, self.hash))?;
+        fs::write(
+            dir.join("meta.json"),
+            format!(r#"{{"step":{},"hash":"{}"}}"#, self.step, self.hash),
+        )?;
         Ok(())
     }
 
@@ -34,7 +45,11 @@ impl Checkpoint {
         if sha(&payload) != hash {
             return Err(std::io::Error::other("hash mismatch"));
         }
-        Ok(Self { step, payload, hash })
+        Ok(Self {
+            step,
+            payload,
+            hash,
+        })
     }
 }
 

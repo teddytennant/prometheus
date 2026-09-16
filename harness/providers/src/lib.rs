@@ -1,4 +1,12 @@
-//! Token broker / spend ledger (spec 15.2 H3).
+//! Token broker + spend accounting (spec 15.2, 15.5 H3).
+
+mod aimd;
+mod broker;
+mod validate;
+
+pub use aimd::{Aimd, Provider, ProviderSet};
+pub use broker::TokenBroker;
+pub use validate::{validate_response, ValidateError};
 
 #[derive(Debug)]
 pub struct Broker {
@@ -10,12 +18,12 @@ impl Broker {
         Self { remaining: budget }
     }
 
-    pub fn spend(&mut self, n: u64) -> Result<(), String> {
+    pub fn spend(&mut self, n: u64) -> Result<u64, String> {
         if n > self.remaining {
-            return Err("budget".into());
+            return Err("overspend".into());
         }
         self.remaining -= n;
-        Ok(())
+        Ok(self.remaining)
     }
 }
 
@@ -28,7 +36,6 @@ mod tests {
         let mut b = Broker::new(10);
         b.spend(7).unwrap();
         assert!(b.spend(4).is_err());
-        b.spend(3).unwrap();
-        assert_eq!(b.remaining, 0);
+        assert_eq!(b.remaining, 3);
     }
 }

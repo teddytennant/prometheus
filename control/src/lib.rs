@@ -1,5 +1,15 @@
 //! Event log, SDC hash, spike rollback (spec 5.4, 14, 15.5 A5).
-//! Full OpenRaft membership at 220k GPUs is S3.
+//! Elastic DP, health, stragglers, watchdog (spec 5.5).
+
+mod health;
+mod scheduler;
+mod spike;
+mod watchdog;
+
+pub use health::{Health, StragglerDetector};
+pub use scheduler::{Replica, Scheduler};
+pub use spike::{SpikeAction, SpikePolicy};
+pub use watchdog::Watchdog;
 
 use sha2::{Digest, Sha256};
 
@@ -19,7 +29,10 @@ pub struct EventLog {
 
 impl EventLog {
     pub fn new() -> Self {
-        Self { events: vec![], last: "0".repeat(64) }
+        Self {
+            events: vec![],
+            last: "0".repeat(64),
+        }
     }
 
     pub fn append(&mut self, kind: &str, body: &str) -> String {

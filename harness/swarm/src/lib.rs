@@ -1,41 +1,42 @@
-//! Worker swarm: spawn N, collect, no duplicated output (spec 15.2 H2).
+//! Crash-only swarm: idempotent admit/finish (spec 15.2, 15.5 H2).
+
+mod lease;
+mod log;
+
+pub use lease::{ArtifactCas, Cluster, Lease, Task};
+pub use log::{Event, EventLog};
 
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TaskId(pub u64);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Swarm {
-    pub inflight: HashSet<TaskId>,
-    pub done: HashSet<TaskId>,
+    admitted: HashSet<u64>,
+    finished: HashSet<u64>,
 }
 
 impl Swarm {
     pub fn new() -> Self {
-        Self { inflight: HashSet::new(), done: HashSet::new() }
+        Self::default()
     }
 
     pub fn admit(&mut self, id: TaskId) -> Result<(), String> {
-        if self.inflight.contains(&id) || self.done.contains(&id) {
-            return Err("duplicate".into());
+        if !self.admitted.insert(id.0) {
+            return Err("dup".into());
         }
-        self.inflight.insert(id);
         Ok(())
     }
 
     pub fn finish(&mut self, id: TaskId) -> Result<(), String> {
-        if !self.inflight.remove(&id) {
+        if !self.admitted.contains(&id.0) {
             return Err("unknown".into());
         }
-        self.done.insert(id);
+        if !self.finished.insert(id.0) {
+            return Err("dup".into());
+        }
         Ok(())
-    }
-}
-
-impl Default for Swarm {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -49,6 +50,6 @@ mod tests {
         s.admit(TaskId(1)).unwrap();
         assert!(s.admit(TaskId(1)).is_err());
         s.finish(TaskId(1)).unwrap();
-        assert!(s.done.contains(&TaskId(1)));
+        assert!(s.finish(TaskId(1)).is_err());
     }
 }

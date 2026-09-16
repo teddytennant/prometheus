@@ -1,17 +1,28 @@
-//! Status JSON for the lab (spec 15.2 H8).
+//! Ops CLI status (spec 15.2, 15.5 H6).
 
-use serde::Serialize;
+mod cli;
 
-#[derive(Debug, Serialize)]
+pub use cli::{parse, sign, verify_sig, Command, OpsState};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Status {
-    pub live_jobs: u32,
-    pub tokens_remaining: u64,
-    pub last_eval: String,
+    pub nodes: u32,
+    pub missions: u32,
+    pub paused: bool,
 }
 
 impl Status {
-    pub fn render(&self) -> String {
-        serde_json::to_string(self).unwrap()
+    pub fn render(&self, json: bool) -> String {
+        if json {
+            serde_json::to_string(self).unwrap_or_default()
+        } else {
+            format!(
+                "nodes={} missions={} paused={}",
+                self.nodes, self.missions, self.paused
+            )
+        }
     }
 }
 
@@ -21,8 +32,13 @@ mod tests {
 
     #[test]
     fn json_roundtrip() {
-        let s = Status { live_jobs: 2, tokens_remaining: 9, last_eval: "ok".into() };
-        let v: serde_json::Value = serde_json::from_str(&s.render()).unwrap();
-        assert_eq!(v["live_jobs"], 2);
+        let s = Status {
+            nodes: 2,
+            missions: 1,
+            paused: false,
+        };
+        let j = s.render(true);
+        let back: Status = serde_json::from_str(&j).unwrap();
+        assert_eq!(s, back);
     }
 }

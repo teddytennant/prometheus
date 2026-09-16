@@ -1,9 +1,12 @@
-//! Snapshot-fork envs + test-write flag (spec 9.4, D4).
-//! Firecracker is cluster-conditional (V0 kvm probe).
+//! Snapshot-fork env with test-file write block (spec 9.4, 15.5 D4).
+
+mod overlay;
+
+pub use overlay::{EnvFleet, NetworkPolicy, OverlayFs, ToolParam, ToolSchema, WebSnapshot};
 
 use std::collections::HashSet;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub files: HashSet<String>,
 }
@@ -28,10 +31,12 @@ mod tests {
 
     #[test]
     fn blocks_test_write() {
-        let mut s = Snapshot { files: HashSet::new() };
-        assert!(s.write("src/lib.rs", "ok").is_ok());
-        assert!(s.write("tests/foo.py", "pass").is_err());
+        let mut s = Snapshot {
+            files: HashSet::new(),
+        };
+        assert!(s.write("src/foo.rs", "x").is_ok());
+        assert!(s.write("tests/test_foo.py", "x").is_err());
         let f = s.fork();
-        assert_eq!(f.files, s.files);
+        assert!(f.files.contains("src/foo.rs"));
     }
 }

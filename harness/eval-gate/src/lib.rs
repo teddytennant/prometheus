@@ -1,17 +1,34 @@
-//! Eval gate: a rung cannot promote if a listed eval fails (spec 15.2 H11).
+//! Held-out eval gate (spec 14.3, 15.5 L2).
+
+mod gate;
+
+pub use gate::{EvalGate, HiddenTask, HonestSolver, Solver, StubSolver};
 
 #[derive(Debug, Clone)]
 pub struct EvalResult {
-    pub name: String,
-    pub passed: bool,
+    pub passed: u32,
+    pub total: u32,
 }
 
-pub fn promote(evals: &[EvalResult]) -> Result<(), String> {
-    let failed: Vec<_> = evals.iter().filter(|e| !e.passed).map(|e| e.name.clone()).collect();
-    if failed.is_empty() {
+impl EvalResult {
+    pub fn frac(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.passed as f64 / self.total as f64
+        }
+    }
+
+    pub fn pass(&self) -> bool {
+        self.frac() >= 0.5
+    }
+}
+
+pub fn promote(r: &EvalResult) -> Result<(), String> {
+    if r.pass() {
         Ok(())
     } else {
-        Err(failed.join(","))
+        Err("gate".into())
     }
 }
 
@@ -21,11 +38,15 @@ mod tests {
 
     #[test]
     fn blocks_fail() {
-        let e = vec![
-            EvalResult { name: "gsm8k".into(), passed: true },
-            EvalResult { name: "arc".into(), passed: false },
-        ];
-        assert!(promote(&e).is_err());
-        assert!(promote(&[EvalResult { name: "a".into(), passed: true }]).is_ok());
+        let r = EvalResult {
+            passed: 1,
+            total: 4,
+        };
+        assert!(promote(&r).is_err());
+        let r = EvalResult {
+            passed: 3,
+            total: 4,
+        };
+        assert!(promote(&r).is_ok());
     }
 }

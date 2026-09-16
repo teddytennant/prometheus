@@ -1,23 +1,20 @@
-//! Tripwires: loss spike, dead token, SDC (spec 15.2 H12).
+//! Integrity / hacking / boundary monitors (spec 14.10, 15.5 L3).
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Trip {
-    LossSpike,
-    DeadToken,
-    Sdc,
+mod ring;
+
+pub use ring::{KillSwitch, Monitor, MonitorRing, Tripwires};
+
+#[derive(Debug, Clone)]
+pub struct Trip {
+    pub name: String,
+    pub fired: bool,
 }
 
-pub fn watch(loss: f64, prev: f64, dead: u64, sdc_mismatch: bool) -> Option<Trip> {
-    if sdc_mismatch {
-        return Some(Trip::Sdc);
+pub fn watch(prev: f64, next: f64, thresh: f64) -> Trip {
+    Trip {
+        name: "rci".into(),
+        fired: (next - prev).abs() > thresh,
     }
-    if dead > 0 {
-        return Some(Trip::DeadToken);
-    }
-    if prev > 0.0 && loss > prev * 2.0 {
-        return Some(Trip::LossSpike);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -26,9 +23,7 @@ mod tests {
 
     #[test]
     fn trips() {
-        assert_eq!(watch(1.0, 1.0, 0, true), Some(Trip::Sdc));
-        assert_eq!(watch(1.0, 1.0, 2, false), Some(Trip::DeadToken));
-        assert_eq!(watch(5.0, 2.0, 0, false), Some(Trip::LossSpike));
-        assert_eq!(watch(1.1, 1.0, 0, false), None);
+        assert!(watch(0.1, 0.5, 0.2).fired);
+        assert!(!watch(0.1, 0.15, 0.2).fired);
     }
 }
