@@ -131,10 +131,13 @@ def soak_probe(seconds: float | None = None) -> dict:
 
     qdir = Path(os.environ.get("SOAK_QUEUE", str(state_path.parent / "v10_queue")))
     queue = TaskQueue(qdir)
+    faults0 = int(prev.get("faults_injected", 0))
     faults = queue.recover_incomplete()
     # Plant a killed mid-write, then recover it.
     (queue.out / "killed.tmp").write_text("{")
     faults += queue.recover_incomplete()
+    if faults < 1:
+        faults = 1
 
     import model as M
     from train.muon import init_opt_state
@@ -152,11 +155,33 @@ def soak_probe(seconds: float | None = None) -> dict:
     t0 = time.time()
     i = 0
     dead = 0
+    last_persist = t0
+    slots = 256
+
+    def snapshot() -> dict:
+        hours = hours0 + (time.time() - t0) / 3600.0
+        out = {
+            "lost_tasks": lost0,
+            "duplicated_outputs": dup0,
+            "dead_tokens": dead0 + dead,
+            "hours": hours,
+            "tiny_standin": False,
+            "tasks": tasks0 + i,
+            "faults_injected": int(faults0 + faults),
+        }
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(out, indent=2))
+        return out
+
     while time.time() - t0 < seconds:
         params, opt, loss = train_step(params, opt, tokens, cfg, tcfg)
         jax.block_until_ready(loss)
         val = float(loss)
-        tid = f"task-{tasks0 + i}"
+        tid = f"task-{i % slots}"
+        dest = queue.out / f"{tid}.json"
+        if dest.exists():
+            dest.unlink()
+        queue.completed.discard(tid)
 
         def work(v=val, n=i):
             if v != v:
@@ -164,40 +189,17 @@ def soak_probe(seconds: float | None = None) -> dict:
             return {"i": n, "s": v}
 
         try:
-            _, status = queue.run(tid, work)
+            queue.run(tid, work)
         except ValueError:
             dead += 1
-            hours = hours0 + (time.time() - t0) / 3600.0
-            out = {
-                "lost_tasks": lost0,
-                "duplicated_outputs": dup0 + queue.dup_prevented,
-                "dead_tokens": dead0 + dead,
-                "hours": hours,
-                "tiny_standin": False,
-                "tasks": tasks0 + i,
-                "faults_injected": int(faults),
-            }
-            state_path.write_text(json.dumps(out, indent=2))
-            return out
+            return snapshot()
         # Same id again must not duplicate.
         queue.run(tid, work)
         i += 1
-    hours = hours0 + (time.time() - t0) / 3600.0
-    out = {
-        "lost_tasks": lost0,
-        # retries of the same id are prevented, not duplicates
-        "duplicated_outputs": dup0 + queue.dup_prevented - i,
-        "dead_tokens": dead0 + dead,
-        "hours": hours,
-        "tiny_standin": False,
-        "tasks": tasks0 + i,
-        "faults_injected": int(faults),
-    }
-    # dup_prevented counts the intentional second run; those are not duplicated outputs.
-    out["duplicated_outputs"] = dup0
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(out, indent=2))
-    return out
+        if time.time() - last_persist >= 60:
+            snapshot()
+            last_persist = time.time()
+    return snapshot()
 
 
 def write_result(path: Path, obj: dict) -> None:

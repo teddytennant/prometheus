@@ -82,6 +82,20 @@ def test_v5_rejects_overfit_standin():
                 "active_params": 1.5e8,
             }
         )
+    with pytest.raises(CheckError, match="two points"):
+        check_v5(
+            {
+                **H200,
+                "n_devices": 8,
+                "loss_matches_ladder": True,
+                "ckpt_resume_across_jobs": True,
+                "tokens_seen": 2e10,
+                "ckpt_job_ids": ["1", "2"],
+                "active_params": 1.5e8,
+                "losses": [3.46, 2.05],
+                "n_loss_points": 2,
+            }
+        )
 
 
 def test_v10_rejects_tiny_standin():
@@ -160,6 +174,8 @@ def test_all_checkers_have_positive():
             "ckpt_job_ids": ["100", "101"],
             "active_params": 1.5e8,
             "tiny": False,
+            "losses": [4.0, 3.8, 3.6, 3.4, 3.2, 3.0, 2.8, 2.6],
+            "n_loss_points": 8,
         },
         6: {
             **H200,

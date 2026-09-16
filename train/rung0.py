@@ -62,7 +62,7 @@ def _config() -> ModelConfig:
 
 
 def _loss_matches_ladder(losses: list[float], tokens_seen: int, n_params: int) -> bool:
-    if len(losses) < 2:
+    if len(losses) < 8:
         return False
     if not np.isfinite(losses[0]) or not np.isfinite(losses[-1]):
         return False
@@ -92,9 +92,9 @@ def run(
     tiny = bool(os.environ.get("RUNG0_TINY"))
     devices = jax.devices("gpu") if jax.default_backend() == "gpu" else jax.devices()
     n_devices = max(len(devices), 1)
-    default_batch = "2" if tiny else "32"
+    default_batch = "2" if tiny else "128"
     batch = int(batch if batch is not None else os.environ.get("RUNG0_BATCH", default_batch))
-    default_seq = 8 if tiny else min(int(cfg.max_context), 256)
+    default_seq = 8 if tiny else int(cfg.max_context)
     seq = int(seq if seq is not None else os.environ.get("RUNG0_SEQ", default_seq))
     seq = min(seq, int(cfg.max_context))
     tcfg = TrainConfig()
@@ -209,6 +209,8 @@ def run(
         "loss_matches_ladder": _loss_matches_ladder(losses, tokens_seen, n_params),
         "loss_start": losses[0] if losses else None,
         "loss_end": losses[-1] if losses else None,
+        "losses": [float(x) for x in losses[-256:]],
+        "n_loss_points": len(losses),
         "n_params": n_params,
         "active_params": n_params,
         "total_params": n_params,

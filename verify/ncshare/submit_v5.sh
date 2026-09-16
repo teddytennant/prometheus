@@ -15,7 +15,7 @@ rsync -az \
 
 JOB="$HERE/V5.sh"
 chmod +x "$JOB"
-id1=$("$NCSHARE" submit "$RUN_ID" "v5a" "$JOB" "04:00:00" 8)
+id1=$("$NCSHARE" submit "$RUN_ID" "v5a" "$JOB" "12:00:00" 8)
 echo "V5 job1 $id1"
-id2=$("$NCSHARE" submit "$RUN_ID-b" "v5b" "$JOB" "04:00:00" 8 "--dependency=afterany:$id1")
-echo "V5 job2 $id2 afterany:$id1"
+id2=$("$NCSHARE" submit "$RUN_ID-b" "v5b" "$JOB" "12:00:00" 8 "--dependency=afterok:$id1")
+echo "V5 job2 $id2 afterok:$id1"

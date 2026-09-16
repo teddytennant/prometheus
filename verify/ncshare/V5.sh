@@ -16,7 +16,17 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export CKPT_DIR="${CKPT_DIR:-$ROOT/runs/v5/ckpt}"
 export TOKENS_TARGET="${TOKENS_TARGET:-20000000000}"
 if [ -z "${MAX_SECONDS:-}" ]; then
-  MAX_SECONDS=13800
+  left=""
+  if [ -n "${SLURM_JOB_END_TIME:-}" ]; then
+    left=$(( SLURM_JOB_END_TIME - $(date +%s) - 180 ))
+  elif [ -n "${SLURM_TIMELIMIT:-}" ]; then
+    left=$(( SLURM_TIMELIMIT * 60 - 180 ))
+  fi
+  if [ -n "${left}" ] && [ "$left" -gt 60 ]; then
+    MAX_SECONDS=$left
+  else
+    MAX_SECONDS=42000
+  fi
 fi
 export MAX_SECONDS
 mkdir -p "$CKPT_DIR"

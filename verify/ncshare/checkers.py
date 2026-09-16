@@ -127,6 +127,9 @@ def check_v5(r: dict[str, Any]) -> None:
         raise CheckError("ckpt/resume across jobs failed")
     if not r.get("ckpt_resume_across_jobs"):
         raise CheckError("ckpt/resume across jobs failed")
+    losses = r.get("losses") or []
+    if not isinstance(losses, list) or len(losses) < 8:
+        raise CheckError("V5 loss curve is two points, not a fit")
     if not r.get("loss_matches_ladder"):
         raise CheckError("loss curve missed ladder fit")
     n_params = float(r.get("active_params") or r.get("n_params") or 0)
