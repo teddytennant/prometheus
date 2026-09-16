@@ -135,6 +135,15 @@ def soak_probe(seconds: float | None = None) -> dict:
     dead = 0
     last_persist = t0
     slots = 256
+    stop = {"v": False}
+
+    def _handle(signum, frame):
+        stop["v"] = True
+
+    import signal
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
 
     def snapshot() -> dict:
         hours = hours0 + (time.time() - t0) / 3600.0
@@ -151,7 +160,7 @@ def soak_probe(seconds: float | None = None) -> dict:
         state_path.write_text(json.dumps(out, indent=2))
         return out
 
-    while time.time() - t0 < seconds:
+    while (not stop["v"]) and time.time() - t0 < seconds:
         params, opt, loss = train_step(params, opt, tokens, cfg, tcfg)
         jax.block_until_ready(loss)
         val = float(loss)

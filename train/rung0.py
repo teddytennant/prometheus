@@ -7,6 +7,7 @@ only when a later job loads a ckpt written by a different Slurm id.
 from __future__ import annotations
 
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Any
@@ -61,12 +62,16 @@ def _config() -> ModelConfig:
     return rung0_gpu_config()
 
 
-def _loss_matches_ladder(losses: list[float], tokens_seen: int, n_params: int) -> bool:
+def _loss_matches_ladder(
+    losses: list[float], tokens_seen: int, n_params: int, loss_start: float | None = None
+) -> bool:
     if len(losses) < 8:
         return False
-    if not np.isfinite(losses[0]) or not np.isfinite(losses[-1]):
+    a = float(loss_start if loss_start is not None else losses[0])
+    b = float(losses[-1])
+    if not np.isfinite(a) or not np.isfinite(b):
         return False
-    if losses[-1] >= losses[0]:
+    if b >= a:
         return False
     prior = chinchilla_loss(n_params, max(tokens_seen, 1))
     return bool(np.isfinite(prior))
@@ -105,6 +110,8 @@ def run(
     tokens_seen = 0
     losses: list[float] = []
     step_i = 0
+    loss_start: float | None = None
+    n_loss_points = 0
     if loaded is None:
         params = M.init_params(cfg, jax.random.PRNGKey(seed))
         opt = init_opt_state(params)
@@ -116,6 +123,11 @@ def run(
         losses = [float(x) for x in meta.get("losses", [])]
         step_i = int(opt.step)
         resumed = bool(prev_jobs) and job_id not in prev_jobs
+        if meta.get("loss_start") is not None:
+            loss_start = float(meta["loss_start"])
+        elif losses:
+            loss_start = float(losses[0])
+        n_loss_points = int(meta.get("n_loss_points") or len(losses))
 
     job_ids = list(prev_jobs)
     if job_id not in job_ids:
@@ -156,6 +168,7 @@ def run(
     def persist(p, momentum, step_i, tokens_seen, losses):
         host_p = _first_replica(p) if use_pmap else p
         host_m = _first_replica(momentum) if use_pmap else momentum
+        start = loss_start if loss_start is not None else (float(losses[0]) if losses else None)
         save_checkpoint(
             ckpt_dir,
             host_p,
@@ -165,12 +178,22 @@ def run(
                 "tokens_seen": tokens_seen,
                 "losses": losses[-256:],
                 "n_params": n_params,
+                "loss_start": start,
+                "n_loss_points": n_loss_points if n_loss_points else len(losses),
             },
         )
 
+    stop = {"v": False}
+
+    def _handle(signum, frame):
+        stop["v"] = True
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
+
     t0 = time.time()
     steps = 0
-    while tokens_seen < tokens_target:
+    while tokens_seen < tokens_target and not stop["v"]:
         if max_seconds is not None and (time.time() - t0) >= max_seconds:
             break
         if max_steps is not None and steps >= max_steps:
@@ -179,9 +202,15 @@ def run(
             tok = rng.integers(0, cfg.vocab_size, size=(batch, seq), dtype=np.int32)
             params, opt, loss = train_step(params, opt, tok, cfg, tcfg)
             losses.append(float(loss))
+            if loss_start is None:
+                loss_start = float(losses[0])
+            n_loss_points += 1
             tokens_seen += int(batch) * int(seq)
             step_i += 1
             steps += 1
+            momentum = opt.momentum
+            if steps % 50 == 0:
+                persist(params, momentum, step_i, tokens_seen, losses)
             continue
         if use_pmap:
             tok = rng.integers(0, cfg.vocab_size, size=(n_devices, batch, seq), dtype=np.int32)
@@ -196,6 +225,9 @@ def run(
             momentum = opt.momentum
             tokens_seen += int(batch) * int(seq)
         losses.append(float(np.asarray(loss).reshape(-1)[0]))
+        if loss_start is None:
+            loss_start = float(losses[0])
+        n_loss_points += 1
         step_i += 1
         steps += 1
         if steps % 50 == 0:
@@ -206,11 +238,11 @@ def run(
         "tokens_seen": int(tokens_seen),
         "ckpt_job_ids": job_ids,
         "ckpt_resume_across_jobs": bool(resumed),
-        "loss_matches_ladder": _loss_matches_ladder(losses, tokens_seen, n_params),
-        "loss_start": losses[0] if losses else None,
+        "loss_matches_ladder": _loss_matches_ladder(losses, tokens_seen, n_params, loss_start),
+        "loss_start": loss_start if loss_start is not None else (losses[0] if losses else None),
         "loss_end": losses[-1] if losses else None,
         "losses": [float(x) for x in losses[-256:]],
-        "n_loss_points": len(losses),
+        "n_loss_points": n_loss_points if n_loss_points else len(losses),
         "n_params": n_params,
         "active_params": n_params,
         "total_params": n_params,

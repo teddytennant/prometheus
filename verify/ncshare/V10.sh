@@ -17,10 +17,10 @@ export SOAK_STATE="${SOAK_STATE:-$ROOT/runs/v10/soak_state.json}"
 mkdir -p "$(dirname "$SOAK_STATE")"
 if [ -z "${SOAK_SECONDS:-}" ]; then
   left=""
-  if [ -n "${SLURM_JOB_END_TIME:-}" ]; then
-    left=$(( SLURM_JOB_END_TIME - $(date +%s) - 120 ))
-  elif [ -n "${SLURM_TIMELIMIT:-}" ]; then
-    left=$(( SLURM_TIMELIMIT * 60 - 120 ))
+  if [[ "${SLURM_JOB_END_TIME:-}" =~ ^[0-9]+$ ]]; then
+    left=$(( SLURM_JOB_END_TIME - $(date +%s) - 120 )) || left=""
+  elif [[ "${SLURM_TIMELIMIT:-}" =~ ^[0-9]+$ ]]; then
+    left=$(( SLURM_TIMELIMIT * 60 - 120 )) || left=""
   fi
   if [ -n "${left}" ] && [ "$left" -gt 60 ]; then
     SOAK_SECONDS=$left

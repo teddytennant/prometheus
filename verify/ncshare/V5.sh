@@ -17,10 +17,10 @@ export CKPT_DIR="${CKPT_DIR:-$ROOT/runs/v5/ckpt}"
 export TOKENS_TARGET="${TOKENS_TARGET:-20000000000}"
 if [ -z "${MAX_SECONDS:-}" ]; then
   left=""
-  if [ -n "${SLURM_JOB_END_TIME:-}" ]; then
-    left=$(( SLURM_JOB_END_TIME - $(date +%s) - 180 ))
-  elif [ -n "${SLURM_TIMELIMIT:-}" ]; then
-    left=$(( SLURM_TIMELIMIT * 60 - 180 ))
+  if [[ "${SLURM_JOB_END_TIME:-}" =~ ^[0-9]+$ ]]; then
+    left=$(( SLURM_JOB_END_TIME - $(date +%s) - 180 )) || left=""
+  elif [[ "${SLURM_TIMELIMIT:-}" =~ ^[0-9]+$ ]]; then
+    left=$(( SLURM_TIMELIMIT * 60 - 180 )) || left=""
   fi
   if [ -n "${left}" ] && [ "$left" -gt 60 ]; then
     MAX_SECONDS=$left
