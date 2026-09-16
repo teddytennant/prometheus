@@ -81,7 +81,7 @@ def check_v2(r: dict[str, Any]) -> None:
         raise CheckError("parallel loss mismatch")
     if not r.get("routing_identical"):
         raise CheckError("routing not identical")
-    if int(r.get("n_steps") or 0) < 8:
+    if int(r.get("n_steps") or 0) < 200:
         raise CheckError("V2 too few steps")
     if int(r.get("ep") or 0) < 2:
         raise CheckError("V2 EP not sharded")
@@ -94,8 +94,10 @@ def check_v3(r: dict[str, Any]) -> None:
         raise CheckError("FP8 loss not within 0.5% of BF16")
     if "nvfp4_numerics_ok" not in r:
         raise CheckError("NVFP4 numerics missing")
-    if int(r.get("n_steps") or 0) < 8:
+    if int(r.get("n_steps") or 0) < 2000:
         raise CheckError("V3 too few steps")
+    if float(r.get("n_params") or 0) < 1e6:
+        raise CheckError("V3 is not the model")
 
 
 def check_v4(r: dict[str, Any]) -> None:
@@ -106,7 +108,7 @@ def check_v4(r: dict[str, Any]) -> None:
         raise CheckError("SDC missed the flip")
     if not r.get("spike_skipped_shard"):
         raise CheckError("spike rollback did not skip shard")
-    if int(r.get("n_param_leaves") or 0) < 2:
+    if int(r.get("n_param_leaves") or 0) < 8:
         raise CheckError("V4 ckpt is not a param tree")
     if int(r.get("ckpt_bytes") or 0) < 64:
         raise CheckError("V4 ckpt too small")

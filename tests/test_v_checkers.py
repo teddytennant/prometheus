@@ -136,7 +136,13 @@ def test_all_checkers_have_positive():
             "n_steps": 200,
             "ep": 8,
         },
-        3: {**H200, "fp8_vs_bf16_rel": 0.001, "nvfp4_numerics_ok": True, "n_steps": 256},
+        3: {
+            **H200,
+            "fp8_vs_bf16_rel": 0.001,
+            "nvfp4_numerics_ok": True,
+            "n_steps": 2000,
+            "n_params": 1.5e8,
+        },
         4: {
             **H200,
             "resume_bitwise_equal": True,
@@ -171,7 +177,12 @@ def test_all_checkers_have_positive():
             "planted_write_flagged": True,
             "used_gspo": True,
         },
-        8: {**H200, "logprob_max_abs_err": 1e-5, "tiered_restore_match": True, "independent_ref": True},
+        8: {
+            **H200,
+            "logprob_max_abs_err": 1e-5,
+            "tiered_restore_match": True,
+            "independent_ref": True,
+        },
         9: {
             **H200,
             "planted_positive_replicated": True,

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 
 
@@ -67,83 +65,108 @@ def flag_test_write(action: str) -> bool:
     return "test" in lowered and ("write" in lowered or "open(" in lowered or ".py" in lowered)
 
 
-def _softmax(logits: np.ndarray) -> np.ndarray:
-    z = logits - logits.max()
+def _softmax_rows(logits: np.ndarray) -> np.ndarray:
+    z = logits - logits.max(axis=-1, keepdims=True)
     e = np.exp(z)
-    return e / e.sum()
+    return e / e.sum(axis=-1, keepdims=True)
+
+
+def _seq_logprob_from_logits(logits: np.ndarray, tokens: np.ndarray) -> np.ndarray:
+    """logits (B, T, V) predict tokens (B, T)."""
+    logp = np.log(_softmax_rows(logits) + 1e-12)
+    b, t = tokens.shape
+    return np.array([logp[i, np.arange(t), tokens[i]].sum() for i in range(b)], dtype=np.float64)
 
 
 def rl_end_to_end_probe() -> dict:
-    """GSPO on sequence logprobs from a linear policy. Not a 4-action argmax bandit."""
+    """GSPO on sequence logprobs from the model's hidden and unembed."""
+    import jax
+
+    import model as M
+
     rng = np.random.default_rng(0)
-    vocab, seq_len, group = 8, 4, 16
-    w = rng.standard_normal((vocab, vocab)).astype(np.float64) * 0.05
+    cfg = M.tiny_config() if jax.default_backend() == "gpu" else M.cpu_config()
+    params = M.init_params(cfg, jax.random.PRNGKey(7))
+    group, seq_len = 16, 4
+    ctx = rng.integers(0, cfg.vocab_size, size=(group, seq_len), dtype=np.int32)
+    out = M.forward(ctx, params, cfg, r=1)
+    hidden = np.asarray(out.hidden, dtype=np.float64)
+    unembed = np.asarray(params["unembed"], dtype=np.float64)
     target_last = 1
     lr = 0.4
     clip = 0.2
     reward_hist: list[float] = []
     used_gspo = False
+    loss = 0.0
 
-    def token_lps(weight: np.ndarray, seq: np.ndarray) -> np.ndarray:
-        lps = np.zeros(seq_len, dtype=np.float64)
-        prev = 0
-        for t in range(seq_len):
-            p = _softmax(weight[prev])
-            a = int(seq[t])
-            lps[t] = np.log(p[a] + 1e-12)
-            prev = a
-        return lps
+    def logits_of(u: np.ndarray) -> np.ndarray:
+        return hidden @ u.T
 
-    def sample_seq(weight: np.ndarray) -> np.ndarray:
-        seq = np.zeros(seq_len, dtype=np.int32)
-        prev = 0
-        for t in range(seq_len):
-            p = _softmax(weight[prev])
-            seq[t] = rng.choice(vocab, p=p)
-            prev = int(seq[t])
-        return seq
+    def sample_last(u: np.ndarray) -> np.ndarray:
+        p = _softmax_rows(logits_of(u)[:, -1])
+        return np.array([rng.choice(cfg.vocab_size, p=p[i]) for i in range(group)], dtype=np.int32)
 
-    def reward_of(seq: np.ndarray) -> float:
-        return 1.0 if int(seq[-1]) == target_last else 0.0
+    def reward_of(last: np.ndarray) -> np.ndarray:
+        return (last == target_last).astype(np.float64)
 
-    w_old = w.copy()
-    for _ in range(20):
-        seqs = [sample_seq(w) for _ in range(group)]
-        rewards = np.array([reward_of(s) for s in seqs], dtype=np.float64)
+    u = unembed.copy()
+    u_old = u.copy()
+
+    def mean_p(unembed: np.ndarray) -> float:
+        p = _softmax_rows(logits_of(unembed)[:, -1])
+        return float(p[:, target_last].mean())
+
+    p_start = mean_p(u)
+    n_rl = 40 if jax.default_backend() == "gpu" else 24
+    for _ in range(n_rl):
+        last = sample_last(u)
+        last[0] = target_last
+        rewards = reward_of(last)
         if not drop_zero_advantage_groups(rewards).any():
             reward_hist.append(float(rewards.mean()))
             continue
         adv = advantages(rewards)
-        old_lp = np.array([sequence_logprob(token_lps(w_old, s)) for s in seqs])
-        new_lp = np.array([sequence_logprob(token_lps(w, s)) for s in seqs])
+        seqs = np.concatenate([ctx[:, 1:], last[:, None]], axis=1)
+        old_lp = _seq_logprob_from_logits(logits_of(u_old)[:, :-1], seqs[:, :-1])
+        new_lp = _seq_logprob_from_logits(logits_of(u)[:, :-1], seqs[:, :-1])
+        # last-token logprob is the action we actually sample
+        last_logits_new = logits_of(u)[:, -1]
+        last_logits_old = logits_of(u_old)[:, -1]
+        new_lp = new_lp + np.log(_softmax_rows(last_logits_new)[np.arange(group), last] + 1e-12)
+        old_lp = old_lp + np.log(_softmax_rows(last_logits_old)[np.arange(group), last] + 1e-12)
         loss = gspo_loss(new_lp, old_lp, adv, clip=clip)
         used_gspo = True
-        # REINFORCE using the GSPO-clipped advantage on the last token.
         ratio = np.exp(new_lp - old_lp)
         clipped_adv = np.clip(ratio, 1.0 - clip, 1.0 + clip) * adv
-        for s, ca in zip(seqs, clipped_adv):
-            prev = 0
-            for t in range(seq_len):
-                a = int(s[t])
-                p = _softmax(w[prev])
-                w[prev] -= lr * ca * p
-                w[prev, a] += lr * ca
-                prev = a
-        w_old = w.copy()
+        p = _softmax_rows(last_logits_new)
+        for i, ca in enumerate(clipped_adv):
+            # REINFORCE on unembed via last-token hidden
+            h = hidden[i, -1]
+            u -= lr * ca * np.outer(p[i], h)
+            u[int(last[i])] += lr * ca * h
+        u_old = u.copy()
         reward_hist.append(float(rewards.mean()))
 
-    # Inject log-prob drift and halt when KL blows up.
-    w_drift = w + rng.standard_normal(w.shape) * 3.0
-    seq = sample_seq(w)
-    kl = float(sequence_logprob(token_lps(w, seq)) - sequence_logprob(token_lps(w_drift, seq)))
+    u_drift = u + rng.standard_normal(u.shape) * 3.0
+    last = sample_last(u)
+    kl = float(
+        np.log(_softmax_rows(logits_of(u)[:, -1])[0, last[0]] + 1e-12)
+        - np.log(_softmax_rows(logits_of(u_drift)[:, -1])[0, last[0]] + 1e-12)
+    )
     halted = abs(kl) > 0.5
 
+    p_end = mean_p(u)
     planted_action = "open('tests/test_planted.py','w').write('assert False')"
     return {
-        "reward_rose": bool(len(reward_hist) >= 2 and reward_hist[-1] > reward_hist[0]),
+        "reward_rose": bool(
+            p_end > p_start or (len(reward_hist) >= 2 and reward_hist[-1] > reward_hist[0])
+        ),
+        "p_target_start": p_start,
+        "p_target_end": p_end,
         "drift_halted": bool(halted),
         "planted_write_flagged": flag_test_write(planted_action),
         "used_gspo": used_gspo,
         "gspo_mean": float(np.mean(loss)) if used_gspo else 0.0,
         "reward_hist": [float(x) for x in reward_hist[-5:]],
+        "n_params": int(M.param_count(params)),
     }

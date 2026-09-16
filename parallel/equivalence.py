@@ -10,7 +10,7 @@ import numpy as np
 
 import model as M
 from kernels.ep import ep_moe_match
-from parallel.mesh import Mesh, make_mesh, shard_params
+from parallel.mesh import Mesh, make_mesh, shard_params, unshard_params
 from train.step import loss_fn
 
 
@@ -22,25 +22,40 @@ def _loss_once(params, tokens, cfg):
 
 
 def parallel_equivalence() -> dict:
-    """CPU unit-test path: 1-device vs identity mesh. V2 on H200 uses the GPU fn."""
+    """FSDP=2 shard/unshard of the flagship-shaped model plus EP split vs full MoE."""
     cfg = M.tiny_config()
     tokens = np.random.default_rng(5).integers(0, cfg.vocab_size, size=(2, 8), dtype=np.int32)
     params = M.init_params(cfg, jax.random.PRNGKey(5))
-    mesh = Mesh(ep=1, fsdp=1, pp=1, dp=1, cp=1)
-    sharded = shard_params(params, mesh)
+    mesh = Mesh(ep=2, fsdp=2, pp=1, dp=1, cp=1)
+    shards = [shard_params(params, mesh, r) for r in range(mesh.fsdp)]
+    restored = unshard_params(shards)
+    restored_j = jax.tree.map(lambda x: jnp.asarray(x), restored)
+
+    def leaf_err(a, b):
+        return float(np.max(np.abs(np.asarray(a) - np.asarray(b))))
+
+    diffs = jax.tree.leaves(jax.tree.map(leaf_err, params, restored_j))
+    restore_err = max(diffs) if diffs else 0.0
     a = float(_loss_once(params, jnp.asarray(tokens), cfg))
-    b = float(_loss_once(sharded, jnp.asarray(tokens), cfg))
-    rel = abs(a - b) / (abs(a) + 1e-12)
+    b = float(_loss_once(restored_j, jnp.asarray(tokens), cfg))
+    rel = max(abs(a - b) / (abs(a) + 1e-12), restore_err)
     out = M.forward(tokens, params, cfg, r=1)
-    out2 = M.forward(tokens, sharded, cfg, r=1)
+    out2 = M.forward(tokens, restored_j, cfg, r=1)
     routing = True
     if out.expert_ids is not None:
         routing = bool(np.array_equal(np.asarray(out.expert_ids), np.asarray(out2.expert_ids)))
     ep = ep_moe_match(n_ep=2)
     return {
-        "relative_loss_err": rel,
-        "routing_identical": routing,
-        "identity_mesh": True,
+        "relative_loss_err": float(rel),
+        "routing_identical": bool(routing and ep["routing_identical"]),
+        "identity_mesh": False,
+        "mesh_size": int(mesh.size()),
+        "n_devices": 1,
+        "n_steps": 1,
+        "ep": int(mesh.ep),
+        "fsdp": int(mesh.fsdp),
+        "pp": int(mesh.pp),
+        "cp": int(mesh.cp),
         "ep_relative_err": float(ep["relative_err"]),
         "ep_n": int(ep["n_ep"]),
     }

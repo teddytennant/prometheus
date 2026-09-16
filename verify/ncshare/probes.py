@@ -27,17 +27,14 @@ def fault_probe() -> dict:
     import tempfile
 
     import jax
-    import jax.numpy as jnp
 
+    import model as M
     from control.sdc import detect_flip, flatten_leaves, skip_shard
     from train.ckpt import load_checkpoint, save_checkpoint
     from train.muon import init_opt_state
 
-    params = {
-        "embed": jnp.asarray(np.random.default_rng(7).standard_normal((32, 16)).astype(np.float32)),
-        "w": jnp.asarray(np.arange(24, dtype=np.float32).reshape(4, 6)),
-        "norm": jnp.ones((16,), dtype=np.float32),
-    }
+    cfg = M.tiny_config() if jax.default_backend() == "gpu" else M.cpu_config()
+    params = M.init_params(cfg, jax.random.PRNGKey(7))
     opt = init_opt_state(params)
     tmp = Path(tempfile.mkdtemp(prefix="v4-ckpt-"))
     save_checkpoint(tmp, params, opt, {"step": 0, "killed_rank": 1})
@@ -98,7 +95,9 @@ def lab_dry_run() -> dict:
     n = led.count()
     led.close()
     return {
-        "planted_positive_replicated": bool(pos and pos["replicated"] and pos["recorded"] == "positive"),
+        "planted_positive_replicated": bool(
+            pos and pos["replicated"] and pos["recorded"] == "positive"
+        ),
         "planted_negative_recorded": bool(neg and neg["recorded"] == "negative"),
         "ledger_rows": n,
         "ledger_path": str(path),
@@ -116,7 +115,6 @@ def v5_rung0() -> dict:
 def soak_probe(seconds: float | None = None) -> dict:
     """GPU soak: real device work. Hours accumulate across jobs via SOAK_STATE."""
     import jax
-    import jax.numpy as jnp
 
     if jax.default_backend() != "gpu":
         raise RuntimeError("V10 soak requires a GPU")
@@ -138,26 +136,26 @@ def soak_probe(seconds: float | None = None) -> dict:
     (queue.out / "killed.tmp").write_text("{")
     faults += queue.recover_incomplete()
 
-    key = jax.random.PRNGKey(0)
-    w = jax.random.normal(key, (1024, 1024), dtype=jnp.float32)
-    w.block_until_ready()
+    import model as M
+    from train.muon import init_opt_state
+    from train.schedule import TrainConfig
+    from train.step import train_step
 
-    def step(mat, k):
-        k, k1 = jax.random.split(k)
-        x = jax.random.normal(k1, (1024, 1024), dtype=jnp.float32)
-        y = jax.nn.tanh(mat @ x)
-        return mat, k, jnp.sum(y)
-
-    step = jax.jit(step)
+    cfg = M.tiny_config()
+    params = M.init_params(cfg, jax.random.PRNGKey(0))
+    opt = init_opt_state(params)
+    tcfg = TrainConfig(
+        warmup=0, stable=8, decay=0, peak_lr=0.02,
+        ns_steps=3, qk_clip=100.0, weight_decay=0.0,
+    )
+    tokens = np.random.default_rng(0).integers(0, cfg.vocab_size, size=(2, 8), dtype=np.int32)
     t0 = time.time()
     i = 0
-    mat = w
-    k = key
     dead = 0
     while time.time() - t0 < seconds:
-        mat, k, s = step(mat, k)
-        mat.block_until_ready()
-        val = float(s)
+        params, opt, loss = train_step(params, opt, tokens, cfg, tcfg)
+        jax.block_until_ready(loss)
+        val = float(loss)
         tid = f"task-{tasks0 + i}"
 
         def work(v=val, n=i):
@@ -187,7 +185,8 @@ def soak_probe(seconds: float | None = None) -> dict:
     hours = hours0 + (time.time() - t0) / 3600.0
     out = {
         "lost_tasks": lost0,
-        "duplicated_outputs": dup0 + queue.dup_prevented - i,  # retries of the same id are prevented, not dups
+        # retries of the same id are prevented, not duplicates
+        "duplicated_outputs": dup0 + queue.dup_prevented - i,
         "dead_tokens": dead0 + dead,
         "hours": hours,
         "tiny_standin": False,

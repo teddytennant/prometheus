@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import jax
 import jax.numpy as jnp
-from jax import Array, value_and_grad
+from jax import Array
 
 from model import forward as model_forward
 from train.muon import OptState, _named_update
@@ -24,10 +22,10 @@ def z_loss(logits: Array) -> Array:
     return jnp.square(log_z).mean()
 
 
-def loss_fn(params, tokens, config, train_cfg: TrainConfig | None = None):
+def loss_fn(params, tokens, config, train_cfg: TrainConfig | None = None, r: int = 1):
     if train_cfg is None:
         train_cfg = TrainConfig()
-    out = model_forward(tokens[:, :-1], params, config, r=1)
+    out = model_forward(tokens[:, :-1], params, config, r=r)
     ce = cross_entropy(out.logits, tokens[:, 1:])
     extra = 0.0
     if out.mtp_logits:
@@ -39,9 +37,13 @@ def loss_fn(params, tokens, config, train_cfg: TrainConfig | None = None):
     return ce + train_cfg.mtp_weight * extra + train_cfg.z_loss_weight * zl
 
 
-def train_step(params, opt: OptState, tokens, model_cfg, train_cfg: TrainConfig):
+def train_step(params, opt: OptState, tokens, model_cfg, train_cfg: TrainConfig, r: int = 1):
     tokens = jnp.asarray(tokens)
-    loss, grads = jax.value_and_grad(loss_fn)(params, tokens, model_cfg, train_cfg)
+
+    def _loss(p, tok, cfg, tcfg):
+        return loss_fn(p, tok, cfg, tcfg, r)
+
+    loss, grads = jax.value_and_grad(_loss)(params, tokens, model_cfg, train_cfg)
     lr = wsd_lr(opt.step, train_cfg)
     new_p, new_m = _named_update(params, grads, opt.momentum, lr, train_cfg)
     return new_p, OptState(step=opt.step + 1, momentum=new_m), loss

@@ -44,42 +44,54 @@ def fp8_cast(x: Array) -> Array:
     return fake_quant_fp8(x)
 
 
-def _softmax_ce(logits: Array, y: Array) -> Array:
-    logits = logits - jnp.max(logits, axis=-1, keepdims=True)
-    log_z = jnp.log(jnp.sum(jnp.exp(logits), axis=-1))
-    gathered = jnp.take_along_axis(logits, y[:, None], axis=-1)[:, 0]
-    return jnp.mean(-(gathered - log_z))
+def _quant_tree(params):
+    def q(x):
+        a = jnp.asarray(x)
+        if a.ndim >= 2:
+            return fake_quant_fp8(a)
+        return a
+
+    return jax.tree.map(q, params)
 
 
 def two_precision_train(steps: int | None = None) -> dict[str, Any]:
-    """SGD on a linear classifier. Each step compares BF16 weights vs FP8-quantized."""
+    """Train the flagship-shaped model; each report compares BF16 vs FP8-quantized weights."""
+    import model as M
+    from train.muon import init_opt_state
+    from train.schedule import TrainConfig
+    from train.step import loss_fn, train_step
+
+    gpu = jax.default_backend() == "gpu"
     if steps is None:
-        gpu = jax.default_backend() == "gpu"
-        steps = int(os.environ.get("V3_STEPS", "256" if gpu else "32"))
+        steps = int(os.environ.get("V3_STEPS", "2000" if gpu else "4"))
+    if gpu:
+        from train.rung0 import rung0_gpu_config
+
+        cfg = rung0_gpu_config()
+    else:
+        cfg = M.cpu_config()
     rng = np.random.default_rng(4)
-    n, d, c = 64, 32, 8
-    x = jnp.asarray(rng.standard_normal((n, d)).astype(np.float32))
-    y = jnp.asarray(rng.integers(0, c, size=(n,), dtype=np.int32))
-    w = jnp.asarray(rng.standard_normal((c, d)).astype(np.float32) * 0.05)
-    lr = 0.05
-    last_rel = 1.0
+    tokens = jnp.asarray(rng.integers(0, cfg.vocab_size, size=(2, 8), dtype=np.int32))
+    params = M.init_params(cfg, jax.random.PRNGKey(4))
+    opt = init_opt_state(params)
+    tcfg = TrainConfig(
+        warmup=0, stable=max(int(steps), 8), decay=0, peak_lr=0.02,
+        ns_steps=3, qk_clip=100.0, weight_decay=0.0,
+    )
     last_bf = 0.0
     last_fp = 0.0
-
-    def loss_w(weight):
-        return _softmax_ce(x @ weight.T, y)
-
+    last_rel = 1.0
     for _ in range(int(steps)):
-        loss_bf, g = jax.value_and_grad(loss_w)(w)
-        loss_fp = loss_w(fake_quant_fp8(w))
-        last_bf, last_fp = float(loss_bf), float(loss_fp)
-        last_rel = abs(last_fp - last_bf) / (abs(last_bf) + 1e-8)
-        w = w - lr * g
-    nv = np.asarray(fake_quant_nvfp4(w))
+        params, opt, loss_bf = train_step(params, opt, tokens, cfg, tcfg)
+        last_bf = float(loss_bf)
+    last_fp = float(loss_fn(_quant_tree(params), tokens, cfg))
+    last_rel = abs(last_fp - last_bf) / (abs(last_bf) + 1e-8)
+    nv = np.asarray(fake_quant_nvfp4(params["unembed"]))
     return {
         "fp8_vs_bf16_rel": float(last_rel),
         "nvfp4_numerics_ok": bool(np.all(np.isfinite(nv))),
         "n_steps": int(steps),
+        "n_params": int(M.param_count(params)),
         "loss_bf16": last_bf,
         "loss_fp8": last_fp,
     }

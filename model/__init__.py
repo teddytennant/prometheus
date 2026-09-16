@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from model.config import (
+    DTYPE,
     LINEAR_TO_MLA,
     ROPE_BASE,
-    DTYPE,
     AttentionKind,
     AttentionKindError,
     ConfigError,
     FfnKind,
     ModelConfig,
     attention_kind,
+    cpu_config,
     ffn_kind,
     flagship_config,
     tiny_config,
@@ -40,6 +41,7 @@ __all__ = [
     "ForwardOutput",
     "attention_kind",
     "ffn_kind",
+    "cpu_config",
     "flagship_config",
     "tiny_config",
     "validate_config",

@@ -41,3 +41,5 @@ def test_qk_clip_caps_norm():
 def test_overfit_one_batch():
     result = overfit_one_batch(steps=25)
     assert result["ok"], result
+    assert result["toy_embed"] is False
+    assert result["n_params"] > 0

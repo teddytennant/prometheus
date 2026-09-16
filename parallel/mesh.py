@@ -76,7 +76,10 @@ def unshard_params(shards: list[dict]) -> dict:
             return {k: walk([o[k] for o in objs]) for k in objs[0]}
         if isinstance(objs[0], (list, tuple)):
             return type(objs[0])(walk([o[i] for o in objs]) for i in range(len(objs[0])))
-        return np.concatenate([np.asarray(o) for o in objs], axis=0)
+        arrs = [np.asarray(o) for o in objs]
+        if arrs[0].ndim == 0:
+            return arrs[0]
+        return np.concatenate(arrs, axis=0)
 
     return walk(shards)
 

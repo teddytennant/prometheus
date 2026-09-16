@@ -16,7 +16,11 @@ import jax.numpy as jnp
 import numpy as np
 
 import model as M
-from model.config import ModelConfig
+from model.config import (
+    FLAGSHIP_RECURRENCE_MAX,
+    FLAGSHIP_RECURRENCE_TRAIN_MEAN,
+    ModelConfig,
+)
 from train.ckpt import load_checkpoint, save_checkpoint
 from train.muon import OptState, _named_update, init_opt_state
 from train.rungs import chinchilla_loss
@@ -46,12 +50,14 @@ def rung0_gpu_config() -> ModelConfig:
         prelude_layers=4,
         coda_layers=4,
         adapter_hidden=128,
+        recurrence_train_mean=FLAGSHIP_RECURRENCE_TRAIN_MEAN,
+        recurrence_max=FLAGSHIP_RECURRENCE_MAX,
     )
 
 
 def _config() -> ModelConfig:
     if os.environ.get("RUNG0_TINY"):
-        return M.tiny_config()
+        return M.cpu_config()
     return rung0_gpu_config()
 
 
@@ -86,7 +92,8 @@ def run(
     tiny = bool(os.environ.get("RUNG0_TINY"))
     devices = jax.devices("gpu") if jax.default_backend() == "gpu" else jax.devices()
     n_devices = max(len(devices), 1)
-    batch = int(batch if batch is not None else os.environ.get("RUNG0_BATCH", "2" if tiny else "32"))
+    default_batch = "2" if tiny else "32"
+    batch = int(batch if batch is not None else os.environ.get("RUNG0_BATCH", default_batch))
     default_seq = 8 if tiny else min(int(cfg.max_context), 256)
     seq = int(seq if seq is not None else os.environ.get("RUNG0_SEQ", default_seq))
     seq = min(seq, int(cfg.max_context))
@@ -169,18 +176,13 @@ def run(
         if max_steps is not None and steps >= max_steps:
             break
         if tiny:
-            # Full tiny_config train_step is minutes on CPU. Persist real
-            # params and count tokens; GPU jobs take the train_step path.
-            from train.loop import overfit_one_batch
-
-            fit = overfit_one_batch(steps=4)
-            losses.append(float(fit["loss_start"]))
-            losses.append(float(fit["loss_end"]))
-            n = max_steps if max_steps is not None else 2
-            tokens_seen += int(batch) * int(seq) * int(n)
-            step_i += int(n)
-            steps += int(n)
-            break
+            tok = rng.integers(0, cfg.vocab_size, size=(batch, seq), dtype=np.int32)
+            params, opt, loss = train_step(params, opt, tok, cfg, tcfg)
+            losses.append(float(loss))
+            tokens_seen += int(batch) * int(seq)
+            step_i += 1
+            steps += 1
+            continue
         if use_pmap:
             tok = rng.integers(0, cfg.vocab_size, size=(n_devices, batch, seq), dtype=np.int32)
             tok = jax.device_put_sharded(list(tok), devices)

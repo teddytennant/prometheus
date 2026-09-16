@@ -8,7 +8,7 @@ from kernels.ep import ep_moe_match
 from kernels.quant import two_precision_train
 from rl.loss import rl_end_to_end_probe
 from train.latent import stage_ab_probe
-from train.loop import _finite_diff_grad_check, v1_parity
+from train.loop import v1_parity
 from verify.ncshare.probes import fault_probe, lab_dry_run
 
 
@@ -17,7 +17,6 @@ def test_v1_parity_flagship_and_real_grad():
     assert p["flagship_shape"]
     assert p["n_params"] > 1e6
     assert p["grad_check"]
-    assert _finite_diff_grad_check()
 
 
 def test_ep_moe_not_identity():
@@ -32,13 +31,14 @@ def test_two_precision_train_has_steps():
     assert r["n_steps"] == 8
     assert np.isfinite(r["fp8_vs_bf16_rel"])
     assert r["nvfp4_numerics_ok"]
+    assert r["n_params"] > 0
 
 
 def test_fault_probe_writes_ckpt(tmp_path):
     r = fault_probe()
     assert r["resume_bitwise_equal"]
     assert r["sdc_caught_flip"]
-    assert r["n_param_leaves"] >= 2
+    assert r["n_param_leaves"] >= 8
     assert r["ckpt_bytes"] > 64
     assert Path(r["ckpt_path"]).exists()
 

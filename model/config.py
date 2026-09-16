@@ -132,6 +132,32 @@ def tiny_config() -> ModelConfig:
     )
 
 
+def cpu_config() -> ModelConfig:
+    """Flagship-shaped, small enough for CPU loops. Same discrete choices as tiny_config."""
+    return ModelConfig(
+        d_model=32,
+        n_layers=4,
+        n_dense=1,
+        n_moe=3,
+        n_linear_attn=3,
+        n_mla=1,
+        n_routed_experts=2,
+        n_shared_experts=1,
+        top_k=1,
+        expert_hidden=32,
+        mtp_heads=1,
+        core_block_layers=2,
+        recurrence_train_mean=FLAGSHIP_RECURRENCE_TRAIN_MEAN,
+        recurrence_max=FLAGSHIP_RECURRENCE_MAX,
+        vocab_size=32,
+        max_context=32,
+        max_racks=FLAGSHIP_MAX_RACKS,
+        prelude_layers=1,
+        coda_layers=1,
+        adapter_hidden=16,
+    )
+
+
 def _attn_geometry(d_model: int) -> tuple[int, int, int, int]:
     """(n_heads, d_head, d_nope, d_rope) derived from d_model."""
     d_head = 1
