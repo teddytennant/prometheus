@@ -1,1 +1,1 @@
-"""Independent NumPy reference for the A1 FP32 model (slow and obvious)."""
+"""Independent slow references used by tests (A1 model, F3 decontam)."""
