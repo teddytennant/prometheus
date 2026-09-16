@@ -1,0 +1,8 @@
+# Phrases that must appear in order in extracted LaTeX text.
+# Math must remain as source, not Unicode approximations.
+The energy equation is $E=mc^2$.
+\int_0^1 x^2
+\begin{equation}
+\alpha + \beta
+\end{equation}
+Plain text remains.

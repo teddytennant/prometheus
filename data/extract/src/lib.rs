@@ -4,7 +4,11 @@
 //! plus provenance. LaTeX math is preserved as source (`$...$`, `$$...$$`,
 //! and environments), not converted to Unicode approximations.
 //!
-//! Gate: golden outputs on a fixed corpus. Nothing here extracts yet.
+//! Gate: golden outputs on a fixed corpus.
+
+mod html;
+mod latex;
+mod pdf;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,8 +100,20 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// Extract UTF-8 text. Empty input is `Error::Empty`. Corrupt or undecodable
 /// input is `Error::Unparseable`. LaTeX math must remain as source.
 pub fn extract(bytes: &[u8], format: Format) -> Result<ExtractedDocument, Error> {
-    let _ = (bytes, format);
-    unimplemented!("B1 extract")
+    if bytes.is_empty() {
+        return Err(Error::Empty);
+    }
+    let text = match format {
+        Format::Html => html::extract_html(bytes)?,
+        Format::Pdf => pdf::extract_pdf(bytes)?,
+        Format::Latex => latex::extract_latex(bytes)?,
+    };
+    Ok(ExtractedDocument::from_text(
+        text,
+        format,
+        None,
+        bytes.len() as u64,
+    ))
 }
 
 /// Guess format from path or media type, then extract.
@@ -106,13 +122,17 @@ pub fn extract_from(
     path: Option<&str>,
     media_type: Option<&str>,
 ) -> Result<ExtractedDocument, Error> {
-    let _ = (bytes, path, media_type);
-    unimplemented!("B1 extract_from")
+    let format = path
+        .and_then(Format::from_path)
+        .or_else(|| media_type.and_then(Format::from_media_type))
+        .ok_or(Error::Unsupported)?;
+    let mut doc = extract(bytes, format)?;
+    doc.source = path.map(str::to_owned);
+    Ok(doc)
 }
 
 /// True if `text` still contains at least one LaTeX math span (`$`, `$$`, or
 /// `\begin{...}` for a math environment). Used by goldens that feed LaTeX.
 pub fn preserves_latex_math(text: &str) -> bool {
-    let _ = text;
-    unimplemented!("B1 preserves_latex_math")
+    latex::preserves_latex_math(text)
 }

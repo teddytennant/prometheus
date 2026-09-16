@@ -1,0 +1,5 @@
+# Phrases that must appear in order in extracted HTML text.
+# Comparison is substring-in-order so whitespace policy can vary.
+Title One
+Hello world & friends.
+Math stays as $x^2$.
