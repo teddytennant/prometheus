@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/loader_state",
+  "title": "Data-loader cursor stored inside a checkpoint (spec 5, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "epoch",
+    "step",
+    "shuffle_seed",
+    "shard_index",
+    "shard_offset",
+    "consumed_token_count",
+    "data_mix_hash"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.loader_state"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "epoch": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "step": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "shuffle_seed": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "shard_index": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "shard_offset": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "consumed_token_count": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "data_mix_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "packing_remainder_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    }
+  }
+}

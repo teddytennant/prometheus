@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/reward_request",
+  "title": "Reward API request: task id and trajectory in (spec 9.4, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "request_id",
+    "task_id",
+    "rollout_id",
+    "verifier_id",
+    "env_snapshot_id"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.reward_request"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rollout_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trajectory_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "verifier_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "env_snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

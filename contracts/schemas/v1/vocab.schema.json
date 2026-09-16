@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/vocab",
+  "title": "Vocab artifact pointer. Tokens live in a content-addressed file, not inline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "tokenizer_id",
+    "vocab_size",
+    "special_token_ids",
+    "artifact"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.vocab"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "tokenizer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "vocab_size": {
+      "$ref": "_defs.schema.json#/$defs/pos_int"
+    },
+    "special_token_ids": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "minProperties": 1
+    },
+    "artifact": {
+      "$ref": "_defs.schema.json#/$defs/artifact"
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "jsonl",
+        "sentencepiece",
+        "tiktoken"
+      ]
+    }
+  }
+}

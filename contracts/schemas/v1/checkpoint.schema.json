@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/checkpoint",
+  "title": "Sharded weights, optimizer, loader state, RNG (spec 5, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "checkpoint_id",
+    "step",
+    "rung",
+    "model_config_hash",
+    "data_mix_hash",
+    "tokenizer_id",
+    "mesh",
+    "weights",
+    "optimizer",
+    "loader_state",
+    "rng",
+    "created_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.checkpoint"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "checkpoint_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parent_checkpoint_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "step": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "rung": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "model_config_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "data_mix_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "tokenizer_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "precision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "param_dtype": {
+          "$ref": "_defs.schema.json#/$defs/dtype"
+        },
+        "remat": {
+          "type": "string"
+        }
+      }
+    },
+    "mesh": {
+      "$ref": "_defs.schema.json#/$defs/mesh"
+    },
+    "weights": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "shard_rank",
+          "shape",
+          "dtype",
+          "content_hash"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "shard_rank": {
+            "$ref": "_defs.schema.json#/$defs/nonneg_int"
+          },
+          "shape": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "dtype": {
+            "$ref": "_defs.schema.json#/$defs/dtype"
+          },
+          "content_hash": {
+            "$ref": "_defs.schema.json#/$defs/sha256"
+          },
+          "mesh_axes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "optimizer": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "shard_rank",
+          "kind",
+          "content_hash"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "shard_rank": {
+            "$ref": "_defs.schema.json#/$defs/nonneg_int"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "adamw",
+              "muon",
+              "soap"
+            ]
+          },
+          "content_hash": {
+            "$ref": "_defs.schema.json#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "loader_state": {
+      "type": "object",
+      "description": "Inline loader_state payload (same fields, nested).",
+      "additionalProperties": true
+    },
+    "rng": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope",
+          "rank",
+          "state_hash"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "rank": {
+            "$ref": "_defs.schema.json#/$defs/nonneg_int"
+          },
+          "state_hash": {
+            "$ref": "_defs.schema.json#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "created_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    },
+    "git_commit": {
+      "type": "string"
+    }
+  }
+}

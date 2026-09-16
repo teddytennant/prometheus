@@ -1,0 +1,12 @@
+{
+  "schema_id": "prometheus.env_tool_request",
+  "schema_version": 1,
+  "call_id": "call-0001",
+  "env_snapshot_id": "snap-0001",
+  "tool": "python",
+  "payload": {
+    "code": "print(1+1)"
+  },
+  "timeout_s": 5,
+  "parent_call_id": null
+}

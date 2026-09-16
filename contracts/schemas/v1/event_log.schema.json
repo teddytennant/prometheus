@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/event_log",
+  "title": "Hash-chained event log record (spec 15.2, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "seq",
+    "prev_hash",
+    "hash",
+    "timestamp",
+    "event_type",
+    "payload",
+    "payload_hash"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.event_log"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "seq": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "prev_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "timestamp": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    },
+    "event_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "attempt": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "node_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "payload_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    }
+  }
+}

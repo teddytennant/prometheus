@@ -1,0 +1,16 @@
+{
+  "schema_id": "prometheus.reward_response",
+  "schema_version": 1,
+  "request_id": "rew-0001",
+  "task_id": "task-math-0001",
+  "score": 1.0,
+  "passed": true,
+  "evidence": {
+    "kind": "exact_match",
+    "hash": "f00e1479012f98b511ae8a742d2d5bf05052c4b1c6bbf70e821ef5a834602b1c",
+    "summary": "final answer matched"
+  },
+  "flags": [],
+  "scorer_id": "sympy-exact",
+  "scored_at": "2026-09-16T12:00:00Z"
+}

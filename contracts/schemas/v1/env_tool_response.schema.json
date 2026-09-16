@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/env_tool_response",
+  "title": "Env tool result (spec 9.5, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "call_id",
+    "ok",
+    "duration_ms"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.env_tool_response"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "call_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "stdout_artifact": {
+      "$ref": "_defs.schema.json#/$defs/artifact"
+    },
+    "stderr_artifact": {
+      "$ref": "_defs.schema.json#/$defs/artifact"
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "duration_ms": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "snapshot_id_after": {
+      "type": "string"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

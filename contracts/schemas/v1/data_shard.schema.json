@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prometheus.ai/contracts/v1/data_shard",
+  "title": "Parquet shard metadata: packing, provenance, decontamination (spec 7, 15.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "shard_id",
+    "parquet_schema_version",
+    "source",
+    "mix_bucket",
+    "document_count",
+    "token_count",
+    "packing_id",
+    "columns",
+    "content_hash",
+    "created_at"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "prometheus.data_shard"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "shard_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "parquet_schema_version": {
+      "$ref": "_defs.schema.json#/$defs/pos_int"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mix_bucket": {
+      "type": "string",
+      "minLength": 1
+    },
+    "document_count": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "token_count": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    },
+    "packing_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "$ref": "_defs.schema.json#/$defs/provenance"
+    },
+    "decontamination": {
+      "$ref": "_defs.schema.json#/$defs/decontamination"
+    },
+    "content_hash": {
+      "$ref": "_defs.schema.json#/$defs/sha256"
+    },
+    "created_at": {
+      "$ref": "_defs.schema.json#/$defs/datetime"
+    },
+    "bytes": {
+      "$ref": "_defs.schema.json#/$defs/nonneg_int"
+    }
+  }
+}

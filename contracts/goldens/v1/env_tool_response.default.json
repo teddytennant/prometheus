@@ -1,0 +1,19 @@
+{
+  "schema_id": "prometheus.env_tool_response",
+  "schema_version": 1,
+  "call_id": "call-0001",
+  "ok": true,
+  "exit_code": 0,
+  "stdout_artifact": {
+    "content_hash": "0373016d39e9b2f40f28871920d9097718ab5f94639090449dd276ea40db11c5",
+    "bytes": 2
+  },
+  "stderr_artifact": {
+    "content_hash": "fa57c7e3ed2f978d48271f9cc9f7b28d28b13a031c64d206cf197c8ce5d738aa",
+    "bytes": 0
+  },
+  "truncated": false,
+  "duration_ms": 12,
+  "snapshot_id_after": "snap-0001",
+  "error": null
+}

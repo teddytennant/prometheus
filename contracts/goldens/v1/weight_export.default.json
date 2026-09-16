@@ -1,0 +1,25 @@
+{
+  "schema_id": "prometheus.weight_export",
+  "schema_version": 1,
+  "export_id": "r0-step-1024-fp8",
+  "source_checkpoint_id": "r0-step-1024",
+  "target": "sglang",
+  "dtype": "fp8",
+  "tokenizer_id": "byte-bpe-128k-r0",
+  "model_config_hash": "a6a42cf11d3d05fbcf2a9d9bc76baa2a931a4a635d91ae62f27351918cd9d3ac",
+  "shards": [
+    {
+      "name": "embed",
+      "dtype": "fp8",
+      "content_hash": "6c17d989e512b2a7f80cf6f8403f1b43f0a35306c5b62fad3f295d152567aefb",
+      "scale_hash": "687894e8cafe7402420deeaf000b57b8400dc4f3733cbadecb39f18bce69b863",
+      "path": "export/embed.safetensors"
+    }
+  ],
+  "routing_table_hash": "2c6368500b9c9c523230aa9c7b64ecb56d8d94eac2e98884a75df4e50171440d",
+  "numeric_parity": {
+    "max_abs_err": 0.01,
+    "suite_id": "v9-parity"
+  },
+  "created_at": "2026-09-16T12:00:00Z"
+}

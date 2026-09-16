@@ -1,0 +1,63 @@
+{
+  "schema_id": "prometheus.checkpoint",
+  "schema_version": 1,
+  "checkpoint_id": "r0-step-1024",
+  "parent_checkpoint_id": null,
+  "step": 1024,
+  "rung": 0,
+  "model_config_hash": "a6a42cf11d3d05fbcf2a9d9bc76baa2a931a4a635d91ae62f27351918cd9d3ac",
+  "data_mix_hash": "1f0368a7fbed2400c8f3b14febfddf1631b879b336c784b08ad2619dbdb5ab59",
+  "tokenizer_id": "byte-bpe-128k-r0",
+  "precision": {
+    "param_dtype": "fp32",
+    "remat": "full"
+  },
+  "mesh": {
+    "dp": 1,
+    "fsdp": 1,
+    "ep": 1,
+    "pp": 1,
+    "cp": 1
+  },
+  "weights": [
+    {
+      "name": "embed",
+      "shard_rank": 0,
+      "shape": [
+        128000,
+        512
+      ],
+      "dtype": "fp32",
+      "content_hash": "a9c2c9ba3028efc9a27ed86dd10fcdcdcc4d317e654e950a94d4a4a491c76cbf",
+      "mesh_axes": [
+        "fsdp"
+      ]
+    }
+  ],
+  "optimizer": [
+    {
+      "name": "embed.m",
+      "shard_rank": 0,
+      "kind": "adamw",
+      "content_hash": "17d622c517b32c5827579359a76939abc62e115261dbc107b57941149d05e13f"
+    }
+  ],
+  "loader_state": {
+    "epoch": 0,
+    "step": 1024,
+    "shuffle_seed": 7,
+    "shard_index": 3,
+    "shard_offset": 4096,
+    "consumed_token_count": 8388608,
+    "data_mix_hash": "1f0368a7fbed2400c8f3b14febfddf1631b879b336c784b08ad2619dbdb5ab59"
+  },
+  "rng": [
+    {
+      "scope": "dropout",
+      "rank": 0,
+      "state_hash": "b4ce30dbac92e34ead9e3986d13dec9b59e8664c3961f41db7226adef8e48390"
+    }
+  ],
+  "created_at": "2026-09-16T12:00:00Z",
+  "git_commit": "a7520c065834fd7c75a807a43f80061334239f4a"
+}
