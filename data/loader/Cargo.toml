@@ -1,0 +1,16 @@
+[package]
+name = "prometheus-loader"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Deterministic shuffle, packing, and the Rust data loader (spec 7, 15.5 B5)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
