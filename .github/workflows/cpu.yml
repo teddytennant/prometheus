@@ -23,7 +23,9 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the toolchain the build machine runs, so a new stable lint
+      # can't turn CI red on code that passed clippy locally.
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt, clippy
 
