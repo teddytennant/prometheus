@@ -14,8 +14,6 @@ verified. Until then the A1 numpy/JAX path stays the CPU source of truth.
 
 Each primitive is a `jax.custom_vjp`. The CPU tests compare against a slow
 reference the oracle writes; the GPU path is the V1 / V3 gate.
-
-Nothing here runs. Types are real; every op raises.
 """
 
 from __future__ import annotations
@@ -23,6 +21,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+import jax
+import jax.numpy as jnp
+import numpy as np
 
 Array = Any  # numpy.ndarray or jax.Array
 
@@ -44,6 +46,9 @@ DEFAULT_CHUNK = 64
 DEFAULT_FP8_BLOCK = 128
 # Node-limited routing cap from 3.1.
 MAX_RACKS = 4
+# E4M3FN finite max (exp=15, mantissa=6); exp=15 mantissa=7 is NaN.
+FP8_E4M3_MAX = 448.0
+_FP8_E4M3_MIN_SUB = 2.0**-9
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,340 @@ class DispatchMeta:
     max_racks: int = MAX_RACKS
 
 
+@dataclass(frozen=True)
+class _DeltaResidual:
+    q: np.ndarray
+    k: np.ndarray
+    v: np.ndarray
+    beta: np.ndarray
+    state0: np.ndarray
+    chunk: int
+
+
+@dataclass(frozen=True)
+class _DispatchResidual:
+    token_index: np.ndarray
+    k_index: np.ndarray
+    max_per_expert: int
+
+
+def _f32(x: Array) -> np.ndarray:
+    return np.asarray(x, dtype=np.float32)
+
+
+def _is_jax(*xs: Array) -> bool:
+    return any(isinstance(x, jax.Array) for x in xs if x is not None)
+
+
+# ---------------------------------------------------------------------------
+# E4M3FN tables (vectorized encode / decode)
+# ---------------------------------------------------------------------------
+
+
+def _e4m3_positive_table() -> tuple[np.ndarray, np.ndarray]:
+    vals: list[float] = []
+    codes: list[int] = []
+    for m in range(8):
+        vals.append(m * _FP8_E4M3_MIN_SUB)
+        codes.append(m)
+    for e in range(1, 15):
+        for m in range(8):
+            vals.append((2.0 ** (e - 7)) * (1.0 + m / 8.0))
+            codes.append((e << 3) | m)
+    for m in range(7):
+        vals.append((2.0 ** (15 - 7)) * (1.0 + m / 8.0))
+        codes.append((15 << 3) | m)
+    return np.asarray(vals, dtype=np.float32), np.asarray(codes, dtype=np.uint8)
+
+
+_E4M3_POS, _E4M3_POS_CODES = _e4m3_positive_table()
+_E4M3_POS_J = jnp.asarray(_E4M3_POS)
+_E4M3_POS_CODES_J = jnp.asarray(_E4M3_POS_CODES)
+
+
+def _from_e4m3_bits(bits: np.ndarray) -> np.ndarray:
+    bits = np.asarray(bits, dtype=np.uint8)
+    sign = np.where((bits & np.uint8(0x80)) != 0, np.float32(-1.0), np.float32(1.0))
+    exp = ((bits >> np.uint8(3)) & np.uint8(0x0F)).astype(np.int32)
+    man = (bits & np.uint8(0x07)).astype(np.int32)
+    sub = exp == 0
+    nan = (exp == 15) & (man == 7)
+    val_sub = man.astype(np.float32) * np.float32(_FP8_E4M3_MIN_SUB)
+    val_norm = (np.float32(2.0) ** (exp.astype(np.float32) - np.float32(7.0))) * (
+        np.float32(1.0) + man.astype(np.float32) / np.float32(8.0)
+    )
+    val = np.where(sub, val_sub, val_norm)
+    val = np.where(nan, np.float32(np.nan), val)
+    return sign * val
+
+
+_E4M3_DECODE = _from_e4m3_bits(np.arange(256, dtype=np.uint8))
+_E4M3_DECODE_J = jnp.asarray(_E4M3_DECODE)
+
+
+def _to_e4m3_bits(x: np.ndarray) -> np.ndarray:
+    """Round to nearest finite E4M3FN; ties to the smaller-magnitude code."""
+    x = np.asarray(x, dtype=np.float32)
+    sign = np.signbit(x).astype(np.uint8)
+    ax = np.abs(x)
+    ax = np.nan_to_num(ax, nan=FP8_E4M3_MAX, posinf=FP8_E4M3_MAX, neginf=FP8_E4M3_MAX)
+    ax = np.minimum(ax, np.float32(FP8_E4M3_MAX))
+    diffs = np.abs(ax[..., None] - _E4M3_POS)
+    idx = np.argmin(diffs, axis=-1)
+    codes = _E4M3_POS_CODES[idx]
+    return np.asarray(codes | (sign << np.uint8(7)), dtype=np.uint8)
+
+
+def _to_e4m3_bits_jax(x: jax.Array) -> jax.Array:
+    sign = jnp.signbit(x).astype(jnp.uint8)
+    ax = jnp.abs(x)
+    ax = jnp.nan_to_num(ax, nan=FP8_E4M3_MAX, posinf=FP8_E4M3_MAX, neginf=FP8_E4M3_MAX)
+    ax = jnp.minimum(ax, jnp.float32(FP8_E4M3_MAX))
+    diffs = jnp.abs(ax[..., None] - _E4M3_POS_J)
+    idx = jnp.argmin(diffs, axis=-1)
+    codes = _E4M3_POS_CODES_J[idx]
+    return (codes | (sign << jnp.uint8(7))).astype(jnp.uint8)
+
+
+# ---------------------------------------------------------------------------
+# Gated delta-rule: rank-1 update, scan over chunks
+# ---------------------------------------------------------------------------
+
+
+def _validate_delta(
+    q: Array, k: Array, v: Array, beta: Array, state: Array | None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    q_np, k_np, v_np, beta_np = _f32(q), _f32(k), _f32(v), _f32(beta)
+    if q_np.ndim != 4 or k_np.shape != q_np.shape or v_np.shape != q_np.shape:
+        raise KernelError(f"q, k, v must all have shape (B, S, H, D); got {q_np.shape}")
+    batch, seq, heads, dim = q_np.shape
+    if beta_np.shape != (batch, seq, heads):
+        raise KernelError(f"beta shape {beta_np.shape} != {(batch, seq, heads)}")
+    if np.any(beta_np < 0):
+        raise KernelError("beta must be in (0, 1]")
+    if state is None:
+        state_np = np.zeros((batch, heads, dim, dim), dtype=np.float32)
+    else:
+        state_np = _f32(state)
+        if state_np.shape != (batch, heads, dim, dim):
+            raise KernelError(f"state shape {state_np.shape} != {(batch, heads, dim, dim)}")
+    return q_np, k_np, v_np, beta_np, state_np
+
+
+def _delta_step_np(
+    s: np.ndarray, q: np.ndarray, k: np.ndarray, v: np.ndarray, beta: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """One timestep. Rank-1 form of (I - β k kᵀ) S + β k vᵀ; o = q S."""
+    bt = beta[..., None, None]
+    # kᵀ S : (B, H, D)
+    k_s = np.einsum("bhd,bhde->bhe", k, s)
+    s_new = s - bt * np.einsum("bhd,bhe->bhde", k, k_s) + bt * np.einsum("bhd,bhe->bhde", k, v)
+    o = np.einsum("bhd,bhde->bhe", q, s_new)
+    return s_new, o
+
+
+def _delta_step_jax(
+    s: jax.Array, q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    bt = beta[..., None, None]
+    k_s = jnp.einsum("bhd,bhde->bhe", k, s)
+    s_new = s - bt * jnp.einsum("bhd,bhe->bhde", k, k_s) + bt * jnp.einsum("bhd,bhe->bhde", k, v)
+    o = jnp.einsum("bhd,bhde->bhe", q, s_new)
+    return s_new, o
+
+
+def _chunked_fwd_np(
+    q: np.ndarray,
+    k: np.ndarray,
+    v: np.ndarray,
+    beta: np.ndarray,
+    state: np.ndarray,
+    chunk: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    batch, seq, heads, dim = q.shape
+    out = np.empty((batch, seq, heads, dim), dtype=np.float32)
+    s = state
+    for start in range(0, seq, chunk):
+        end = min(start + chunk, seq)
+        for t in range(start, end):
+            s, o_t = _delta_step_np(s, q[:, t], k[:, t], v[:, t], beta[:, t])
+            out[:, t] = o_t
+    return out, s
+
+
+def _pack_chunks_jax(
+    q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array, n_chunks: int, chunk: int
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    batch = q.shape[0]
+    q = q.reshape(batch, n_chunks, chunk, q.shape[2], q.shape[3])
+    k = k.reshape(batch, n_chunks, chunk, k.shape[2], k.shape[3])
+    v = v.reshape(batch, n_chunks, chunk, v.shape[2], v.shape[3])
+    beta = beta.reshape(batch, n_chunks, chunk, beta.shape[2])
+    # scan over chunks, then over timesteps inside a chunk
+    q = jnp.transpose(q, (1, 2, 0, 3, 4))
+    k = jnp.transpose(k, (1, 2, 0, 3, 4))
+    v = jnp.transpose(v, (1, 2, 0, 3, 4))
+    beta = jnp.transpose(beta, (1, 2, 0, 3))
+    return q, k, v, beta
+
+
+def _unpack_chunks_jax(out: jax.Array, batch: int, heads: int, dim: int) -> jax.Array:
+    # (n_chunks, chunk, B, H, D) -> (B, n_chunks * chunk, H, D)
+    n_chunks, chunk = int(out.shape[0]), int(out.shape[1])
+    out = jnp.transpose(out, (2, 0, 1, 3, 4))
+    return out.reshape(batch, n_chunks * chunk, heads, dim)
+
+
+def _chunked_fwd_jax(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    beta: jax.Array,
+    state: jax.Array,
+    chunk: int,
+) -> tuple[jax.Array, jax.Array]:
+    batch, seq, heads, dim = q.shape
+    n_full, rem = seq // chunk, seq % chunk
+
+    def step(s: jax.Array, ins: tuple[jax.Array, jax.Array, jax.Array, jax.Array]):
+        qt, kt, vt, bt = ins
+        return _delta_step_jax(s, qt, kt, vt, bt)
+
+    def chunk_fn(s: jax.Array, ins: tuple[jax.Array, jax.Array, jax.Array, jax.Array]):
+        return jax.lax.scan(step, s, ins)
+
+    s = state
+    pieces: list[jax.Array] = []
+    if n_full:
+        packed = _pack_chunks_jax(q[:, : n_full * chunk], k[:, : n_full * chunk],
+                                  v[:, : n_full * chunk], beta[:, : n_full * chunk],
+                                  n_full, chunk)
+        s, out_full = jax.lax.scan(chunk_fn, s, packed)
+        pieces.append(_unpack_chunks_jax(out_full, batch, heads, dim))
+    if rem:
+        qr = jnp.swapaxes(q[:, n_full * chunk :], 0, 1)
+        kr = jnp.swapaxes(k[:, n_full * chunk :], 0, 1)
+        vr = jnp.swapaxes(v[:, n_full * chunk :], 0, 1)
+        br = jnp.swapaxes(beta[:, n_full * chunk :], 0, 1)
+        s, out_rem = jax.lax.scan(step, s, (qr, kr, vr, br))
+        pieces.append(jnp.swapaxes(out_rem, 0, 1))
+    if pieces:
+        out = jnp.concatenate(pieces, axis=1)
+    else:
+        out = jnp.zeros((batch, 0, heads, dim), dtype=q.dtype)
+    return out, s
+
+
+def _delta_vjp_np(
+    q: np.ndarray,
+    k: np.ndarray,
+    v: np.ndarray,
+    beta: np.ndarray,
+    go: np.ndarray,
+    gs: np.ndarray,
+    state0: np.ndarray,
+    chunk: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Reverse-mode of the gated delta-rule. Chunking is only a traversal order."""
+    batch, seq, heads, dim = q.shape
+    eye = np.eye(dim, dtype=np.float32)
+    s = state0
+    s_hist = np.empty((seq + 1, batch, heads, dim, dim), dtype=np.float32)
+    s_hist[0] = s
+    for start in range(0, seq, chunk):
+        end = min(start + chunk, seq)
+        for t in range(start, end):
+            kt = k[:, t]
+            vt = v[:, t]
+            bt = beta[:, t, :, None, None]
+            kk = np.einsum("bhd,bhe->bhde", kt, kt)
+            decay = eye - bt * kk
+            s = np.einsum("bhij,bhjk->bhik", decay, s)
+            s = s + bt * np.einsum("bhd,bhe->bhde", kt, vt)
+            s_hist[t + 1] = s
+
+    gq = np.empty_like(q)
+    gk = np.empty_like(k)
+    gv = np.empty_like(v)
+    gbeta = np.empty_like(beta)
+    g_s = gs.copy()
+    starts = list(range(0, seq, chunk))
+    for start in reversed(starts):
+        end = min(start + chunk, seq)
+        for t in range(end - 1, start - 1, -1):
+            qt = q[:, t]
+            kt = k[:, t]
+            vt = v[:, t]
+            bt = beta[:, t]
+            s_t = s_hist[t + 1]
+            s_prev = s_hist[t]
+            a_t = eye - bt[:, :, None, None] * np.einsum("bhd,bhe->bhde", kt, kt)
+            g_o = go[:, t]
+            gq[:, t] = np.einsum("bhe,bhde->bhd", g_o, s_t)
+            g_s = g_s + np.einsum("bhd,bhe->bhde", qt, g_o)
+            g_s_prev = np.einsum("bhij,bhik->bhjk", a_t, g_s)
+            g_a = np.einsum("bhik,bhjk->bhij", g_s, s_prev)
+            gv[:, t] = np.einsum("bhde,bhd->bhe", g_s, kt) * bt[:, :, None]
+            gk_v = np.einsum("bhde,bhe->bhd", g_s, vt) * bt[:, :, None]
+            gbeta_v = np.einsum("bhde,bhd,bhe->bh", g_s, kt, vt)
+            gbeta_a = -np.einsum("bhde,bhd,bhe->bh", g_a, kt, kt)
+            gk_a = -bt[:, :, None] * (
+                np.einsum("bhde,bhe->bhd", g_a, kt) + np.einsum("bhed,bhe->bhd", g_a, kt)
+            )
+            gk[:, t] = gk_v + gk_a
+            gbeta[:, t] = gbeta_v + gbeta_a
+            g_s = g_s_prev
+    return (
+        gq.astype(np.float32, copy=False),
+        gk.astype(np.float32, copy=False),
+        gv.astype(np.float32, copy=False),
+        gbeta.astype(np.float32, copy=False),
+        g_s.astype(np.float32, copy=False),
+    )
+
+
+def _jax_delta_fwd_impl(
+    q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array, state: jax.Array, chunk: jax.Array
+) -> tuple[tuple[jax.Array, jax.Array], tuple]:
+    chunk_i = int(chunk)
+    out, ns = _chunked_fwd_jax(q, k, v, beta, state, chunk_i)
+    return (out, ns), (q, k, v, beta, state, chunk)
+
+
+def _jax_delta_bwd_impl(residual: tuple, grads: tuple[jax.Array, jax.Array]):
+    q, k, v, beta, state, chunk = residual
+    go, gs = grads
+    gq, gk, gv, gbeta, gst = _delta_vjp_np(
+        np.asarray(q, dtype=np.float32),
+        np.asarray(k, dtype=np.float32),
+        np.asarray(v, dtype=np.float32),
+        np.asarray(beta, dtype=np.float32),
+        np.asarray(go, dtype=np.float32),
+        np.asarray(gs, dtype=np.float32),
+        np.asarray(state, dtype=np.float32),
+        int(chunk),
+    )
+    return (
+        jnp.asarray(gq),
+        jnp.asarray(gk),
+        jnp.asarray(gv),
+        jnp.asarray(gbeta),
+        jnp.asarray(gst),
+        None,
+    )
+
+
+@jax.custom_vjp
+def _jax_delta(
+    q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array, state: jax.Array, chunk: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    (out, ns), _ = _jax_delta_fwd_impl(q, k, v, beta, state, chunk)
+    return out, ns
+
+
+_jax_delta.defvjp(_jax_delta_fwd_impl, _jax_delta_bwd_impl)
+
+
 def chunked_delta_rule(
     q: Array,
     k: Array,
@@ -102,7 +441,9 @@ def chunked_delta_rule(
     Must be jax.custom_vjp: the backward is the fused reverse-state kernel,
     not JAX's default loop autodiff.
     """
-    raise NotImplementedError("A3 chunked_delta_rule")
+    cfg = LinearAttnConfig() if config is None else config
+    (out, ns), _ = chunked_delta_rule_fwd(q, k, v, beta, state, cfg)
+    return out, ns
 
 
 def chunked_delta_rule_fwd(
@@ -114,22 +455,128 @@ def chunked_delta_rule_fwd(
     config: LinearAttnConfig,
 ) -> tuple[tuple[Array, Array], Any]:
     """Custom VJP forward. Residual is whatever the backward needs."""
-    raise NotImplementedError("A3 chunked_delta_rule_fwd")
+    if config.chunk < 1:
+        raise KernelError(f"chunk must be >= 1, got {config.chunk}")
+    q_np, k_np, v_np, beta_np, state_np = _validate_delta(q, k, v, beta, state)
+    residual = _DeltaResidual(
+        q=q_np, k=k_np, v=v_np, beta=beta_np, state0=state_np, chunk=int(config.chunk)
+    )
+    if _is_jax(q, k, v, beta, state):
+        out, ns = _jax_delta(
+            jnp.asarray(q_np),
+            jnp.asarray(k_np),
+            jnp.asarray(v_np),
+            jnp.asarray(beta_np),
+            jnp.asarray(state_np),
+            jnp.asarray(config.chunk),
+        )
+        return (out, ns), residual
+    out, ns = _chunked_fwd_np(q_np, k_np, v_np, beta_np, state_np, int(config.chunk))
+    return (out, ns), residual
 
 
 def chunked_delta_rule_bwd(residual: Any, grads: tuple[Array, Array]) -> tuple[Array, ...]:
     """Custom VJP backward. Returns grads for (q, k, v, beta, state)."""
-    raise NotImplementedError("A3 chunked_delta_rule_bwd")
+    go, gs = grads
+    go_np, gs_np = _f32(go), _f32(gs)
+    gq, gk, gv, gbeta, gst = _delta_vjp_np(
+        residual.q, residual.k, residual.v, residual.beta, go_np, gs_np,
+        residual.state0, int(residual.chunk),
+    )
+    if _is_jax(go, gs):
+        return (
+            jnp.asarray(gq),
+            jnp.asarray(gk),
+            jnp.asarray(gv),
+            jnp.asarray(gbeta),
+            jnp.asarray(gst),
+        )
+    return gq, gk, gv, gbeta, gst
+
+
+# ---------------------------------------------------------------------------
+# FP8 per-block fake-quant + linear
+# ---------------------------------------------------------------------------
+
+
+def _pad_blocks_np(x: np.ndarray, block: int) -> tuple[np.ndarray, int, int]:
+    n = int(x.shape[-1])
+    n_blocks = (n + block - 1) // block
+    pad = n_blocks * block - n
+    if pad:
+        pad_width = [(0, 0)] * (x.ndim - 1) + [(0, pad)]
+        x = np.pad(x, pad_width)
+    return x.reshape(*x.shape[:-1], n_blocks, block), n, n_blocks
+
+
+def _pad_blocks_jax(x: jax.Array, block: int) -> tuple[jax.Array, int, int]:
+    n = int(x.shape[-1])
+    n_blocks = (n + block - 1) // block
+    pad = n_blocks * block - n
+    if pad:
+        pad_width = [(0, 0)] * (x.ndim - 1) + [(0, pad)]
+        x = jnp.pad(x, pad_width)
+    return x.reshape(*x.shape[:-1], n_blocks, block), n, n_blocks
 
 
 def fp8_quantize(x: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Fp8Meta:
     """Per-block abs-max scale, quantize to FP8. `x` is FP32 or BF16."""
-    raise NotImplementedError("A3 fp8_quantize")
+    if block < 1:
+        raise KernelError(f"fp8 block must be >= 1, got {block}")
+    if _is_jax(x):
+        x_j = jnp.asarray(x, dtype=jnp.float32)
+        if x_j.ndim < 1:
+            raise KernelError("fp8_quantize expects at least a 1-D tensor")
+        blocked, n, n_blocks = _pad_blocks_jax(x_j, block)
+        amax = jnp.max(jnp.abs(blocked), axis=-1)
+        scale = jnp.where(amax == 0, jnp.float32(1.0), amax / jnp.float32(FP8_E4M3_MAX))
+        scaled = blocked / scale[..., None]
+        bits = _to_e4m3_bits_jax(scaled)
+        bits = bits.reshape(*x_j.shape[:-1], n_blocks * block)[..., :n]
+        q = bits.astype(jnp.int8)
+        return Fp8Meta(q=q, scale=scale.astype(jnp.float32), block=int(block), dtype=DType.FP8)
+    x_np = _f32(x)
+    if x_np.ndim < 1:
+        raise KernelError("fp8_quantize expects at least a 1-D tensor")
+    blocked, n, n_blocks = _pad_blocks_np(x_np, block)
+    amax = np.max(np.abs(blocked), axis=-1)
+    scale = np.where(amax == 0, np.float32(1.0), amax / np.float32(FP8_E4M3_MAX)).astype(np.float32)
+    scaled = blocked / scale[..., None]
+    bits = _to_e4m3_bits(scaled)
+    bits = bits.reshape(*x_np.shape[:-1], n_blocks * block)[..., :n]
+    q = bits.astype(np.int8, copy=False)
+    return Fp8Meta(q=q, scale=scale, block=int(block), dtype=DType.FP8)
 
 
 def fp8_dequantize(meta: Fp8Meta) -> Array:
     """Unpack FP8 + scales to FP32. Inverse of `fp8_quantize` up to rounding."""
-    raise NotImplementedError("A3 fp8_dequantize")
+    block = int(meta.block)
+    if block < 1:
+        raise KernelError(f"fp8 block must be >= 1, got {block}")
+    if _is_jax(meta.q, meta.scale):
+        bits = jnp.asarray(meta.q).astype(jnp.uint8)
+        scale = jnp.asarray(meta.scale, dtype=jnp.float32)
+        blocked, n, n_blocks = _pad_blocks_jax(bits, block)
+        decoded = _E4M3_DECODE_J[blocked.astype(jnp.int32)]
+        if scale.shape != tuple(decoded.shape[:-1]):
+            raise KernelError(
+                f"scale shape {tuple(scale.shape)} does not match "
+                f"blocked payload {decoded.shape[:-1]}"
+            )
+        restored = decoded * scale[..., None]
+        restored = restored.reshape(*restored.shape[:-2], n_blocks * block)[..., :n]
+        return restored.astype(jnp.float32)
+    bits = np.asarray(meta.q).astype(np.uint8, copy=False)
+    scale = _f32(meta.scale)
+    blocked, n, n_blocks = _pad_blocks_np(bits, block)
+    decoded = _E4M3_DECODE[blocked]
+    if scale.shape != tuple(decoded.shape[:-1]):
+        raise KernelError(
+            f"scale shape {scale.shape} does not match blocked payload {decoded.shape[:-1]}"
+        )
+    restored = decoded * scale[..., None]
+    restored = restored.reshape(*restored.shape[:-2], n_blocks * block)[..., :n]
+    return restored.astype(np.float32, copy=False)
 
 
 def fp8_linear(x: Array, weight: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Array:
@@ -138,18 +585,97 @@ def fp8_linear(x: Array, weight: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Ar
     x: (..., in), weight: (out, in). Accumulates in FP32.
     Must be jax.custom_vjp so the backward uses the same scales as the forward.
     """
-    raise NotImplementedError("A3 fp8_linear")
+    y, _ = fp8_linear_fwd(x, weight, block)
+    return y
 
 
-def fp8_linear_fwd(
-    x: Array, weight: Array, block: int
-) -> tuple[Array, Any]:
-    raise NotImplementedError("A3 fp8_linear_fwd")
+def fp8_linear_fwd(x: Array, weight: Array, block: int) -> tuple[Array, Any]:
+    if block < 1:
+        raise KernelError(f"fp8 block must be >= 1, got {block}")
+    jax_out = _is_jax(x, weight)
+    x_np = _f32(x)
+    w_np = _f32(weight)
+    if w_np.ndim != 2:
+        raise KernelError(f"weight must be 2-D (out, in), got {w_np.shape}")
+    if x_np.shape[-1] != w_np.shape[-1]:
+        raise KernelError(
+            f"contracting dim mismatch: x[..., {x_np.shape[-1]}] vs weight[..., {w_np.shape[-1]}]"
+        )
+    x_meta = fp8_quantize(x_np, block=block)
+    w_meta = fp8_quantize(w_np, block=block)
+    x_hat = fp8_dequantize(x_meta)
+    w_hat = fp8_dequantize(w_meta)
+    y = np.matmul(x_hat, np.swapaxes(w_hat, -1, -2)).astype(np.float32, copy=False)
+    residual = (x_meta, w_meta)
+    if jax_out:
+        return jnp.asarray(y), residual
+    return y, residual
 
 
 def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
     """Returns (grad_x, grad_weight). Scales are not differentiated."""
-    raise NotImplementedError("A3 fp8_linear_bwd")
+    x_meta, w_meta = residual
+    x_hat = fp8_dequantize(x_meta)
+    w_hat = fp8_dequantize(w_meta)
+    x_hat = np.asarray(x_hat, dtype=np.float32)
+    w_hat = np.asarray(w_hat, dtype=np.float32)
+    g_np = _f32(g)
+    in_f = int(x_hat.shape[-1])
+    out_f = int(w_hat.shape[0])
+    g_f = g_np.reshape(-1, out_f)
+    x_f = x_hat.reshape(-1, in_f)
+    grad_x = np.matmul(g_f, w_hat).reshape(x_hat.shape).astype(np.float32, copy=False)
+    grad_w = np.matmul(g_f.T, x_f).astype(np.float32, copy=False)
+    if _is_jax(g):
+        return jnp.asarray(grad_x), jnp.asarray(grad_w)
+    return grad_x, grad_w
+
+
+# ---------------------------------------------------------------------------
+# Expert-parallel dispatch / combine
+# ---------------------------------------------------------------------------
+
+
+def _validate_dispatch(tokens: np.ndarray, meta: DispatchMeta) -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int
+]:
+    if tokens.ndim != 2:
+        raise KernelError(f"tokens must be (n_tokens, d_model), got {tokens.shape}")
+    n_tokens, _d_model = tokens.shape
+    expert_ids = np.asarray(meta.expert_ids)
+    probs = _f32(meta.probs)
+    racks = np.asarray(meta.racks)
+    n_experts = int(meta.n_experts)
+    max_racks = int(meta.max_racks)
+    if expert_ids.ndim != 2 or expert_ids.shape[0] != n_tokens:
+        raise KernelError("expert_ids must be (n_tokens, top_k)")
+    if probs.shape != tuple(expert_ids.shape):
+        raise KernelError(f"probs shape {probs.shape} != expert_ids shape {expert_ids.shape}")
+    if racks.shape != (n_experts,):
+        raise KernelError(f"racks length {racks.shape} != n_experts={n_experts}")
+    if n_experts < 0:
+        raise KernelError(f"n_experts must be >= 0, got {n_experts}")
+    if expert_ids.size:
+        if np.any((expert_ids < 0) | (expert_ids >= n_experts)):
+            raise KernelError(f"expert id out of range [0, {n_experts})")
+    return tokens, expert_ids, probs, racks, n_experts, max_racks
+
+
+def _check_rack_span(expert_ids: np.ndarray, racks: np.ndarray, max_racks: int) -> None:
+    """KernelError if any token's chosen experts span more than max_racks racks."""
+    if expert_ids.size == 0:
+        return
+    chosen = racks[expert_ids]
+    if chosen.ndim == 1:
+        chosen = chosen[:, None]
+    ordered = np.sort(chosen, axis=1)
+    n_unique = np.ones(ordered.shape[0], dtype=np.int32)
+    if ordered.shape[1] > 1:
+        n_unique = 1 + np.sum(ordered[:, 1:] != ordered[:, :-1], axis=1)
+    if np.any(n_unique > max_racks):
+        raise KernelError(
+            f"token experts span more than max_racks={max_racks} distinct racks"
+        )
 
 
 def ep_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[Array, Any]:
@@ -161,7 +687,52 @@ def ep_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[Array, Any]:
 
     Raises KernelError if a token's experts span more than meta.max_racks.
     """
-    raise NotImplementedError("A3 ep_dispatch")
+    jax_out = _is_jax(tokens, meta.expert_ids, meta.probs, meta.racks)
+    tok = _f32(tokens)
+    tok, expert_ids, _probs, racks, n_experts, max_racks = _validate_dispatch(tok, meta)
+    _check_rack_span(expert_ids, racks, max_racks)
+
+    n_tokens, d_model = tok.shape
+    top_k = int(expert_ids.shape[1])
+    n_assign = n_tokens * top_k
+    if n_assign == 0:
+        max_per = 0
+        dispatched = np.zeros((n_experts, max_per, d_model), dtype=np.float32)
+        residual = _DispatchResidual(
+            token_index=np.full((n_experts, max_per), -1, dtype=np.int32),
+            k_index=np.full((n_experts, max_per), -1, dtype=np.int32),
+            max_per_expert=0,
+        )
+        if jax_out:
+            return jnp.asarray(dispatched), residual
+        return dispatched, residual
+
+    flat_e = np.ravel(expert_ids).astype(np.int32, copy=False)
+    flat_t = np.repeat(np.arange(n_tokens, dtype=np.int32), top_k)
+    flat_k = np.tile(np.arange(top_k, dtype=np.int32), n_tokens)
+    counts = np.bincount(flat_e, minlength=n_experts)
+    max_per = int(counts.max()) if n_experts else 0
+
+    # Stable by (token, k) because ravel is C-order; slot = rank within expert.
+    order = np.argsort(flat_e, kind="stable")
+    sorted_e = flat_e[order]
+    offsets = np.zeros(n_experts + 1, dtype=np.int32)
+    offsets[1:] = np.cumsum(counts, dtype=np.int32)
+    slots = np.empty(n_assign, dtype=np.int32)
+    slots[order] = np.arange(n_assign, dtype=np.int32) - offsets[sorted_e]
+
+    dispatched = np.zeros((n_experts, max_per, d_model), dtype=np.float32)
+    token_index = np.full((n_experts, max_per), -1, dtype=np.int32)
+    k_index = np.full((n_experts, max_per), -1, dtype=np.int32)
+    dispatched[flat_e, slots] = tok[flat_t]
+    token_index[flat_e, slots] = flat_t
+    k_index[flat_e, slots] = flat_k
+    residual = _DispatchResidual(
+        token_index=token_index, k_index=k_index, max_per_expert=max_per
+    )
+    if jax_out:
+        return jnp.asarray(dispatched), residual
+    return dispatched, residual
 
 
 def ep_combine(expert_out: Array, meta: DispatchMeta, residual: Any) -> Array:
@@ -170,4 +741,24 @@ def ep_combine(expert_out: Array, meta: DispatchMeta, residual: Any) -> Array:
     expert_out: (n_experts, max_per_expert, d_model). Weights are meta.probs.
     Returns (n_tokens, d_model).
     """
-    raise NotImplementedError("A3 ep_combine")
+    jax_out = _is_jax(expert_out)
+    out_e = _f32(expert_out)
+    expert_ids = np.asarray(meta.expert_ids)
+    probs = _f32(meta.probs)
+    n_experts = int(meta.n_experts)
+    n_tokens = int(expert_ids.shape[0])
+    if out_e.ndim != 3 or out_e.shape[0] != n_experts:
+        raise KernelError("expert_out must be (n_experts, max_per_expert, d_model)")
+    d_model = int(out_e.shape[-1])
+    combined = np.zeros((n_tokens, d_model), dtype=np.float32)
+    token_index = np.asarray(residual.token_index)
+    k_index = np.asarray(residual.k_index)
+    valid = token_index >= 0
+    if np.any(valid):
+        t = token_index[valid]
+        k = k_index[valid]
+        weights = probs[t, k][:, None]
+        np.add.at(combined, t, weights * out_e[valid])
+    if jax_out:
+        return jnp.asarray(combined)
+    return combined
