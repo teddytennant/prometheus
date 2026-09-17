@@ -16,5 +16,6 @@ members = [
     "harness/raft",
     "harness/slurm",
     "obs",
+    "serve",
     "verify/ncshare",
 ]

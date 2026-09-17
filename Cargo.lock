@@ -1270,6 +1270,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-serve"
+version = "0.0.1"
+dependencies = [
+ "prometheus-providers",
+ "prometheus-slurm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-slurm"
 version = "0.0.1"
 dependencies = [
