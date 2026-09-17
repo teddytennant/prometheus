@@ -12,11 +12,15 @@
 //! correctness of fork-from-snapshot and the tool API. The hardware gate is
 //! sub-200ms fork on one node (`kvm` feature).
 
+mod engine;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use engine::Engine;
 
 /// Injected clock. Milliseconds since an arbitrary origin. Never wall time.
 pub type NowMs = u64;
@@ -278,11 +282,15 @@ pub trait Backend {
 /// In-process backend for CPU tests. No KVM, no sockets, no live network.
 pub struct InProcess {
     cfg: PoolConfig,
+    inner: Engine,
 }
 
 impl InProcess {
-    pub fn new(_cfg: PoolConfig) -> Self {
-        unimplemented!("D1: InProcess::new")
+    pub fn new(cfg: PoolConfig) -> Self {
+        Self {
+            inner: Engine::new(cfg.clone()),
+            cfg,
+        }
     }
 
     pub fn config(&self) -> &PoolConfig {
@@ -291,33 +299,33 @@ impl InProcess {
 }
 
 impl Backend for InProcess {
-    fn boot(&mut self, _image: &Image, _now: NowMs) -> Result<SandboxId> {
-        unimplemented!("D1: InProcess::boot")
+    fn boot(&mut self, image: &Image, now: NowMs) -> Result<SandboxId> {
+        self.inner.boot(image, now)
     }
 
-    fn snapshot(&mut self, _sandbox: &SandboxId, _now: NowMs) -> Result<SnapshotId> {
-        unimplemented!("D1: InProcess::snapshot")
+    fn snapshot(&mut self, sandbox: &SandboxId, now: NowMs) -> Result<SnapshotId> {
+        self.inner.snapshot(sandbox, now)
     }
 
-    fn fork(&mut self, _snapshot: &SnapshotId, _now: NowMs) -> Result<(SandboxId, u64)> {
-        unimplemented!("D1: InProcess::fork")
+    fn fork(&mut self, snapshot: &SnapshotId, now: NowMs) -> Result<(SandboxId, u64)> {
+        self.inner.fork(snapshot, now)
     }
 
     fn call(
         &mut self,
-        _sandbox: &SandboxId,
-        _req: &ToolRequest,
-        _now: NowMs,
+        sandbox: &SandboxId,
+        req: &ToolRequest,
+        now: NowMs,
     ) -> Result<ToolResponse> {
-        unimplemented!("D1: InProcess::call")
+        self.inner.call(sandbox, req.clone(), now)
     }
 
-    fn kill(&mut self, _sandbox: &SandboxId, _now: NowMs) -> Result<()> {
-        unimplemented!("D1: InProcess::kill")
+    fn kill(&mut self, sandbox: &SandboxId, now: NowMs) -> Result<()> {
+        self.inner.kill(sandbox, now)
     }
 
-    fn list(&self, _sandbox: &SandboxId, _view: View) -> Result<BTreeMap<String, Vec<u8>>> {
-        unimplemented!("D1: InProcess::list")
+    fn list(&self, sandbox: &SandboxId, view: View) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.inner.list(sandbox, view)
     }
 }
 
@@ -329,8 +337,12 @@ pub struct Firecracker {
 }
 
 impl Firecracker {
-    pub fn new(_socket: PathBuf, _kernel: PathBuf, _rootfs: PathBuf) -> Result<Self> {
-        unimplemented!("D1: Firecracker::new")
+    pub fn new(socket: PathBuf, kernel: PathBuf, rootfs: PathBuf) -> Result<Self> {
+        Ok(Self {
+            socket,
+            kernel,
+            rootfs,
+        })
     }
 
     pub fn socket(&self) -> &PathBuf {
@@ -381,19 +393,28 @@ impl Backend for Firecracker {
 pub struct Pool<B: Backend> {
     backend: B,
     cfg: PoolConfig,
+    inner: Engine,
 }
 
 pub type CpuPool = Pool<InProcess>;
 
 impl Pool<InProcess> {
-    pub fn in_process(_cfg: PoolConfig) -> Self {
-        unimplemented!("D1: Pool::in_process")
+    pub fn in_process(cfg: PoolConfig) -> Self {
+        Self {
+            backend: InProcess::new(cfg.clone()),
+            inner: Engine::new(cfg.clone()),
+            cfg,
+        }
     }
 }
 
 impl Pool<Firecracker> {
-    pub fn firecracker(_backend: Firecracker, _cfg: PoolConfig) -> Self {
-        unimplemented!("D1: Pool::firecracker")
+    pub fn firecracker(backend: Firecracker, cfg: PoolConfig) -> Self {
+        Self {
+            backend,
+            inner: Engine::new(cfg.clone()),
+            cfg,
+        }
     }
 }
 
@@ -407,64 +428,64 @@ impl<B: Backend> Pool<B> {
     }
 
     pub fn live_count(&self) -> usize {
-        unimplemented!("D1: Pool::live_count")
+        self.inner.live_count()
     }
 
     pub fn tamper_flags(&self) -> &[TamperFlag] {
-        unimplemented!("D1: Pool::tamper_flags")
+        self.inner.tamper_flags()
     }
 
     /// Reject images that carry credentials or put hidden tests in the agent tree.
-    pub fn register_image(&mut self, _image: Image) -> Result<ImageId> {
-        unimplemented!("D1: Pool::register_image")
+    pub fn register_image(&mut self, image: Image) -> Result<ImageId> {
+        self.inner.register_image(image)
     }
 
-    pub fn snapshot_from_image(&mut self, _image: &ImageId, _now: NowMs) -> Result<SnapshotId> {
-        unimplemented!("D1: Pool::snapshot_from_image")
+    pub fn snapshot_from_image(&mut self, image: &ImageId, now: NowMs) -> Result<SnapshotId> {
+        self.inner.snapshot_from_image(image, now)
     }
 
     /// Fork `n` sandboxes from an identical snapshot. `n` is typically [`GRPO_GROUP`].
     /// Fails with [`Error::PoolExhausted`] when `live + n > capacity`.
     pub fn fork_group(
         &mut self,
-        _snapshot: &SnapshotId,
-        _n: usize,
-        _now: NowMs,
+        snapshot: &SnapshotId,
+        n: usize,
+        now: NowMs,
     ) -> Result<ForkResult> {
-        unimplemented!("D1: Pool::fork_group")
+        self.inner.fork_group(snapshot, n, now)
     }
 
     /// Fork the snapshot twice (spec 9.3 contrastive pair).
     pub fn fork_pair(
         &mut self,
-        _snapshot: &SnapshotId,
-        _now: NowMs,
+        snapshot: &SnapshotId,
+        now: NowMs,
     ) -> Result<(SandboxId, SandboxId)> {
-        unimplemented!("D1: Pool::fork_pair")
+        self.inner.fork_pair(snapshot, now)
     }
 
     pub fn call(
         &mut self,
-        _sandbox: &SandboxId,
-        _req: ToolRequest,
-        _now: NowMs,
+        sandbox: &SandboxId,
+        req: ToolRequest,
+        now: NowMs,
     ) -> Result<ToolResponse> {
-        unimplemented!("D1: Pool::call")
+        self.inner.call(sandbox, req, now)
     }
 
-    pub fn snapshot(&mut self, _sandbox: &SandboxId, _now: NowMs) -> Result<SnapshotId> {
-        unimplemented!("D1: Pool::snapshot")
+    pub fn snapshot(&mut self, sandbox: &SandboxId, now: NowMs) -> Result<SnapshotId> {
+        self.inner.snapshot(sandbox, now)
     }
 
-    pub fn kill(&mut self, _sandbox: &SandboxId, _now: NowMs) -> Result<()> {
-        unimplemented!("D1: Pool::kill")
+    pub fn kill(&mut self, sandbox: &SandboxId, now: NowMs) -> Result<()> {
+        self.inner.kill(sandbox, now)
     }
 
-    pub fn agent_view(&self, _sandbox: &SandboxId) -> Result<BTreeMap<String, Vec<u8>>> {
-        unimplemented!("D1: Pool::agent_view")
+    pub fn agent_view(&self, sandbox: &SandboxId) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.inner.agent_view(sandbox)
     }
 
-    pub fn grader_view(&self, _sandbox: &SandboxId) -> Result<BTreeMap<String, Vec<u8>>> {
-        unimplemented!("D1: Pool::grader_view")
+    pub fn grader_view(&self, sandbox: &SandboxId) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.inner.grader_view(sandbox)
     }
 }
