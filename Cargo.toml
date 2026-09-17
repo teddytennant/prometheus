@@ -12,6 +12,7 @@ members = [
     "harness/leases",
     "harness/log",
     "harness/mesh",
+    "harness/pipeline",
     "harness/providers",
     "harness/raft",
     "harness/slurm",
