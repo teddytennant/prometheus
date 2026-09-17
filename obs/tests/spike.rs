@@ -356,8 +356,9 @@ fn window_one_baseline_is_the_previous_sample() {
     // previous sample is now 4.0 → need loss > 8.0
     let miss = observe_pair(&mut prod, &mut refer, &sample(2, 8.0, "s", "r")).unwrap();
     assert!(miss.is_empty(), "8.0 == 8.0 is not a spike: {miss:?}");
-    let hit = observe_pair(&mut prod, &mut refer, &sample(3, 8.0 + 1.0, "s", "r")).unwrap();
-    assert!(!hit.is_empty(), "9.0 > 8.0 * 2 must spike");
+    // previous sample is now 8.0 → need loss > 16.0
+    let hit = observe_pair(&mut prod, &mut refer, &sample(3, 16.0 + 1.0, "s", "r")).unwrap();
+    assert!(!hit.is_empty(), "17.0 > 8.0 * 2 must spike");
     match &hit[0] {
         SpikeAction::Log { event } => {
             assert!(
