@@ -209,19 +209,24 @@ pub struct CodeTask {
 }
 
 /// How hidden tests are invoked inside the sandbox.
+///
+/// A run passes iff the tool returns `ok` and stdout equals
+/// `expected_stdout`. That is the pass/fail bit mutation testing uses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestRun {
     pub tool: prometheus_envs::Tool,
     pub payload: serde_json::Value,
     pub timeout_s: u32,
+    pub expected_stdout: Vec<u8>,
 }
 
 impl TestRun {
-    pub fn python(payload: serde_json::Value, timeout_s: u32) -> Self {
+    pub fn python(payload: serde_json::Value, timeout_s: u32, expected_stdout: Vec<u8>) -> Self {
         Self {
             tool: prometheus_envs::Tool::Python,
             payload,
             timeout_s,
+            expected_stdout,
         }
     }
 }
