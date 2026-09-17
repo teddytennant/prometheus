@@ -1,0 +1,18 @@
+[package]
+name = "prometheus-synth"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Synthetic rewrites: generation orchestration, rephrasing, fact-check (spec 7.1, 15.5 E1)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = []
+gpu = []

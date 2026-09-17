@@ -24,6 +24,7 @@ members = [
     "rl/rewards",
     "rl/tasks",
     "serve",
+    "synth",
     "tokenizer",
     "verifiers",
     "verify/ncshare",

@@ -1365,6 +1365,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-synth"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-tasks"
 version = "0.1.0"
 dependencies = [
