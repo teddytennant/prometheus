@@ -1352,6 +1352,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-verifiers"
+version = "0.0.1"
+dependencies = [
+ "prometheus-envs",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-verify-ncshare"
 version = "0.0.1"
 dependencies = [

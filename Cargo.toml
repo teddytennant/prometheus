@@ -22,5 +22,6 @@ members = [
     "obs",
     "rl/envs",
     "serve",
+    "verifiers",
     "verify/ncshare",
 ]

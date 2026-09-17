@@ -1,0 +1,23 @@
+[package]
+name = "prometheus-verifiers"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Exact verifiers: sandboxed tests + mutation, symbolic math, Lean, grids, markets"
+publish = false
+
+[dependencies]
+prometheus-envs = { path = "../rl/envs" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
+[features]
+default = []
+gpu = []
+kvm = []
