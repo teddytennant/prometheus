@@ -1138,6 +1138,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-classifiers"
+version = "0.0.1"
+dependencies = [
+ "prometheus-extract",
+ "prometheus-serve",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-contracts"
 version = "0.0.1"
 dependencies = [

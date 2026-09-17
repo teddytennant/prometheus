@@ -1,0 +1,21 @@
+[package]
+name = "prometheus-classifiers"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Quality and safety classifier orchestration on F5 (spec 7.2, 15.5 B3)"
+publish = false
+
+[dependencies]
+prometheus-extract = { path = "../extract" }
+prometheus-serve = { path = "../../serve" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+gpu = []
