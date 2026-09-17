@@ -12,10 +12,10 @@ prometheus-log = { path = "../log" }
 prometheus-raft = { path = "../raft" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 
 [dev-dependencies]
-sha2 = "0.10"
 tempfile = "3"
 
 [[bin]]
