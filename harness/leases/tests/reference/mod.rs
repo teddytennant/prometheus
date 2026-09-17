@@ -152,6 +152,52 @@ impl RefQueue {
         }))
     }
 
+    /// Independent `claim_if`: expire_due first, then walk FIFO of currently
+    /// `Queued` tasks and lease the first for which `pred` is true. Non-matches
+    /// stay queued with the same attempt and no CLAIMED/EXPIRED events.
+    pub fn claim_if<F>(
+        &mut self,
+        worker: &WorkerId,
+        now: NowMs,
+        pred: F,
+    ) -> Result<Option<Lease>>
+    where
+        F: Fn(&Task) -> bool,
+    {
+        self.expire_due(now)?;
+        let mut match_id: Option<String> = None;
+        for id in self.queued.iter() {
+            let task = self
+                .tasks
+                .get(id)
+                .expect("queued id missing from tasks");
+            if pred(task) {
+                match_id = Some(id.clone());
+                break;
+            }
+        }
+        let Some(id) = match_id else {
+            return Ok(None);
+        };
+        self.queued.retain(|q| q != &id);
+        let expires_at = now.saturating_add(self.ttl());
+        let attempt = {
+            let t = self.tasks.get_mut(&id).expect("queued id");
+            t.attempt = t.attempt.saturating_add(1);
+            t.state = TaskState::Leased;
+            t.worker_id = Some(worker.clone());
+            t.expires_at = Some(expires_at);
+            t.attempt
+        };
+        self.emit(EVENT_CLAIMED, Some(&id), Some(attempt));
+        Ok(Some(Lease {
+            task_id: TaskId(id),
+            worker_id: worker.clone(),
+            attempt,
+            expires_at,
+        }))
+    }
+
     fn require_holder(
         &self,
         task_id: &TaskId,
