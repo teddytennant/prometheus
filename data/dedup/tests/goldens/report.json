@@ -1,0 +1,11 @@
+{
+  "kept": ["keep-cats", "keep-near-src", "keep-short", "keep-unique"],
+  "dropped_exact": ["drop-exact-doc", "drop-exact-para"],
+  "dropped_near": ["drop-near"],
+  "clusters": [
+    {
+      "kept": "keep-near-src",
+      "dropped": ["drop-near"]
+    }
+  ]
+}

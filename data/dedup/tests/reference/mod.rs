@@ -1,104 +1,99 @@
-//! Exact and MinHash near-duplicate detection (spec 7, 15.5 B2).
+//! Slow, obvious B2 reference: normalize, shingles, MinHash LSH, exact clustering.
+#![allow(dead_code)]
 //!
-//! Two passes over a corpus of extracted documents (B1):
-//! - Exact: SHA-256 of normalized text, at document and paragraph grain.
-//! - Near: MinHash + LSH so paraphrases and boilerplate collapse to one keep.
+//! Compiled only as a submodule of the integration tests. Production
+//! `src/lib.rs` must stay `unimplemented!` (except `sha256_hex`).
 //!
-//! Keep the lowest `content_hash` in each cluster. Golden outputs on a fixed
-//! corpus are the B2 gate.
+//! Rules the public crate must match:
+//!
+//! **normalize**
+//! 1. Strip zero-width format chars: U+200B, U+200C, U+200D, U+2060, U+FEFF, U+180E.
+//! 2. Unicode lowercase (`str::to_lowercase`).
+//! 3. Collapse every Unicode whitespace run (including newlines) to a single ASCII
+//!    space and trim. Empty input or whitespace-only input becomes `""`.
+//!
+//! **paragraphs**
+//! Blank-line split happens *after* the lowercase + zero-width strip, but *before*
+//! collapsing newlines — otherwise there are no blank lines left. Concretely:
+//! 1. Strip zero-width, lowercase, map `\r\n` / `\r` → `\n`.
+//! 2. Split on runs of lines that are empty or Unicode-whitespace-only.
+//! 3. Collapse whitespace inside each block (same as normalize).
+//! 4. Drop empty strings.
+//!
+//! **exact_hash** — SHA-256 lowercase hex of `normalize(text)` as UTF-8.
+//!
+//! **shingles(text, n)** — word n-grams of `normalize(text)` split on whitespace,
+//! joined by a single space, left-to-right. `n == 0` or fewer than `n` tokens →
+//! empty vec. Duplicates are kept in the vec; MinHash uses the set.
+//!
+//! **minhash_signature** — `num_hashes` values. Hash function `i` of shingle `s` is
+//! the first 8 bytes of SHA-256(`i` as little-endian u64 || UTF-8(`s`)), read as
+//! little-endian `u64`. Signature slot `i` is the min of that over the unique
+//! shingle set. Empty shingle set → `u64::MAX` repeated `num_hashes` times.
+//! `bands`/`rows` are ignored here.
+//!
+//! **lsh_band_keys** — error (`Error::Config`) if `bands == 0` or `rows == 0` or
+//! `num_hashes != bands * rows` (checked with `checked_mul`) or
+//! `signature.len() != num_hashes`. Otherwise `bands` keys; key `b` is the first
+//! 8 bytes of SHA-256(concatenation of `rows` little-endian u64s in
+//! `signature[b*rows .. (b+1)*rows]`), read as little-endian `u64`.
+//!
+//! **Keep rule** — in any duplicate group / LSH component, keep the document with
+//! the lexicographically lowest `(content_hash, id)`. `content_hash` is the field
+//! on `Document`, never recomputed. Report `kept` / `dropped_*` / `Cluster.kept`
+//! / `Cluster.dropped` are **document ids**. Lists are sorted lexicographically
+//! by id; `clusters` sorted by `kept` id. Only components with at least one drop
+//! appear in `clusters`.
+//!
+//! **dedup_exact Document** — group by `exact_hash(text)`; keep lowest
+//! `(content_hash, id)` per group; others → `dropped_exact`. `dropped_near` and
+//! `clusters` empty.
+//!
+//! **dedup_exact Paragraph** — drop the *whole* document if *any* of its
+//! paragraph hashes (`exact_hash` of each `paragraphs(text)` entry, equivalently
+//! SHA-256 of the already-normalized paragraph) matches a paragraph of a document
+//! already kept. Walk documents in `(content_hash, id)` order so the keeper is
+//! always the lowest hash. A document that shares no paragraph with any kept
+//! document is kept. `clusters` empty.
+//!
+//! **dedup_near** — union-find over shared LSH band keys (transitivity applies).
+//! Documents whose shingle set is empty do **not** participate (they do not join
+//! each other either). `dropped_exact` empty.
+//!
+//! **dedup_corpus** — exact Document, then exact Paragraph on the remaining
+//! keeps, then near on what is still kept. Later passes never see earlier drops.
+//! `dropped_exact` concatenates both exact passes (then sorted).
+//!
+//! **Errors** — empty `docs` → `Error::Other`. Bad MinHash/LSH config →
+//! `Error::Config`. Exact pass does not consult config.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use serde::{Deserialize, Serialize};
-use sha2::Digest;
-
-/// Errors from config checks or an empty corpus.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("dedup config: {0}")]
-    Config(String),
-    #[error("{0}")]
-    Other(String),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// One extracted document. `content_hash` is SHA-256 of the raw bytes B1 wrote.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Document {
-    pub id: String,
-    pub text: String,
-    pub content_hash: String,
-}
-
-/// MinHash / LSH knobs. `num_hashes == bands * rows`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DedupConfig {
-    pub shingle_size: usize,
-    pub num_hashes: usize,
-    pub bands: usize,
-    pub rows: usize,
-}
-
-impl DedupConfig {
-    /// Default: 5-shingles, 128 hashes in 32 bands of 4.
-    pub fn standard() -> Self {
-        Self {
-            shingle_size: 5,
-            num_hashes: 128,
-            bands: 32,
-            rows: 4,
-        }
-    }
-}
-
-/// Grain of an exact-hash pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Grain {
-    Document,
-    Paragraph,
-}
-
-/// One near-duplicate cluster. `kept` is the lowest `content_hash`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Cluster {
-    pub kept: String,
-    pub dropped: Vec<String>,
-}
-
-/// Result of running both passes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DedupReport {
-    pub kept: Vec<String>,
-    pub dropped_exact: Vec<String>,
-    pub dropped_near: Vec<String>,
-    pub clusters: Vec<Cluster>,
-}
+use prometheus_dedup::{
+    sha256_hex, Cluster, DedupConfig, DedupReport, Document, Error, Grain, Result,
+};
 
 const ZERO_WIDTH: &[char] = &[
-    '\u{200B}',
-    '\u{200C}',
-    '\u{200D}',
-    '\u{2060}',
-    '\u{FEFF}',
-    '\u{180E}',
+    '\u{200B}', // ZERO WIDTH SPACE
+    '\u{200C}', // ZERO WIDTH NON-JOINER
+    '\u{200D}', // ZERO WIDTH JOINER
+    '\u{2060}', // WORD JOINER
+    '\u{FEFF}', // ZERO WIDTH NO-BREAK SPACE / BOM
+    '\u{180E}', // MONGOLIAN VOWEL SEPARATOR
 ];
 
-fn strip_zero_width(text: &str) -> String {
+pub fn strip_zero_width(text: &str) -> String {
     text.chars().filter(|c| !ZERO_WIDTH.contains(c)).collect()
 }
 
-fn collapse_ws(text: &str) -> String {
+pub fn collapse_ws(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Lowercase, collapse whitespace, strip zero-width. Used before both hashes.
 pub fn normalize(text: &str) -> String {
     collapse_ws(&strip_zero_width(text).to_lowercase())
 }
 
-/// Split on blank lines after `normalize`. Empty paragraphs are dropped.
 pub fn paragraphs(text: &str) -> Vec<String> {
     let stripped = strip_zero_width(text)
         .to_lowercase()
@@ -129,12 +124,10 @@ fn flush_para(current: &mut Vec<&str>, out: &mut Vec<String>) {
     }
 }
 
-/// SHA-256 (lowercase hex) of `normalize(text)`.
 pub fn exact_hash(text: &str) -> String {
     sha256_hex(normalize(text).as_bytes())
 }
 
-/// Word shingles of size `n`. Empty if the token list is shorter than `n`.
 pub fn shingles(text: &str, n: usize) -> Vec<String> {
     if n == 0 {
         return Vec::new();
@@ -147,19 +140,23 @@ pub fn shingles(text: &str, n: usize) -> Vec<String> {
     words.windows(n).map(|w| w.join(" ")).collect()
 }
 
-fn u64_le_from_sha256(bytes: &[u8]) -> u64 {
-    let d = sha2::Sha256::digest(bytes);
-    u64::from_le_bytes(d[..8].try_into().expect("sha256 is 32 bytes"))
+/// First 8 digest bytes as little-endian u64.
+pub fn u64_from_sha256(bytes: &[u8]) -> u64 {
+    let hex = sha256_hex(bytes);
+    let mut out = [0u8; 8];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("sha256 hex");
+    }
+    u64::from_le_bytes(out)
 }
 
 fn hash_shingle(shingle: &str, seed: u64) -> u64 {
     let mut buf = Vec::with_capacity(8 + shingle.len());
     buf.extend_from_slice(&seed.to_le_bytes());
     buf.extend_from_slice(shingle.as_bytes());
-    u64_le_from_sha256(&buf)
+    u64_from_sha256(&buf)
 }
 
-/// `num_hashes` MinHash values of the shingle set.
 pub fn minhash_signature(text: &str, config: DedupConfig) -> Vec<u64> {
     let unique: BTreeSet<String> = shingles(text, config.shingle_size).into_iter().collect();
     if unique.is_empty() {
@@ -179,7 +176,7 @@ pub fn minhash_signature(text: &str, config: DedupConfig) -> Vec<u64> {
     sig
 }
 
-fn validate_config(config: DedupConfig) -> Result<()> {
+pub fn validate_config(config: DedupConfig) -> Result<()> {
     if config.shingle_size == 0 {
         return Err(Error::Config("shingle_size must be > 0".into()));
     }
@@ -192,7 +189,6 @@ fn validate_config(config: DedupConfig) -> Result<()> {
     }
 }
 
-/// Band keys: `bands` hashes, each over `rows` consecutive signature values.
 pub fn lsh_band_keys(signature: &[u64], config: DedupConfig) -> Result<Vec<u64>> {
     validate_config(config)?;
     if signature.len() != config.num_hashes {
@@ -208,7 +204,7 @@ pub fn lsh_band_keys(signature: &[u64], config: DedupConfig) -> Result<Vec<u64>>
         for x in slice {
             buf.extend_from_slice(&x.to_le_bytes());
         }
-        keys.push(u64_le_from_sha256(&buf));
+        keys.push(u64_from_sha256(&buf));
     }
     Ok(keys)
 }
@@ -241,7 +237,6 @@ fn empty_report() -> DedupReport {
     }
 }
 
-/// Drop exact duplicates at `grain`. Keep the lowest `content_hash`.
 pub fn dedup_exact(docs: &[Document], grain: Grain) -> Result<DedupReport> {
     if docs.is_empty() {
         return empty_corpus();
@@ -276,7 +271,10 @@ fn exact_document(docs: &[Document]) -> Result<DedupReport> {
 }
 
 fn paragraph_hashes(text: &str) -> Vec<String> {
-    paragraphs(text).into_iter().map(|p| exact_hash(&p)).collect()
+    paragraphs(text)
+        .into_iter()
+        .map(|p| exact_hash(&p))
+        .collect()
 }
 
 /// Drop the whole document if any paragraph hash matches a kept document.
@@ -342,7 +340,6 @@ impl Uf {
     }
 }
 
-/// MinHash LSH near-duplicate clustering. Union-find over shared band keys.
 pub fn dedup_near(docs: &[Document], config: DedupConfig) -> Result<DedupReport> {
     if docs.is_empty() {
         return empty_corpus();
@@ -410,7 +407,6 @@ fn select_kept(docs: &[Document], ids: &[String]) -> Vec<Document> {
         .collect()
 }
 
-/// Exact document, exact paragraph, then near. Later passes see earlier keeps.
 pub fn dedup_corpus(docs: &[Document], config: DedupConfig) -> Result<DedupReport> {
     if docs.is_empty() {
         return empty_corpus();
@@ -435,18 +431,21 @@ pub fn dedup_corpus(docs: &[Document], config: DedupConfig) -> Result<DedupRepor
     }))
 }
 
-/// SHA-256 of bytes as lowercase hex. Available to implementers; not the pass.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let d = sha2::Sha256::digest(bytes);
-    hex_lower(&d)
+pub fn jaccard(a: &str, b: &str, n: usize) -> f64 {
+    let sa: HashSet<String> = shingles(a, n).into_iter().collect();
+    let sb: HashSet<String> = shingles(b, n).into_iter().collect();
+    if sa.is_empty() && sb.is_empty() {
+        return 1.0;
+    }
+    let inter = sa.intersection(&sb).count() as f64;
+    let union = sa.union(&sb).count() as f64;
+    if union == 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
-    const H: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(H[(b >> 4) as usize] as char);
-        out.push(H[(b & 0x0f) as usize] as char);
-    }
-    out
+pub fn signature_matches(a: &[u64], b: &[u64]) -> usize {
+    a.iter().zip(b).filter(|(x, y)| x == y).count()
 }

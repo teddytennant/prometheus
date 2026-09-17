@@ -1,0 +1,37 @@
+[
+  {
+    "id": "keep-unique",
+    "text": "unique document about quantum foam and zebra orchids only",
+    "content_hash": "10"
+  },
+  {
+    "id": "keep-cats",
+    "text": "the quick brown fox jumps over the lazy dog and then runs home quickly today\n\nsecond paragraph about cats sitting on mats quietly",
+    "content_hash": "01"
+  },
+  {
+    "id": "drop-exact-doc",
+    "text": "The  Quick   BROWN fox jumps over the lazy dog and then runs home quickly today\n\nsecond paragraph about cats sitting on mats quietly",
+    "content_hash": "02"
+  },
+  {
+    "id": "drop-exact-para",
+    "text": "second paragraph about cats sitting on mats quietly\n\nthis other paragraph is brand new material about volcanoes",
+    "content_hash": "03"
+  },
+  {
+    "id": "keep-near-src",
+    "text": "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango",
+    "content_hash": "04"
+  },
+  {
+    "id": "drop-near",
+    "text": "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra ultra",
+    "content_hash": "05"
+  },
+  {
+    "id": "keep-short",
+    "text": "hi",
+    "content_hash": "06"
+  }
+]

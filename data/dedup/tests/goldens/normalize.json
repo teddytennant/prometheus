@@ -1,0 +1,15 @@
+[
+  {"in": "Hello World", "out": "hello world"},
+  {"in": "  Hello   WORLD  ", "out": "hello world"},
+  {"in": "Hello\t\nWorld", "out": "hello world"},
+  {"in": "hello world", "out": "hello world"},
+  {"in": "", "out": ""},
+  {"in": "   \t\n  ", "out": ""},
+  {"in": "Hello\u200bWorld", "out": "helloworld"},
+  {"in": "Hello \u200b World", "out": "hello world"},
+  {"in": "HELLO\ufeffWORLD", "out": "helloworld"},
+  {"in": "a\u200cb\u200dc\u2060d", "out": "abcd"},
+  {"in": "naïve CAFÉ", "out": "naïve café"},
+  {"in": "A\r\n\r\nB", "out": "a b"},
+  {"in": "one\u180etwo", "out": "onetwo"}
+]
