@@ -388,10 +388,7 @@ fn empty_statement_is_empty_statement() {
 
 #[test]
 fn empty_statement_does_not_advance_cursor() {
-    let rows = vec![
-        arc_src("bad", "", vec![vec![1]]),
-        arc_row(),
-    ];
+    let rows = vec![arc_src("bad", "", vec![vec![1]]), arc_row()];
     let mut f = ArcFactory::new(ARC_ID, rows.clone());
     assert_eq!(f.mint(NOW, CREATED), Err(Error::EmptyStatement));
     assert_eq!(f.mint(NOW, CREATED), Err(Error::EmptyStatement));
@@ -431,11 +428,19 @@ fn round_robin_advances_only_after_success_and_wraps() {
 
 #[test]
 fn research_round_robin_matches_reference() {
-    let rows = vec![research_kaggle_row(), research_speedrun_row(), research_paper_row()];
+    let rows = vec![
+        research_kaggle_row(),
+        research_speedrun_row(),
+        research_paper_row(),
+    ];
     let mut prod = ResearchFactory::new(RESEARCH_ID, rows);
     let mut refer = reference::RefResearch::from_prod(&prod);
     for k in 0..5 {
-        assert_eq!(prod.mint(NOW, CREATED), refer.mint(NOW, CREATED), "mint {k}");
+        assert_eq!(
+            prod.mint(NOW, CREATED),
+            refer.mint(NOW, CREATED),
+            "mint {k}"
+        );
     }
 }
 
@@ -476,7 +481,10 @@ fn wave2_horizons_are_pinned_on_minted_spec() {
     assert_eq!(h.spec.horizon_s, reference::LONG_HORIZON_S);
     assert_eq!(h.spec.horizon_s, 3600);
     assert!(h.spec.horizon_s >= 3600, "hours-scale");
-    assert_eq!(h.spec.max_tool_calls, reference::LONG_HORIZON_MAX_TOOL_CALLS);
+    assert_eq!(
+        h.spec.max_tool_calls,
+        reference::LONG_HORIZON_MAX_TOOL_CALLS
+    );
     assert_eq!(h.spec.max_tool_calls, 2000);
 }
 

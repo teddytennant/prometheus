@@ -222,10 +222,7 @@ fn long_horizon_all_checkpoints_and_final() {
 #[test]
 fn long_horizon_failed_checkpoint_fails() {
     let task = minted_lh();
-    let bad = reference::encode_long_horizon(
-        &["WRONG".into(), "beta".into()],
-        "omega",
-    );
+    let bad = reference::encode_long_horizon(&["WRONG".into(), "beta".into()], "omega");
     pin_probe_keep(&task, &[&bad]);
     let mut s = SeqSolver::from_replies(&[&bad]);
     let rate = reference::probe(&mut s, &task, 1, NOW).unwrap();
@@ -257,11 +254,7 @@ fn long_horizon_grid_checkpoint_uses_pass_k() {
         .mint(NOW, CREATED)
         .unwrap();
     // Ensure the payload is the mixed one we minted.
-    assert!(task
-        .long_horizon
-        .as_ref()
-        .unwrap()
-        .checkpoints[0]
+    assert!(task.long_horizon.as_ref().unwrap().checkpoints[0]
         .grid
         .is_some());
     let pass = reference::passing_attempt(&task);
@@ -337,7 +330,8 @@ fn open_ended_scripted_judge_weighted_gt_half() {
     for c in &oe.rubric.criteria {
         judge.insert(reference::grader_prompt(GRADER_ID, c, output), "0.9");
     }
-    let scores = reference::scripted_scores(&oe.rubric, GRADER_ID, output, &mut judge, NOW).unwrap();
+    let scores =
+        reference::scripted_scores(&oe.rubric, GRADER_ID, output, &mut judge, NOW).unwrap();
     let mut judge = ScriptedJudge::new();
     for c in &oe.rubric.criteria {
         judge.insert(reference::grader_prompt(GRADER_ID, c, output), "0.9");
@@ -358,13 +352,14 @@ fn open_ended_scripted_judge_le_half_not_solved() {
     for c in &oe.rubric.criteria {
         judge.insert(reference::grader_prompt(GRADER_ID, c, output), "0.4");
     }
-    let scores = reference::scripted_scores(&oe.rubric, GRADER_ID, output, &mut judge, NOW).unwrap();
+    let scores =
+        reference::scripted_scores(&oe.rubric, GRADER_ID, output, &mut judge, NOW).unwrap();
     let mut judge = ScriptedJudge::new();
     for c in &oe.rubric.criteria {
         judge.insert(reference::grader_prompt(GRADER_ID, c, output), "0.4");
     }
-    let weighted = reference::scripted_weighted(&oe.rubric, GRADER_ID, output, &mut judge, NOW)
-        .unwrap();
+    let weighted =
+        reference::scripted_weighted(&oe.rubric, GRADER_ID, output, &mut judge, NOW).unwrap();
     assert!(weighted <= 0.5);
     pin_probe_keep(&task, &[&reference::encode_open_ended(&scores)]);
 }

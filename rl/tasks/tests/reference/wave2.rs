@@ -130,7 +130,10 @@ fn checkpoint_hidden_bytes(cp: &Checkpoint) -> String {
         return format!("math:{}", math.expected);
     }
     if let Some(code) = &cp.code {
-        return format!("code:{}", String::from_utf8_lossy(&code.run.expected_stdout));
+        return format!(
+            "code:{}",
+            String::from_utf8_lossy(&code.run.expected_stdout)
+        );
     }
     if let Some(grid) = &cp.grid {
         return format!("grid:{}", hidden_hash_grid(&grid.expected));
@@ -143,7 +146,10 @@ fn final_hidden_bytes(task: &LongHorizonTask) -> String {
         return format!("math:{}", math.expected);
     }
     if let Some(code) = &task.final_code {
-        return format!("code:{}", String::from_utf8_lossy(&code.run.expected_stdout));
+        return format!(
+            "code:{}",
+            String::from_utf8_lossy(&code.run.expected_stdout)
+        );
     }
     String::new()
 }
@@ -453,11 +459,7 @@ pub fn scripted_weighted(
     now: NowMs,
 ) -> Result<f64> {
     let scores = scripted_scores(rubric, grader_id, output, judge, now)?;
-    let values: Vec<f64> = rubric
-        .criteria
-        .iter()
-        .map(|c| scores[&c.id.0])
-        .collect();
+    let values: Vec<f64> = rubric.criteria.iter().map(|c| scores[&c.id.0]).collect();
     Ok(weighted_mean(rubric, &values))
 }
 
@@ -699,4 +701,9 @@ wave2_factory!(
 );
 wave2_factory!(RefArc, ArcFactory, ArcSource, mint_arc);
 wave2_factory!(RefForecast, ForecastFactory, ForecastSource, mint_forecast);
-wave2_factory!(RefOpenEnded, OpenEndedFactory, OpenEndedSource, mint_open_ended);
+wave2_factory!(
+    RefOpenEnded,
+    OpenEndedFactory,
+    OpenEndedSource,
+    mint_open_ended
+);
