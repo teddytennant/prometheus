@@ -194,7 +194,7 @@ def test_apply_dihedral_matches_reference_on_several_grids():
         g(ROT90_SRC),
         g([[1, 2], [3, 4]]),
         g([[0, 1, 2], [3, 4, 5], [6, 7, 8]]),
-        g([[c] for c in range(MAX_GRID_SIZE)]),
+        g([[c % N_COLORS] for c in range(MAX_GRID_SIZE)]),
         g([list(range(N_COLORS)) + [0] * (MAX_GRID_SIZE - N_COLORS)]),
     ]
     for grid in grids:
