@@ -87,7 +87,12 @@ fn missing_decay_source_is_still_ok() {
     let got = decay_reweight(&base, 2.0).expect("public");
     let want = reference::decay_reweight(&base, 2.0).expect("reference");
     common::assert_mix_close(&got, &want);
-    assert!(got.weights[&Source::Code] > got.weights[&Source::Web]);
+    // two_source is web=0.75, code=0.25. Factor 2 then renormalize is
+    // code=0.4, web=0.6. Code rises vs the base mix; web still outranks it.
+    assert!(got.weights[&Source::Code] > base.weights[&Source::Code]);
+    assert!(got.weights[&Source::Web] < base.weights[&Source::Web]);
+    assert!(!got.weights.contains_key(&Source::MathScienceArxiv));
+    assert!(!got.weights.contains_key(&Source::SyntheticReasoning));
     assert_eq!(got.weights.len(), 2);
 }
 
