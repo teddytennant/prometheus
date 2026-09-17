@@ -1194,6 +1194,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-eval-gate"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-extract"
 version = "0.0.1"
 dependencies = [
