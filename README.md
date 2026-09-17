@@ -1,22 +1,21 @@
 # Prometheus
 
-Code for training a frontier model from scratch, written against an open spec. JAX
-for the model, Rust for the systems, a modified SGLang for rollouts and serving.
-It's a work in progress: the first modules are in and most of the stack isn't.
-Labs publish models but not the code that trains them. This is the public version.
+Nobody has ever released a full training script for a frontier model. Labs
+publish weights. This is the training code, against an open spec. JAX for the
+model, Rust for the systems, a modified SGLang for rollouts and serving. First
+modules are in; most of the stack isn't.
 
 The model thinks in latent space instead of writing out a long chain of thought.
-Each thought is the whole hidden state fed back in, not one token sampled from it, so
-more latent steps give better answers. [Coconut](https://arxiv.org/abs/2412.06769)
-and [Reverie](https://github.com/teddytennant/reverie) show it at small scale. It
-has never been done at frontier scale. It's very likely to work, since the model
-starts as a normal CoT reasoner and only learns to compress steps it already takes.
-If it fails, that's about 5% of the compute and you keep the CoT model.
+Each thought is the whole hidden state fed back in, not one token sampled from
+it, so more latent steps give better answers. [Coconut](https://arxiv.org/abs/2412.06769)
+and [Reverie](https://github.com/teddytennant/reverie) show it at small scale.
+Never done at frontier scale. Starts as a normal CoT reasoner and only learns
+to compress steps it already takes; if that fails it's about 5% of the compute
+and you keep the CoT model.
 
-There's no cluster. An agent swarm writes most of the ~1M lines, everything that
-doesn't need 220k GPUs gets tested on 32 shared H200s, and the latent scaling curve
-gets measured there first. The target is the code done and the H200 tests passing by
-the end of 2026.
+No cluster. An agent swarm writes most of the ~1M lines. Anything that doesn't
+need 220k GPUs is tested on 32 shared H200s first, including the latent scaling
+curve. Code and H200 tests by end of 2026.
 
 ## What's here so far
 
