@@ -1,4 +1,5 @@
-//! Minimal observability: metrics, tracing, run registry (spec 15.5 F2).
+//! Observability: metrics, tracing, run registry, dashboards, spike diagnosis
+//! (spec 15.5 F2 + I10).
 //!
 //! F1 contracts this crate speaks:
 //! - run records are identified by a `run_id` string
@@ -6,14 +7,22 @@
 //!   (`contracts/schemas/v1/event_log.schema.json`): hash-chained, seq,
 //!   prev_hash, hash, timestamp, event_type, payload, payload_hash
 //!
-//! This is the in-process side. Dashboards (I10) come later. Nothing here
-//! talks to the network.
+//! F2 is the in-process side (metrics, tracer, registry). I10 adds dashboards
+//! (JSON snapshots a TS frontend can render) and the spec 5.5 loss-spike
+//! policy: rollback, skip the shard, log it, page on the second spike within
+//! 10k steps. Batch reconstruction for a spiked step is
+//! [`prometheus_loader::reconstruct`] (spec 7.2).
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// Batch reconstruction for spike diagnosis (spec 7.2).
+pub use prometheus_loader::{
+    reconstruct as reconstruct_batch, Batch, LoaderState, PackedSequence, Packing,
+};
 
 /// Failures from the registry or a metric name that is already a different kind.
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +33,12 @@ pub enum Error {
     DuplicateRun(String),
     #[error("metric {0} already registered as a different kind")]
     KindMismatch(String),
+    #[error("spike log is empty")]
+    EmptyHistory,
+    #[error("unknown metric {0}")]
+    UnknownMetric(String),
+    #[error("spike config: {0}")]
+    BadSpikeConfig(&'static str),
     #[error("obs: {0}")]
     Other(String),
 }
@@ -367,4 +382,189 @@ fn civil_from_unix_days(days: i64) -> (i64, u32, u32) {
         year += 1;
     }
     (year, month, day)
+}
+
+/// Spec 5.5: page a human on the second spike within this many steps.
+pub const PAGE_WINDOW_STEPS: u64 = 10_000;
+
+pub const EVENT_LOSS_SPIKE: &str = "loss_spike";
+pub const EVENT_SKIP_SHARD: &str = "skip_shard";
+pub const EVENT_PAGE: &str = "page";
+
+/// One training-step loss observation, tagged with the data shard that produced it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LossSample {
+    pub step: u64,
+    pub loss: f64,
+    pub shard_id: String,
+    pub run_id: String,
+}
+
+/// A detected loss spike (spec 5.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpikeEvent {
+    pub step: u64,
+    pub loss: f64,
+    pub baseline: f64,
+    pub shard_id: String,
+    pub run_id: String,
+}
+
+/// Record that a shard was skipped after a spike.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkipShardRecord {
+    pub shard_id: String,
+    pub step: u64,
+    pub run_id: String,
+    pub reason: String,
+}
+
+/// Actions the spike policy emits for one observation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SpikeAction {
+    /// Roll back to the last in-memory checkpoint (spec 5.5).
+    Rollback { checkpoint_step: u64 },
+    /// Skip the offending data shard and keep going.
+    SkipShard { shard_id: String },
+    /// Append a `loss_spike` event to the run log.
+    Log { event: SpikeEvent },
+    /// Page a human. Spec 5.5: second spike inside [`PAGE_WINDOW_STEPS`].
+    Page { message: String },
+}
+
+/// Thresholds for spike detection. The 10k-step page window is spec-locked;
+/// relative threshold and baseline window are oracle-locked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpikeConfig {
+    pub page_window_steps: u64,
+    pub relative_threshold: f64,
+    pub baseline_window: usize,
+}
+
+impl SpikeConfig {
+    pub fn new(page_window_steps: u64, relative_threshold: f64, baseline_window: usize) -> Self {
+        Self {
+            page_window_steps,
+            relative_threshold,
+            baseline_window,
+        }
+    }
+}
+
+/// Stateful loss-spike policy (spec 5.5).
+///
+/// On a spike: rollback to the last in-memory checkpoint, skip the shard, log
+/// it. A second spike within `page_window_steps` also pages a human.
+#[derive(Debug, Clone)]
+pub struct SpikeLog {
+    pub config: SpikeConfig,
+    pub last_checkpoint_step: u64,
+    skipped: Vec<SkipShardRecord>,
+    spikes: Vec<SpikeEvent>,
+}
+
+impl SpikeLog {
+    pub fn new(config: SpikeConfig, last_checkpoint_step: u64) -> Self {
+        Self {
+            config,
+            last_checkpoint_step,
+            skipped: Vec::new(),
+            spikes: Vec::new(),
+        }
+    }
+
+    /// Record one loss sample. Returns the actions to take (possibly empty).
+    pub fn observe(&mut self, sample: &LossSample) -> Result<Vec<SpikeAction>> {
+        let _ = sample;
+        unimplemented!("I10 SpikeLog::observe")
+    }
+
+    pub fn skipped_shards(&self) -> &[SkipShardRecord] {
+        &self.skipped
+    }
+
+    pub fn spikes(&self) -> &[SpikeEvent] {
+        &self.spikes
+    }
+}
+
+/// One (step, value) point on a dashboard series.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesPoint {
+    pub step: u64,
+    pub value: f64,
+}
+
+/// Step-stamped metric history. Distinct from [`Metrics`], which stores only
+/// the current value of each series.
+#[derive(Debug, Default, Clone)]
+pub struct MetricLog {
+    _private: (),
+}
+
+impl MetricLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&mut self, name: &str, labels: &Labels, step: u64, value: f64) -> Result<()> {
+        let _ = (name, labels, step, value);
+        unimplemented!("I10 MetricLog::record")
+    }
+
+    pub fn series(&self, name: &str, labels: &Labels) -> Result<Vec<SeriesPoint>> {
+        let _ = (name, labels);
+        unimplemented!("I10 MetricLog::series")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelKind {
+    Timeseries,
+    Gauge,
+    Table,
+    Log,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Panel {
+    pub id: String,
+    pub title: String,
+    pub metric_name: String,
+    pub kind: PanelKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dashboard {
+    pub id: String,
+    pub title: String,
+    pub panels: Vec<Panel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelSnapshot {
+    pub panel_id: String,
+    pub points: Vec<SeriesPoint>,
+}
+
+/// JSON-serializable dashboard view for a TS frontend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DashboardSnapshot {
+    pub dashboard_id: String,
+    pub generated_at: String,
+    pub panels: Vec<PanelSnapshot>,
+    pub recent_spikes: Vec<SpikeEvent>,
+}
+
+/// Render a dashboard from a metric log and recent spikes.
+pub fn snapshot(
+    dashboard: &Dashboard,
+    log: &MetricLog,
+    spikes: &[SpikeEvent],
+    generated_at: &str,
+) -> Result<DashboardSnapshot> {
+    let _ = (dashboard, log, spikes, generated_at);
+    unimplemented!("I10 snapshot")
 }
