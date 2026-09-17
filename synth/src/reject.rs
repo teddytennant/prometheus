@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Error, Generator, Result, TokenCounter, DEFAULT_MAX_BATCH, DEFAULT_MAX_TOKENS,
+    token_count, Error, Generator, Result, TokenCounter, DEFAULT_MAX_BATCH, DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
 };
 
@@ -144,6 +144,65 @@ pub fn generate_solve_prompt(problem: &Problem) -> Result<String> {
     ))
 }
 
+/// Last complete ``` fence body, or None if none / only unclosed.
+///
+/// Opening fence is three backticks at the start of the text or just after a
+/// newline. Rest of that line is the language tag (discarded). One leading
+/// newline after the tag line is stripped. Body runs until the next ```.
+/// No closer means the opening is not a fence.
+fn last_fence_body(text: &str) -> Option<String> {
+    let mut last = None;
+    let mut i = 0;
+    while i < text.len() {
+        let Some(rel) = text[i..].find("```") else {
+            break;
+        };
+        let idx = i + rel;
+        if idx != 0 && text.as_bytes()[idx - 1] != b'\n' {
+            i = idx + 3;
+            continue;
+        }
+        let after = idx + 3;
+        let Some(nl_rel) = text[after..].find('\n') else {
+            break;
+        };
+        let nl = after + nl_rel;
+        let Some(close_rel) = text[nl + 1..].find("```") else {
+            break;
+        };
+        let close = nl + 1 + close_rel;
+        last = Some(text[nl + 1..close].to_string());
+        i = close + 3;
+    }
+    last
+}
+
+/// Capture of `(?i)^answer\s*:\s*(.*)$` if the capture is non-empty, trimmed.
+fn answer_capture(line: &str) -> Option<String> {
+    let mut chars = line.chars().peekable();
+    for expect in ['a', 'n', 's', 'w', 'e', 'r'] {
+        match chars.next() {
+            Some(c) if c.eq_ignore_ascii_case(&expect) => {}
+            _ => return None,
+        }
+    }
+    while chars.peek().copied().is_some_and(char::is_whitespace) {
+        chars.next();
+    }
+    match chars.next() {
+        Some(':') => {}
+        _ => return None,
+    }
+    while chars.peek().copied().is_some_and(char::is_whitespace) {
+        chars.next();
+    }
+    let cap: String = chars.collect();
+    if cap.is_empty() {
+        return None;
+    }
+    Some(cap.trim().to_string())
+}
+
 /// Extract the answer the D2 verifier should see.
 ///
 /// 1. Strip trailing whitespace. Empty is empty.
@@ -156,8 +215,31 @@ pub fn generate_solve_prompt(problem: &Problem) -> Result<String> {
 ///
 /// This is the only parse step. The verifier does not re-parse the reasoning.
 pub fn extract_answer(text: &str) -> String {
-    let _ = text;
-    unimplemented!("E2 extract_answer")
+    let text = text.trim_end();
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let mut last_ans: Option<String> = None;
+    for line in text.lines() {
+        if let Some(ans) = answer_capture(line) {
+            last_ans = Some(ans);
+        }
+    }
+    if let Some(ans) = last_ans {
+        return ans;
+    }
+
+    if let Some(body) = last_fence_body(text) {
+        return body;
+    }
+
+    for line in text.lines().rev() {
+        if !line.trim().is_empty() {
+            return line.to_string();
+        }
+    }
+    String::new()
 }
 
 /// Gate: `sum n_accepted / sum n_generated` over `results`. Empty or zero
@@ -172,10 +254,49 @@ pub fn verified_correct_rate(results: &[RejectionResult]) -> f64 {
     }
 }
 
+fn generate_chunked(
+    generator: &mut dyn Generator,
+    prompts: &[String],
+    max_tokens: u32,
+    temperature: f32,
+    max_batch: usize,
+) -> Result<Vec<String>> {
+    let mut completions = Vec::with_capacity(prompts.len());
+    for chunk in prompts.chunks(max_batch) {
+        let outs = generator.generate(chunk, max_tokens, temperature)?;
+        if outs.len() != chunk.len() {
+            return Err(Error::LengthMismatch {
+                want: chunk.len(),
+                got: outs.len(),
+            });
+        }
+        completions.extend(outs);
+    }
+    Ok(completions)
+}
+
+fn one_sample(
+    verifier: &mut dyn Verifier,
+    tokenizer: Option<&dyn TokenCounter>,
+    problem: &Problem,
+    text: &str,
+) -> Result<Sample> {
+    let answer = extract_answer(text);
+    let passed = verifier
+        .verify(problem, &answer)
+        .map_err(|e| Error::Message(e.to_string()))?;
+    Ok(Sample {
+        problem_id: problem.problem_id.clone(),
+        text: text.to_string(),
+        answer,
+        passed,
+        token_count: token_count(text, tokenizer),
+    })
+}
+
 /// Batch rejection sampling. `generator` is F5. `verifier` is D2.
 /// `tokenizer` is F6 when token counts should match the frozen vocab; omit
 /// it to count whitespace words.
-#[allow(dead_code)]
 pub struct RejectionSampler {
     generator: Box<dyn Generator>,
     verifier: Box<dyn Verifier>,
@@ -210,14 +331,73 @@ impl RejectionSampler {
     /// `n` completions for one problem. `n == 0` is [`Error::ZeroSamples`].
     /// Empty prompt is [`Error::EmptyPrompt`].
     pub fn sample(&mut self, problem: &Problem, n: u32) -> Result<RejectionResult> {
-        let _ = (problem, n);
-        unimplemented!("E2 RejectionSampler::sample")
+        if n == 0 {
+            return Err(Error::ZeroSamples);
+        }
+        let prompt = generate_solve_prompt(problem)?;
+        let prompts = vec![prompt; n as usize];
+        let completions = generate_chunked(
+            self.generator.as_mut(),
+            &prompts,
+            self.config.max_tokens,
+            self.config.temperature,
+            self.config.max_batch as usize,
+        )?;
+        let tokenizer = self.tokenizer.as_deref();
+        let verifier = self.verifier.as_mut();
+        let mut samples = Vec::with_capacity(completions.len());
+        for text in &completions {
+            samples.push(one_sample(verifier, tokenizer, problem, text)?);
+        }
+        let n_accepted = samples.iter().filter(|s| s.passed).count() as u32;
+        Ok(RejectionResult {
+            problem_id: problem.problem_id.clone(),
+            n_generated: n,
+            n_accepted,
+            samples,
+        })
     }
 
     /// `n` completions per problem, chunked by `max_batch`. Empty `problems`
     /// is [`Error::EmptyBatch`]. Result order matches `problems`.
     pub fn sample_many(&mut self, problems: &[Problem], n: u32) -> Result<Vec<RejectionResult>> {
-        let _ = (problems, n);
-        unimplemented!("E2 RejectionSampler::sample_many")
+        if problems.is_empty() {
+            return Err(Error::EmptyBatch);
+        }
+        if n == 0 {
+            return Err(Error::ZeroSamples);
+        }
+        let mut prompts = Vec::with_capacity(problems.len() * n as usize);
+        for problem in problems {
+            let prompt = generate_solve_prompt(problem)?;
+            prompts.extend(std::iter::repeat_n(prompt, n as usize));
+        }
+        let completions = generate_chunked(
+            self.generator.as_mut(),
+            &prompts,
+            self.config.max_tokens,
+            self.config.temperature,
+            self.config.max_batch as usize,
+        )?;
+        let tokenizer = self.tokenizer.as_deref();
+        let verifier = self.verifier.as_mut();
+        let mut results = Vec::with_capacity(problems.len());
+        let mut idx = 0;
+        let n_us = n as usize;
+        for problem in problems {
+            let mut samples = Vec::with_capacity(n_us);
+            for text in &completions[idx..idx + n_us] {
+                samples.push(one_sample(verifier, tokenizer, problem, text)?);
+            }
+            idx += n_us;
+            let n_accepted = samples.iter().filter(|s| s.passed).count() as u32;
+            results.push(RejectionResult {
+                problem_id: problem.problem_id.clone(),
+                n_generated: n,
+                n_accepted,
+                samples,
+            });
+        }
+        Ok(results)
     }
 }

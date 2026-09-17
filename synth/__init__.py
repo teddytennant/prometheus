@@ -466,6 +466,31 @@ def generate_solve_prompt(problem: Problem) -> str:
     )
 
 
+_ANSWER_LINE = re.compile(r"(?i)^answer\s*:\s*(.*)$")
+
+
+def _last_fence_body(text: str) -> str | None:
+    """Body of the last complete ``` fence, or None if none / only unclosed."""
+    last: str | None = None
+    i = 0
+    while True:
+        idx = text.find("```", i)
+        if idx < 0:
+            break
+        if idx != 0 and text[idx - 1] != "\n":
+            i = idx + 3
+            continue
+        nl = text.find("\n", idx + 3)
+        if nl < 0:
+            break
+        close = text.find("```", nl + 1)
+        if close < 0:
+            break
+        last = text[nl + 1 : close]
+        i = close + 3
+    return last
+
+
 def extract_answer(text: str) -> str:
     """Extract the answer the D2 verifier should see.
 
@@ -479,7 +504,29 @@ def extract_answer(text: str) -> str:
 
     This is the only parse step. The verifier does not re-parse the reasoning.
     """
-    raise NotImplementedError("E2 extract_answer")
+    text = text.rstrip()
+    if text == "":
+        return ""
+
+    last_ans: str | None = None
+    for line in text.splitlines():
+        m = _ANSWER_LINE.match(line)
+        if m is None:
+            continue
+        cap = m.group(1)
+        if cap:
+            last_ans = cap.strip()
+    if last_ans is not None:
+        return last_ans
+
+    body = _last_fence_body(text)
+    if body is not None:
+        return body
+
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            return line
+    return ""
 
 
 def verified_correct_rate(results: Sequence[RejectionResult]) -> float:
@@ -490,6 +537,42 @@ def verified_correct_rate(results: Sequence[RejectionResult]) -> float:
     if generated == 0:
         return 0.0
     return accepted / generated
+
+
+def _generate_chunked(
+    generator: Generator,
+    prompts: Sequence[str],
+    max_tokens: int,
+    temperature: float,
+    max_batch: int,
+) -> list[str]:
+    completions: list[str] = []
+    for i in range(0, len(prompts), max_batch):
+        chunk = list(prompts[i : i + max_batch])
+        outs = generator.generate(chunk, max_tokens, temperature)
+        if len(outs) != len(chunk):
+            raise SynthError(
+                f"generator returned {len(outs)} completions for {len(chunk)} prompts"
+            )
+        completions.extend(outs)
+    return completions
+
+
+def _one_sample(
+    problem: Problem,
+    text: str,
+    verifier: Verifier,
+    tokenizer: TokenCounter | None,
+) -> Sample:
+    answer = extract_answer(text)
+    passed = verifier.verify(problem, answer)
+    return Sample(
+        problem_id=problem.problem_id,
+        text=text,
+        answer=answer,
+        passed=passed,
+        token_count=token_count(text, tokenizer),
+    )
 
 
 class RejectionSampler:
@@ -515,7 +598,29 @@ class RejectionSampler:
         :class:`SynthError`. Empty prompt raises :class:`SynthError`.
         Default ``n`` is ``config.n_samples``.
         """
-        raise NotImplementedError("E2 RejectionSampler.sample")
+        if n is None:
+            n = self.config.n_samples
+        if n == 0:
+            raise SynthError("n_samples must be > 0")
+        prompt = generate_solve_prompt(problem)
+        prompts = [prompt] * n
+        completions = _generate_chunked(
+            self.generator,
+            prompts,
+            self.config.max_tokens,
+            self.config.temperature,
+            self.config.max_batch,
+        )
+        samples = [
+            _one_sample(problem, text, self.verifier, self.tokenizer) for text in completions
+        ]
+        n_accepted = sum(1 for s in samples if s.passed)
+        return RejectionResult(
+            problem_id=problem.problem_id,
+            n_generated=n,
+            n_accepted=n_accepted,
+            samples=tuple(samples),
+        )
 
     def sample_many(
         self, problems: Sequence[Problem], n: int | None = None
@@ -524,7 +629,39 @@ class RejectionSampler:
         ``problems`` raises :class:`SynthError`. Result order matches
         ``problems``. Default ``n`` is ``config.n_samples``.
         """
-        raise NotImplementedError("E2 RejectionSampler.sample_many")
+        if len(problems) == 0:
+            raise SynthError("empty batch")
+        if n is None:
+            n = self.config.n_samples
+        if n == 0:
+            raise SynthError("n_samples must be > 0")
+        prompts: list[str] = []
+        for problem in problems:
+            prompt = generate_solve_prompt(problem)
+            prompts.extend([prompt] * n)
+        completions = _generate_chunked(
+            self.generator,
+            prompts,
+            self.config.max_tokens,
+            self.config.temperature,
+            self.config.max_batch,
+        )
+        results: list[RejectionResult] = []
+        idx = 0
+        for problem in problems:
+            texts = completions[idx : idx + n]
+            idx += n
+            samples = [_one_sample(problem, text, self.verifier, self.tokenizer) for text in texts]
+            n_accepted = sum(1 for s in samples if s.passed)
+            results.append(
+                RejectionResult(
+                    problem_id=problem.problem_id,
+                    n_generated=n,
+                    n_accepted=n_accepted,
+                    samples=tuple(samples),
+                )
+            )
+        return results
 
 
 class Dihedral(StrEnum):
