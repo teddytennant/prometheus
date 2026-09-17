@@ -16,6 +16,9 @@
 //! Gate: planted wrong answers are rejected (`passed == false`). Markets
 //! use a proper score against the market price, never live trading.
 
+mod engine;
+mod math;
+
 use std::collections::BTreeMap;
 
 use prometheus_envs::{Backend, Image, Pool};
@@ -365,8 +368,8 @@ impl Default for TinyKernel {
 }
 
 impl Kernel for TinyKernel {
-    fn check(&self, _theorem: &str, _proof: &str) -> Result<bool> {
-        unimplemented!("D2: TinyKernel::check")
+    fn check(&self, theorem: &str, proof: &str) -> Result<bool> {
+        math::tiny_kernel_check(theorem, proof)
     }
 }
 
@@ -382,8 +385,26 @@ impl LeanCli {
 }
 
 impl Kernel for LeanCli {
-    fn check(&self, _theorem: &str, _proof: &str) -> Result<bool> {
-        unimplemented!("D2: LeanCli::check")
+    fn check(&self, theorem: &str, proof: &str) -> Result<bool> {
+        let th = math::collapse_ws(theorem);
+        let pr = math::collapse_ws(proof);
+        if th.is_empty() {
+            return Err(Error::Lean("empty theorem".into()));
+        }
+        if pr.is_empty() {
+            return Err(Error::Lean("empty proof".into()));
+        }
+        let src = format!("{th}\n{pr}\n");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "prom-d2-{}.lean",
+            engine::sha256_hex(src.as_bytes())
+        ));
+        std::fs::write(&path, src.as_bytes()).map_err(|e| Error::Lean(e.to_string()))?;
+        let output = std::process::Command::new(&self.lean).arg(&path).output();
+        let _ = std::fs::remove_file(&path);
+        let output = output.map_err(|e| Error::Lean(e.to_string()))?;
+        Ok(output.status.success())
     }
 }
 
@@ -419,12 +440,12 @@ impl<B: Backend> SandboxedTests<B> {
     /// passes while mutants fail scores 1. A wrong answer scores 0.
     pub fn verify(
         &mut self,
-        _req: &RewardRequest,
-        _answer: &Answer,
-        _scored_at: &str,
-        _now: NowMs,
+        req: &RewardRequest,
+        answer: &Answer,
+        scored_at: &str,
+        now: NowMs,
     ) -> Result<RewardResponse> {
-        unimplemented!("D2: SandboxedTests::verify")
+        engine::verify_sandboxed(&mut self.pool, &self.task, req, answer, scored_at, now)
     }
 }
 
@@ -448,23 +469,28 @@ impl SymbolicMath {
 
     /// Strip latex noise and whitespace. Used before equivalence.
     pub fn canonicalize(input: &str) -> String {
-        let _ = input;
-        unimplemented!("D2: SymbolicMath::canonicalize")
+        math::canonicalize(input)
     }
 
     pub fn equivalent(left: &str, right: &str) -> bool {
-        let _ = (left, right);
-        unimplemented!("D2: SymbolicMath::equivalent")
+        math::equivalent(left, right)
     }
 
     pub fn verify(
         &self,
-        _req: &RewardRequest,
-        _answer: &Answer,
-        _scored_at: &str,
+        req: &RewardRequest,
+        answer: &Answer,
+        scored_at: &str,
         _now: NowMs,
     ) -> Result<RewardResponse> {
-        unimplemented!("D2: SymbolicMath::verify")
+        let Answer::Math { latex } = answer else {
+            return Err(Error::WrongKind);
+        };
+        let ok = Self::equivalent(latex, &self.task.expected);
+        let mut resp = engine::base_response(req, scored_at, if ok { 1.0 } else { 0.0 }, ok);
+        resp.evidence
+            .push(engine::evidence(EvidenceKind::Symbolic, latex));
+        Ok(resp)
     }
 }
 
@@ -490,13 +516,31 @@ impl<K: Kernel> LeanCheck<K> {
 
     pub fn verify(
         &self,
-        _req: &RewardRequest,
-        _answer: &Answer,
-        _scored_at: &str,
+        req: &RewardRequest,
+        answer: &Answer,
+        scored_at: &str,
         _now: NowMs,
     ) -> Result<RewardResponse> {
-        unimplemented!("D2: LeanCheck::verify")
+        let Answer::Lean { proof } = answer else {
+            return Err(Error::WrongKind);
+        };
+        let ok = self.kernel.check(&self.task.theorem, proof)?;
+        let mut resp = engine::base_response(req, scored_at, if ok { 1.0 } else { 0.0 }, ok);
+        resp.evidence
+            .push(engine::evidence(EvidenceKind::Lean, proof));
+        Ok(resp)
     }
+}
+
+fn grid_valid(g: &Grid) -> Result<()> {
+    if g.cells.is_empty() || g.cells.iter().any(|r| r.is_empty()) {
+        return Err(Error::BadGrid);
+    }
+    let w = g.cells[0].len();
+    if g.cells.iter().any(|r| r.len() != w) {
+        return Err(Error::BadGrid);
+    }
+    Ok(())
 }
 
 /// Exact grid match, pass@[`GRID_PASS_K`].
@@ -519,12 +563,28 @@ impl GridMatch {
 
     pub fn verify(
         &self,
-        _req: &RewardRequest,
-        _answer: &Answer,
-        _scored_at: &str,
+        req: &RewardRequest,
+        answer: &Answer,
+        scored_at: &str,
         _now: NowMs,
     ) -> Result<RewardResponse> {
-        unimplemented!("D2: GridMatch::verify")
+        let Answer::Grid { grids } = answer else {
+            return Err(Error::WrongKind);
+        };
+        if grids.len() > GRID_PASS_K {
+            return Err(Error::TooManyGrids);
+        }
+        grid_valid(&self.task.expected)?;
+        for g in grids {
+            grid_valid(g)?;
+        }
+        let ok = grids.iter().any(|g| g == &self.task.expected);
+        let mut resp = engine::base_response(req, scored_at, if ok { 1.0 } else { 0.0 }, ok);
+        resp.evidence.push(engine::evidence(
+            EvidenceKind::Grid,
+            &format!("{:?}", self.task.expected),
+        ));
+        Ok(resp)
     }
 }
 
@@ -548,18 +608,31 @@ impl MarketResolution {
 
     /// `ln p(outcome) - ln p_market(outcome)` with [`PROB_EPS`] clamp.
     pub fn relative_log_score(model_p: f64, market_p: f64, outcome: bool) -> Result<f64> {
-        let _ = (model_p, market_p, outcome);
-        unimplemented!("D2: MarketResolution::relative_log_score")
+        if !(0.0..=1.0).contains(&model_p) {
+            return Err(Error::BadProbability(model_p));
+        }
+        if !(0.0..=1.0).contains(&market_p) {
+            return Err(Error::BadProbability(market_p));
+        }
+        let p_out = if outcome { model_p } else { 1.0 - model_p };
+        let m_out = if outcome { market_p } else { 1.0 - market_p };
+        let pm = p_out.clamp(PROB_EPS, 1.0 - PROB_EPS);
+        let pk = m_out.clamp(PROB_EPS, 1.0 - PROB_EPS);
+        Ok(pm.ln() - pk.ln())
     }
 
     pub fn verify(
         &self,
-        _req: &RewardRequest,
-        _answer: &Answer,
-        _scored_at: &str,
+        req: &RewardRequest,
+        answer: &Answer,
+        scored_at: &str,
         _now: NowMs,
     ) -> Result<RewardResponse> {
-        unimplemented!("D2: MarketResolution::verify")
+        let Answer::Forecast { p } = answer else {
+            return Err(Error::WrongKind);
+        };
+        let score = Self::relative_log_score(*p, self.task.market_p, self.task.outcome)?;
+        Ok(engine::base_response(req, scored_at, score, score > 0.0))
     }
 }
 
