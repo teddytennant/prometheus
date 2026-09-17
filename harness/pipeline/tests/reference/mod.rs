@@ -282,7 +282,7 @@ impl RefPipeline {
         if !self.expected_ids.iter().any(|id| id == &candidate.id) {
             return Err(Error::NoCandidate(candidate.id.0));
         }
-        let item = ref_work_payload(
+        let mut item = ref_work_payload(
             &self.module,
             ROLE_PIPELINE,
             json!({
@@ -293,6 +293,7 @@ impl RefPipeline {
                 "patch": candidate.patch,
             }),
         );
+        item.task_id = self.uniquify_control_task_id(item.task_id);
         self.enqueue(item, now)?;
         upsert_candidate(&mut self.submitted, candidate);
         Ok(())
@@ -382,6 +383,24 @@ impl RefPipeline {
 
     fn enqueue(&mut self, item: WorkItem, now: NowMs) -> Result<TaskId> {
         Ok(self.queue.enqueue(item, now)?)
+    }
+
+    /// Queue task ids must be unique. A resubmit keeps the canonical
+    /// `work_payload` extra (so `open` still sees `op` / candidate / patch) but
+    /// suffixes `#1`, `#2`, … onto the control task id when the canonical id is
+    /// already in the log. ROLE_* ids are never passed through here.
+    fn uniquify_control_task_id(&self, canonical: TaskId) -> TaskId {
+        if self.queue.get(&canonical).is_none() {
+            return canonical;
+        }
+        let mut n = 1u64;
+        loop {
+            let tagged = TaskId(format!("{}#{n}", canonical.0));
+            if self.queue.get(&tagged).is_none() {
+                return tagged;
+            }
+            n = n.checked_add(1).expect("task id suffix overflow");
+        }
     }
 
     fn enqueue_implementers(&mut self, now: NowMs) -> Result<Vec<TaskId>> {
