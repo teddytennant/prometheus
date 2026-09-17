@@ -5,8 +5,8 @@ mod common;
 mod reference;
 
 use common::{
-    assert_bad_signature, assert_frozen, assert_queued, caps_cpu, fresh_node_dir, good_freeze,
-    bad_freeze, item_plain, open_queue, slot_config, T0,
+    assert_bad_signature, assert_frozen, assert_queued, bad_freeze, caps_cpu, fresh_node_dir,
+    good_freeze, item_plain, open_queue, slot_config, T0,
 };
 use prometheus_mesh::Mesh;
 use reference::{signature_ok, RefMesh};
@@ -94,7 +94,8 @@ fn empty_signature_is_bad_unless_empty_payload() {
         })
         .expect_err("empty sig");
     assert_bad_signature(&err);
-    mesh.freeze(good_freeze("", "k")).expect("empty payload + empty sig");
+    mesh.freeze(good_freeze("", "k"))
+        .expect("empty payload + empty sig");
     assert!(mesh.is_frozen());
 }
 
@@ -114,7 +115,9 @@ fn reference_freeze_matches_production_errors() {
         .freeze(bad_freeze("halt", "key-0"))
         .expect_err("ref bad");
     assert!(!refer.is_frozen());
-    refer.freeze(good_freeze("halt", "key-0")).expect("ref good");
+    refer
+        .freeze(good_freeze("halt", "key-0"))
+        .expect("ref good");
     assert!(refer.is_frozen());
     let err = refer.advertise(caps_cpu(), T0).expect_err("ref frozen adv");
     assert_frozen(&err, "ref advertise");

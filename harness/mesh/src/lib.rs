@@ -184,11 +184,9 @@ impl Mesh {
         }
         let caps = self.last_caps();
         queue
-            .claim_if(
-                &WorkerId(self.id().to_string()),
-                now,
-                |task| caps_satisfy(&caps, &task.payload),
-            )
+            .claim_if(&WorkerId(self.id().to_string()), now, |task| {
+                caps_satisfy(&caps, &task.payload)
+            })
             .map_err(|e| Error::Other(e.to_string()))
     }
 
@@ -275,7 +273,9 @@ impl LocalMesh {
     }
 
     pub fn get(&mut self, i: usize) -> Result<&mut Mesh> {
-        self.nodes.get_mut(i).ok_or_else(|| Error::NotFound(i.to_string()))
+        self.nodes
+            .get_mut(i)
+            .ok_or_else(|| Error::NotFound(i.to_string()))
     }
 
     pub fn partition(&mut self, isolated: &[usize]) -> Result<()> {
@@ -291,9 +291,7 @@ impl LocalMesh {
     /// Drive advert gossip and apply pending freeze on reconnect.
     pub fn tick(&mut self, _now: NowMs) -> Result<()> {
         let n = self.nodes.len();
-        let connected: Vec<usize> = (0..n)
-            .filter(|i| !self.isolated.contains(i))
-            .collect();
+        let connected: Vec<usize> = (0..n).filter(|i| !self.isolated.contains(i)).collect();
         let mut best: BTreeMap<String, Advert> = BTreeMap::new();
         for &i in &connected {
             for a in &self.nodes[i].adverts {

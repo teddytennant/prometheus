@@ -10,10 +10,7 @@ use prometheus_leases::{
 };
 use reference::RefQueue;
 
-fn find<'a>(
-    q: &'a Queue,
-    event_type: &str,
-) -> &'a prometheus_log::Event {
+fn find<'a>(q: &'a Queue, event_type: &str) -> &'a prometheus_log::Event {
     q.log()
         .iter()
         .find(|e| e.event_type == event_type)
@@ -125,10 +122,7 @@ fn expire_due_or_reclaim_records_expired_and_claimed_attempt_two() {
     q.claim(&worker("A"), 0).expect("claim");
     let now = short_ttl();
     let _ = q.expire_due(now).expect("expire_due");
-    let lease = q
-        .claim(&worker("B"), now)
-        .expect("reclaim")
-        .expect("some");
+    let lease = q.claim(&worker("B"), now).expect("reclaim").expect("some");
     assert_eq!(lease.attempt, 2);
 
     let claimed_two = q
@@ -153,6 +147,10 @@ fn expire_due_or_reclaim_records_expired_and_claimed_attempt_two() {
         .collect();
     if let Some(exp) = expired.first() {
         assert_eq!(exp.task_id.as_deref(), Some("t1"));
-        assert_eq!(exp.attempt, Some(1), "expired event carries the old attempt");
+        assert_eq!(
+            exp.attempt,
+            Some(1),
+            "expired event carries the old attempt"
+        );
     }
 }

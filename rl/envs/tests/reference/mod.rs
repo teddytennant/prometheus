@@ -25,8 +25,21 @@ use prometheus_envs::{
 use sha2::{Digest, Sha256};
 
 const NETWORK_BINS: &[&str] = &[
-    "curl", "wget", "nc", "netcat", "ssh", "scp", "sftp", "nmap", "ping", "telnet", "ftp", "host",
-    "dig", "nslookup", "traceroute",
+    "curl",
+    "wget",
+    "nc",
+    "netcat",
+    "ssh",
+    "scp",
+    "sftp",
+    "nmap",
+    "ping",
+    "telnet",
+    "ftp",
+    "host",
+    "dig",
+    "nslookup",
+    "traceroute",
 ];
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -147,9 +160,7 @@ impl RefPool {
     pub fn register_image(&mut self, mut image: Image) -> Result<ImageId> {
         for name in image.env.keys() {
             if credential_like_key(name) {
-                return Err(Error::CredentialInSandbox {
-                    name: name.clone(),
-                });
+                return Err(Error::CredentialInSandbox { name: name.clone() });
             }
         }
         for path in image.hidden_tests.keys() {
@@ -334,7 +345,12 @@ impl RefPool {
         }
     }
 
-    fn ok_resp(&self, req: &ToolRequest, stdout: &[u8], extra_path: Option<String>) -> ToolResponse {
+    fn ok_resp(
+        &self,
+        req: &ToolRequest,
+        stdout: &[u8],
+        extra_path: Option<String>,
+    ) -> ToolResponse {
         let mut stdout_artifact = artifact_for(stdout);
         stdout_artifact.path = extra_path;
         ToolResponse {
@@ -633,7 +649,10 @@ enum PythonEval {
 
 fn eval_python_print(code: &str, agent_files: &BTreeMap<String, Vec<u8>>) -> PythonEval {
     let trimmed = code.trim();
-    let rest = match trimmed.strip_prefix("print(").and_then(|s| s.strip_suffix(')')) {
+    let rest = match trimmed
+        .strip_prefix("print(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         Some(inner) => inner.trim(),
         None => return PythonEval::Fail("unsupported python".into()),
     };

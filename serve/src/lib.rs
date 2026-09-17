@@ -154,9 +154,8 @@ fn completion_text(prompt: &str, max_tokens: u32, temperature: f32) -> String {
     if max_tokens == 0 {
         return String::new();
     }
-    let seed = fnv1a32(prompt.as_bytes())
-        ^ max_tokens.wrapping_mul(0x9E37_79B9)
-        ^ temperature.to_bits();
+    let seed =
+        fnv1a32(prompt.as_bytes()) ^ max_tokens.wrapping_mul(0x9E37_79B9) ^ temperature.to_bits();
     let mut parts = Vec::with_capacity(max_tokens as usize);
     for j in 0..max_tokens {
         let token = mix32(seed.wrapping_add((j.wrapping_add(1)).wrapping_mul(0x85EB_CA6B)));

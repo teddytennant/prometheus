@@ -77,12 +77,7 @@ pub struct DedupReport {
 }
 
 const ZERO_WIDTH: &[char] = &[
-    '\u{200B}',
-    '\u{200C}',
-    '\u{200D}',
-    '\u{2060}',
-    '\u{FEFF}',
-    '\u{180E}',
+    '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}', '\u{180E}',
 ];
 
 fn strip_zero_width(text: &str) -> String {
@@ -276,7 +271,10 @@ fn exact_document(docs: &[Document]) -> Result<DedupReport> {
 }
 
 fn paragraph_hashes(text: &str) -> Vec<String> {
-    paragraphs(text).into_iter().map(|p| exact_hash(&p)).collect()
+    paragraphs(text)
+        .into_iter()
+        .map(|p| exact_hash(&p))
+        .collect()
 }
 
 /// Drop the whole document if any paragraph hash matches a kept document.

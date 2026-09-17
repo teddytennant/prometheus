@@ -3,12 +3,8 @@
 mod common;
 mod reference;
 
-use common::{
-    assert_clock_skew, assert_no_replica, default_config, fresh_world_dir, replica,
-};
-use prometheus_chaos::{
-    faults_for, Fault, Gate, World, CLOCK_SKEW_MS,
-};
+use common::{assert_clock_skew, assert_no_replica, default_config, fresh_world_dir, replica};
+use prometheus_chaos::{faults_for, Fault, Gate, World, CLOCK_SKEW_MS};
 use reference::ref_faults_for;
 use std::thread;
 use std::time::{Duration, Instant};

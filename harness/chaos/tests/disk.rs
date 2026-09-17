@@ -82,8 +82,7 @@ fn open_fails_closed_on_broken_hash_chain() {
         let mut w = World::create(&dir, config.clone()).expect("create");
         w.enqueue_task(&task("t"), w.now()).unwrap();
     }
-    std::fs::write(events_jsonl(&dir, &replica("0")), b"{not a valid event\n")
-        .unwrap();
+    std::fs::write(events_jsonl(&dir, &replica("0")), b"{not a valid event\n").unwrap();
     assert!(
         World::open(&dir, config).is_err(),
         "open must fail closed on a broken hash chain"

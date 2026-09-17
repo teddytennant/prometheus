@@ -166,10 +166,7 @@ impl RefPipeline {
     ) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         if dir.exists() {
-            return Err(Error::Other(format!(
-                "directory exists: {}",
-                dir.display()
-            )));
+            return Err(Error::Other(format!("directory exists: {}", dir.display())));
         }
         std::fs::create_dir(&dir).map_err(|e| Error::Other(e.to_string()))?;
         let queue = Queue::create(dir.join("queue"), queue_config)?;
@@ -349,9 +346,7 @@ impl RefPipeline {
                 }
             }
             _ => {
-                return Err(Error::Other(
-                    "record_merge requires a Pick verdict".into(),
-                ));
+                return Err(Error::Other("record_merge requires a Pick verdict".into()));
             }
         }
         let item = ref_work_payload(

@@ -123,9 +123,7 @@ fn random_requires_vs_caps_satisfy_matches_pull() {
         let mut mesh = prometheus_mesh::Mesh::create(&dir, slot_config(0)).expect("create");
         mesh.advertise(caps.clone(), T0).expect("adv");
         let (_qparent, mut queue) = open_queue();
-        queue
-            .enqueue(item("t", payload), T0)
-            .expect("enq");
+        queue.enqueue(item("t", payload), T0).expect("enq");
         let oracle = first_fitting(&queue, &caps);
         let got = mesh.pull(&mut queue, T0).expect("pull");
         if fits {
@@ -135,7 +133,10 @@ fn random_requires_vs_caps_satisfy_matches_pull() {
             assert_eq!(lease.attempt, 1);
         } else {
             assert!(oracle.is_none(), "trial {trial} oracle none");
-            assert!(got.is_none(), "trial {trial}: expected Ok(None), got {got:?}");
+            assert!(
+                got.is_none(),
+                "trial {trial}: expected Ok(None), got {got:?}"
+            );
         }
     }
 }
@@ -155,10 +156,7 @@ fn second_advertise_replaces_caps_then_gossips() {
     mesh.tick(T0 + 5).expect("tick");
     for i in 0..3 {
         let ads = mesh.get(i).expect("get").adverts();
-        let a = ads
-            .iter()
-            .find(|a| a.node.0 == "0")
-            .expect("have node 0");
+        let a = ads.iter().find(|a| a.node.0 == "0").expect("have node 0");
         assert_eq!(a.caps.gpus, 7);
         assert_eq!(a.at, T0 + 5);
         assert_eq!(

@@ -160,8 +160,7 @@ impl RefOps {
     }
 
     fn pin_shadow(&mut self, digest: &str) {
-        self.pins
-            .insert(PIN_SHADOW.to_string(), digest.to_string());
+        self.pins.insert(PIN_SHADOW.to_string(), digest.to_string());
     }
 
     fn unpin_shadow(&mut self) {
@@ -180,10 +179,7 @@ impl RefOps {
 
     pub fn propose(&mut self, release: Release, artifact: &[u8]) -> Result<()> {
         if !self.propose_allowed() {
-            return Err(Error::WrongState(format!(
-                "propose from {:?}",
-                self.state
-            )));
+            return Err(Error::WrongState(format!("propose from {:?}", self.state)));
         }
         let got = digest_hex(artifact);
         if got != release.digest.0 {
@@ -341,10 +337,7 @@ impl RefOps {
 
     pub fn rollback(&mut self, reason: &str) -> Result<()> {
         if !self.rollback_allowed() {
-            return Err(Error::WrongState(format!(
-                "rollback from {:?}",
-                self.state
-            )));
+            return Err(Error::WrongState(format!("rollback from {:?}", self.state)));
         }
         if matches!(self.state, ReleaseState::Current) {
             self.pins.remove(PIN_SHADOW);

@@ -26,7 +26,11 @@ fn ready(world: &mut common::World) -> (prometheus_ops::Ops, RefOps, Vec<prometh
         &refer.propose(rel, V1_BYTES),
         "propose",
     );
-    assert_result_tag(&ops.start_shadow(&mut world.store, world.now), &refer.start_shadow(), "shadow");
+    assert_result_tag(
+        &ops.start_shadow(&mut world.store, world.now),
+        &refer.start_shadow(),
+        "shadow",
+    );
     assert_result_tag(&ops.shadow_pass(world.now), &refer.shadow_pass(), "pass");
     (ops, refer, members)
 }

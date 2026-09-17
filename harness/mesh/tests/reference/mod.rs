@@ -5,9 +5,7 @@
 
 #![allow(dead_code)]
 
-use prometheus_leases::{
-    Lease, Queue, TaskId, TaskState, WorkerId, EVENT_ENQUEUED,
-};
+use prometheus_leases::{Lease, Queue, TaskId, TaskState, WorkerId, EVENT_ENQUEUED};
 use prometheus_mesh::{
     Advert, Capabilities, Error, Freeze, MeshConfig, NodeId, NowMs, PublicKey, Result, Watch,
     MIN_RING, MIN_WATCHERS,
@@ -193,11 +191,7 @@ impl RefMesh {
     }
 
     fn upsert_advert(&mut self, advert: Advert) {
-        if let Some(existing) = self
-            .adverts
-            .iter_mut()
-            .find(|a| a.node.0 == advert.node.0)
-        {
+        if let Some(existing) = self.adverts.iter_mut().find(|a| a.node.0 == advert.node.0) {
             *existing = advert;
         } else {
             self.adverts.push(advert);
@@ -327,9 +321,7 @@ impl RefLocalMesh {
     /// their local state until a later tick after heal.
     pub fn tick(&mut self, _now: NowMs) -> Result<()> {
         let n = self.nodes.len();
-        let connected: Vec<usize> = (0..n)
-            .filter(|i| !self.isolated.contains(i))
-            .collect();
+        let connected: Vec<usize> = (0..n).filter(|i| !self.isolated.contains(i)).collect();
         let mut best: BTreeMap<String, Advert> = BTreeMap::new();
         for &i in &connected {
             for a in &self.nodes[i].adverts {

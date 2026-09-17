@@ -63,7 +63,9 @@ pub struct JobId(pub String);
 #[serde(rename_all = "snake_case")]
 pub enum Fault {
     /// `kill -9` of any process, including the coordinator.
-    Kill { process: ProcessId },
+    Kill {
+        process: ProcessId,
+    },
     /// Drop messages from `from` to `to`. `asymmetric` means the reverse
     /// direction still delivers (D2).
     Partition {
@@ -71,25 +73,50 @@ pub enum Fault {
         to: ReplicaId,
         asymmetric: bool,
     },
-    HealPartition { from: ReplicaId, to: ReplicaId },
-    Outage { provider: String },
-    HealOutage { provider: String },
-    DiskFull { replica: ReplicaId },
+    HealPartition {
+        from: ReplicaId,
+        to: ReplicaId,
+    },
+    Outage {
+        provider: String,
+    },
+    HealOutage {
+        provider: String,
+    },
+    DiskFull {
+        replica: ReplicaId,
+    },
     /// Corrupt one replica. The other replica recovers (spec 15.2).
-    DiskCorrupt { replica: ReplicaId },
+    DiskCorrupt {
+        replica: ReplicaId,
+    },
     /// Skew one replica's clock. `|delta_ms|` must be <= [`CLOCK_SKEW_MS`].
-    ClockSkew { replica: ReplicaId, delta_ms: i64 },
+    ClockSkew {
+        replica: ReplicaId,
+        delta_ms: i64,
+    },
     TokenExpiry,
     TokenRotate,
-    NodeLoss { replica: ReplicaId },
-    NodeReplace { old: ReplicaId, new: ReplicaId },
-    JobPreempt { job: JobId },
-    WalltimeKill { job: JobId },
+    NodeLoss {
+        replica: ReplicaId,
+    },
+    NodeReplace {
+        old: ReplicaId,
+        new: ReplicaId,
+    },
+    JobPreempt {
+        job: JobId,
+    },
+    WalltimeKill {
+        job: JobId,
+    },
     HungSqueue,
     UnhangSqueue,
     /// Token broker killed mid-refresh (D4).
     BrokerDeath,
-    RateLimit { provider: String },
+    RateLimit {
+        provider: String,
+    },
 }
 
 /// Decentralization stage from spec 15.2. Each ships only after its gate.
@@ -255,10 +282,7 @@ impl World {
         }
         let dir = dir.as_ref().to_path_buf();
         if dir.exists() {
-            return Err(Error::Other(format!(
-                "directory exists: {}",
-                dir.display()
-            )));
+            return Err(Error::Other(format!("directory exists: {}", dir.display())));
         }
         std::fs::create_dir(&dir).map_err(|e| Error::Other(e.to_string()))?;
         std::fs::create_dir(dir.join("replicas")).map_err(|e| Error::Other(e.to_string()))?;

@@ -8,7 +8,7 @@ mod common;
 mod reference;
 
 use common::{assert_completed, assert_leased, assert_queued, fresh_queue_dir, short_config};
-use prometheus_leases::{Queue, QueueConfig, TaskId, WorkerId, WorkItem};
+use prometheus_leases::{Queue, QueueConfig, TaskId, WorkItem, WorkerId};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
@@ -120,11 +120,7 @@ fn crash_after_enqueue_is_durable() {
     let status = spawn_child("after_enqueue", &dir);
     assert!(status.success(), "child after_enqueue: {status}");
     let q = Queue::open(&dir, cfg()).expect("parent open");
-    assert_queued(
-        q.get(&TaskId("crash1".into())).expect("get"),
-        "crash1",
-        0,
-    );
+    assert_queued(q.get(&TaskId("crash1".into())).expect("get"), "crash1", 0);
 }
 
 #[cfg(unix)]

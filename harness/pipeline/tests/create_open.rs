@@ -7,9 +7,7 @@ use common::{
     assert_fresh_interface, assert_state, default_pipeline_config, default_queue_config, fresh_dir,
     module, queue_dir, unwrap_err,
 };
-use prometheus_pipeline::{
-    Pipeline, PipelineConfig, DEFAULT_MAX_ROUNDS, DEFAULT_N_IMPLEMENTERS,
-};
+use prometheus_pipeline::{Pipeline, PipelineConfig, DEFAULT_MAX_ROUNDS, DEFAULT_N_IMPLEMENTERS};
 use reference::RefPipeline;
 
 #[test]
@@ -19,13 +17,8 @@ fn create_starts_at_interface_round_zero() {
     let qcfg = default_queue_config();
     let m = module();
     let p = Pipeline::create(&dir, m.clone(), cfg.clone(), qcfg.clone()).expect("create");
-    let r = RefPipeline::create(
-        _parent.path().join("refer"),
-        m.clone(),
-        cfg.clone(),
-        qcfg,
-    )
-    .expect("ref create");
+    let r = RefPipeline::create(_parent.path().join("refer"), m.clone(), cfg.clone(), qcfg)
+        .expect("ref create");
     assert_fresh_interface(&p, &dir, &m, &cfg);
     assert_fresh_interface(&r, &_parent.path().join("refer"), &m, &cfg);
     assert_state(&p, &r, "create");

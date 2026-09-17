@@ -96,7 +96,12 @@ fn refused_release_never_sets_kernel_version() {
     let mut world = fresh_world();
     let kernel = kernel_leader(&mut world);
     let mut ops = create_ops(&world);
-    let _ = ops.propose(one_sig_release("v1", v1_digest()), V1_BYTES, &mut world.store, world.now);
+    let _ = ops.propose(
+        one_sig_release("v1", v1_digest()),
+        V1_BYTES,
+        &mut world.store,
+        world.now,
+    );
     assert_eq!(kernel_leader(&mut world), kernel);
     assert_eq!(kernel, "0");
 }
@@ -133,7 +138,10 @@ fn empty_artifact_with_matching_digest_and_quorum() {
     let rel = two_sig_release("empty", Digest(hex.to_string()));
     ops.propose(rel, empty, &mut world.store, world.now)
         .expect("empty artifact");
-    assert_eq!(world.store.get(&Digest(hex.to_string())).expect("get"), empty);
+    assert_eq!(
+        world.store.get(&Digest(hex.to_string())).expect("get"),
+        empty
+    );
     assert_pin(&world.store, PIN_SHADOW, hex);
 }
 
@@ -162,8 +170,13 @@ fn custom_quorum_three_refuses_two_signers() {
 fn custom_quorum_one_accepts_one_signer() {
     let mut world = fresh_world();
     let mut ops = create_ops_cfg(&world, ops_cfg_quorum(1));
-    ops.propose(one_sig_release("v1", v1_digest()), V1_BYTES, &mut world.store, world.now)
-        .expect("quorum 1");
+    ops.propose(
+        one_sig_release("v1", v1_digest()),
+        V1_BYTES,
+        &mut world.store,
+        world.now,
+    )
+    .expect("quorum 1");
     assert_eq!(status_of(&ops, &mut world).state, ReleaseState::Proposed);
 }
 
@@ -183,7 +196,12 @@ fn propose_again_while_proposed_is_wrong_state() {
 fn propose_after_refuse_can_succeed() {
     let mut world = fresh_world();
     let mut ops = create_ops(&world);
-    let _ = ops.propose(one_sig_release("v1", v1_digest()), V1_BYTES, &mut world.store, world.now);
+    let _ = ops.propose(
+        one_sig_release("v1", v1_digest()),
+        V1_BYTES,
+        &mut world.store,
+        world.now,
+    );
     ops.propose(v1_signed(), V1_BYTES, &mut world.store, world.now)
         .expect("retry with quorum");
     assert_eq!(status_of(&ops, &mut world).state, ReleaseState::Proposed);

@@ -105,7 +105,10 @@ fn matches_reference() {
 #[test]
 fn missing_label_is_first_in_label_order() {
     let preds = vec![pred("keep", 1.0, 1.0)];
-    let labels = vec![label("z-missing", true, true), label("a-missing", true, true)];
+    let labels = vec![
+        label("z-missing", true, true),
+        label("a-missing", true, true),
+    ];
     assert_missing_label(
         agreement(&preds, &labels, 0.5, 0.5),
         "z-missing",

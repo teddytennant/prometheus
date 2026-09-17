@@ -271,7 +271,9 @@ impl Cluster {
     }
 
     pub fn set_kernel_version(&mut self, version: String) -> Result<()> {
-        self.bus.borrow_mut().set_kernel_version(self.key(), version)?;
+        self.bus
+            .borrow_mut()
+            .set_kernel_version(self.key(), version)?;
         self.sync_from_bus();
         Ok(())
     }
@@ -301,12 +303,8 @@ impl LocalGroup {
         let mut nodes = Vec::with_capacity(n);
         for i in 0..n {
             let dir = base_dir.join(i.to_string());
-            let node = inner::initial_group_node(
-                dir,
-                members[i].clone(),
-                &members,
-                config.clone(),
-            )?;
+            let node =
+                inner::initial_group_node(dir, members[i].clone(), &members, config.clone())?;
             nodes.push(Some(Cluster::from_inner(node, Rc::clone(&bus))));
         }
         Ok(Self {

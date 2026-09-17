@@ -44,7 +44,7 @@
 #![allow(dead_code)]
 
 use prometheus_classifiers::{
-    ClassifierConfig, Error, HumanLabel, NowMs, Prediction, Result, Scores, Scorer,
+    ClassifierConfig, Error, HumanLabel, NowMs, Prediction, Result, Scorer, Scores,
     DEFAULT_MIN_AGREEMENT, DEFAULT_QUALITY_THRESHOLD, DEFAULT_SAFETY_THRESHOLD, DEFAULT_SHARD_SIZE,
 };
 use prometheus_extract::{ExtractedDocument, Format};
@@ -176,10 +176,7 @@ pub fn assert_missing_label<T>(r: Result<T>, hash: &str, what: &str) {
 
 pub fn assert_gate_failed<T>(r: Result<T>, got: f32, min: f32, what: &str) {
     match r {
-        Err(Error::GateFailed {
-            got: g,
-            min: m,
-        }) => {
+        Err(Error::GateFailed { got: g, min: m }) => {
             assert_close(g, got, &format!("{what} got"));
             assert_close(m, min, &format!("{what} min"));
         }

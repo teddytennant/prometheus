@@ -33,12 +33,7 @@ pub fn two_source() -> Mix {
 }
 
 pub fn single_web() -> Mix {
-    mix(
-        "one",
-        "pretrain-r0",
-        Phase::Pretrain,
-        &[(Source::Web, 1.0)],
-    )
+    mix("one", "pretrain-r0", Phase::Pretrain, &[(Source::Web, 1.0)])
 }
 
 pub fn rung2_like() -> Mix {

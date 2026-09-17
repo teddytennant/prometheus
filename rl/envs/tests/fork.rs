@@ -33,8 +33,12 @@ fn snapshot_from_image_then_fork_group_16_identical_agent_views() {
     let (mut prod, mut refer, ps, rs) = boot(GRPO_GROUP);
     assert_eq!(prod.live_count(), 0);
     assert_eq!(refer.live_count(), 0);
-    let pg = prod.fork_group(&ps, GRPO_GROUP, 0).expect("prod fork_group");
-    let rg = refer.fork_group(&rs, GRPO_GROUP, 0).expect("ref fork_group");
+    let pg = prod
+        .fork_group(&ps, GRPO_GROUP, 0)
+        .expect("prod fork_group");
+    let rg = refer
+        .fork_group(&rs, GRPO_GROUP, 0)
+        .expect("ref fork_group");
     assert_eq!(pg.sandboxes.len(), GRPO_GROUP);
     assert_eq!(rg.sandboxes.len(), GRPO_GROUP);
     assert_eq!(pg.durations_ms.len(), GRPO_GROUP);
@@ -48,7 +52,10 @@ fn snapshot_from_image_then_fork_group_16_identical_agent_views() {
     }
     let rfirst = refer.agent_view(&rg.sandboxes[0]).unwrap();
     assert_eq!(first, rfirst);
-    assert_eq!(first.get(WORKSPACE_README).map(Vec::as_slice), Some(common::README_BODY));
+    assert_eq!(
+        first.get(WORKSPACE_README).map(Vec::as_slice),
+        Some(common::README_BODY)
+    );
 }
 
 #[test]
@@ -95,7 +102,10 @@ fn fork_pair_two_distinct_sandboxes_from_one_snapshot() {
     assert_eq!(prod.live_count(), 2);
     assert_eq!(refer.live_count(), 2);
     assert_eq!(prod.agent_view(&a).unwrap(), prod.agent_view(&b).unwrap());
-    assert_eq!(refer.agent_view(&ra).unwrap(), refer.agent_view(&rb).unwrap());
+    assert_eq!(
+        refer.agent_view(&ra).unwrap(),
+        refer.agent_view(&rb).unwrap()
+    );
     assert_eq!(prod.agent_view(&a).unwrap(), refer.agent_view(&ra).unwrap());
 }
 
@@ -109,8 +119,14 @@ fn mutating_one_sandbox_does_not_mutate_the_other() {
     refer.call(&ra, write, 10).expect("ref write");
     let pa = prod.agent_view(&a).unwrap();
     let pb = prod.agent_view(&b).unwrap();
-    assert_eq!(pa.get(WORKSPACE_README).map(Vec::as_slice), Some(&b"mutated"[..]));
-    assert_eq!(pb.get(WORKSPACE_README).map(Vec::as_slice), Some(common::README_BODY));
+    assert_eq!(
+        pa.get(WORKSPACE_README).map(Vec::as_slice),
+        Some(&b"mutated"[..])
+    );
+    assert_eq!(
+        pb.get(WORKSPACE_README).map(Vec::as_slice),
+        Some(common::README_BODY)
+    );
     let ra_v = refer.agent_view(&ra).unwrap();
     let rb_v = refer.agent_view(&rb).unwrap();
     assert_eq!(pa, ra_v);

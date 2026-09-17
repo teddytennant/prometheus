@@ -4,8 +4,8 @@ mod common;
 mod reference;
 
 use common::{
-    assert_has_grader_paths, assert_no_grader_paths, editor_write, notes_write, python, sample_image,
-    shell, src_does_not_import_tests, HIDDEN_BODY, HIDDEN_TEST,
+    assert_has_grader_paths, assert_no_grader_paths, editor_write, notes_write, python,
+    sample_image, shell, src_does_not_import_tests, HIDDEN_BODY, HIDDEN_TEST,
 };
 use prometheus_envs::{Error, Pool};
 use reference::RefPool;
@@ -69,7 +69,10 @@ fn editor_write_to_grader_is_test_file_write_and_tamper() {
     assert_eq!(flags[0].now_ms, 50);
     assert_eq!(refer.tamper_flags().len(), 1);
     assert_eq!(
-        prod.grader_view(&a).unwrap().get(HIDDEN_TEST).map(Vec::as_slice),
+        prod.grader_view(&a)
+            .unwrap()
+            .get(HIDDEN_TEST)
+            .map(Vec::as_slice),
         Some(HIDDEN_BODY)
     );
     let _ = rs;
@@ -145,7 +148,10 @@ fn editor_write_to_agent_path_is_ok_and_visible() {
     let rr = refer.call(&ra, req, 60).unwrap();
     assert!(pr.ok && rr.ok);
     assert_eq!(
-        prod.agent_view(&a).unwrap().get("/workspace/new.txt").map(Vec::as_slice),
+        prod.agent_view(&a)
+            .unwrap()
+            .get("/workspace/new.txt")
+            .map(Vec::as_slice),
         Some(&b"notes"[..])
     );
     assert_eq!(

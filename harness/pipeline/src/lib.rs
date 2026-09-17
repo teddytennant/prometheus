@@ -363,11 +363,7 @@ impl Pipeline {
 
     pub fn start_review(&mut self, now: NowMs) -> Result<TaskId> {
         self.require_stage(Stage::Implement)?;
-        let item = work_payload(
-            &self.module,
-            ROLE_REVIEWER,
-            json!({ "round": self.round }),
-        );
+        let item = work_payload(&self.module, ROLE_REVIEWER, json!({ "round": self.round }));
         let id = self.enqueue(item, now)?;
         self.stage = Stage::Review;
         Ok(id)

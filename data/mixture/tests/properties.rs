@@ -6,7 +6,7 @@ mod reference;
 use common::{rung2_like, two_source, uniform8};
 use prometheus_mixture::{
     decay_reweight, drop_source, mix_hash, sample_source, validate_mix, Mix, Phase, Source,
-    WEIGHT_SUM_TOL, DECAY_SOURCES,
+    DECAY_SOURCES, WEIGHT_SUM_TOL,
 };
 use std::collections::BTreeMap;
 
@@ -40,10 +40,7 @@ fn decay_increases_decay_sources_share() {
             common::assert_mix_close(&got, &want);
             let before = common::decay_share(&base);
             let after = common::decay_share(&got);
-            assert!(
-                after > before,
-                "factor={factor} share {before} -> {after}"
-            );
+            assert!(after > before, "factor={factor} share {before} -> {after}");
             let sum: f64 = got.weights.values().copied().sum();
             assert!((sum - 1.0).abs() <= WEIGHT_SUM_TOL);
             validate_mix(&got).expect("valid");
@@ -95,7 +92,10 @@ fn sample_source_cdf_is_monotone_in_btree_order() {
         let src = sample_source(&mix, u).expect("public");
         assert_eq!(src, reference::sample_source(&mix, u).expect("ref"));
         let idx = order.iter().position(|s| *s == src).expect("in mix");
-        assert!(idx >= last_idx, "u={u} walked backwards {last_idx} -> {idx}");
+        assert!(
+            idx >= last_idx,
+            "u={u} walked backwards {last_idx} -> {idx}"
+        );
         last_idx = idx;
     }
 }
@@ -120,9 +120,13 @@ fn drop_preserves_relative_ratios() {
         mix_id: "r".into(),
         mix_bucket: "b".into(),
         phase: Phase::Pretrain,
-        weights: [(Source::Web, 0.2), (Source::Code, 0.3), (Source::MathScienceArxiv, 0.5)]
-            .into_iter()
-            .collect(),
+        weights: [
+            (Source::Web, 0.2),
+            (Source::Code, 0.3),
+            (Source::MathScienceArxiv, 0.5),
+        ]
+        .into_iter()
+        .collect(),
     };
     let got = drop_source(&base, Source::Web).expect("drop");
     let code = got.weights[&Source::Code];

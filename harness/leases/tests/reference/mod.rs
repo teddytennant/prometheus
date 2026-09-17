@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 use prometheus_leases::{
-    Error, Lease, NowMs, QueueConfig, Result, Task, TaskId, TaskState, WorkerId, WorkItem,
+    Error, Lease, NowMs, QueueConfig, Result, Task, TaskId, TaskState, WorkItem, WorkerId,
     EVENT_CLAIMED, EVENT_COMPLETED, EVENT_ENQUEUED, EVENT_EXPIRED, EVENT_FAILED, EVENT_HEARTBEAT,
     EVENT_OUTPUT,
 };
@@ -105,8 +105,8 @@ impl RefQueue {
         for id in ids {
             let (due, attempt) = {
                 let t = self.tasks.get(&id).expect("known id");
-                let due = t.state == TaskState::Leased
-                    && t.expires_at.map(|e| e <= now).unwrap_or(false);
+                let due =
+                    t.state == TaskState::Leased && t.expires_at.map(|e| e <= now).unwrap_or(false);
                 (due, t.attempt)
             };
             if !due {
@@ -155,22 +155,14 @@ impl RefQueue {
     /// Independent `claim_if`: expire_due first, then walk FIFO of currently
     /// `Queued` tasks and lease the first for which `pred` is true. Non-matches
     /// stay queued with the same attempt and no CLAIMED/EXPIRED events.
-    pub fn claim_if<F>(
-        &mut self,
-        worker: &WorkerId,
-        now: NowMs,
-        pred: F,
-    ) -> Result<Option<Lease>>
+    pub fn claim_if<F>(&mut self, worker: &WorkerId, now: NowMs, pred: F) -> Result<Option<Lease>>
     where
         F: Fn(&Task) -> bool,
     {
         self.expire_due(now)?;
         let mut match_id: Option<String> = None;
         for id in self.queued.iter() {
-            let task = self
-                .tasks
-                .get(id)
-                .expect("queued id missing from tasks");
+            let task = self.tasks.get(id).expect("queued id missing from tasks");
             if pred(task) {
                 match_id = Some(id.clone());
                 break;
@@ -198,12 +190,7 @@ impl RefQueue {
         }))
     }
 
-    fn require_holder(
-        &self,
-        task_id: &TaskId,
-        worker: &WorkerId,
-        attempt: u64,
-    ) -> Result<()> {
+    fn require_holder(&self, task_id: &TaskId, worker: &WorkerId, attempt: u64) -> Result<()> {
         let t = match self.tasks.get(&task_id.0) {
             Some(t) => t,
             None => return Err(Error::NotFound(task_id.0.clone())),

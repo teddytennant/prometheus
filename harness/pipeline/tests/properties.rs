@@ -7,7 +7,9 @@ use common::{
     assert_same_error, assert_state, cand, default_pipeline_config, default_queue_config,
     good_patch, merge_record, module, pick, planted_patch, reject_all, NOW,
 };
-use prometheus_pipeline::{is_planted_bad, merge_allowed, review, work_payload, Candidate, Pipeline};
+use prometheus_pipeline::{
+    is_planted_bad, merge_allowed, review, work_payload, Candidate, Pipeline,
+};
 use reference::{ref_is_planted_bad, ref_merge_allowed, ref_review, ref_work_payload, RefPipeline};
 use serde_json::json;
 
@@ -38,7 +40,10 @@ fn random_patches_match_is_planted_bad() {
         let mut bytes = rng.bytes(n);
         if i % 7 == 0 {
             let at = rng.pick(bytes.len() + 1);
-            bytes.splice(at..at, prometheus_pipeline::PLANTED_BAD_MARKER.iter().copied());
+            bytes.splice(
+                at..at,
+                prometheus_pipeline::PLANTED_BAD_MARKER.iter().copied(),
+            );
         }
         if i % 11 == 0 && !bytes.is_empty() {
             bytes.truncate(rng.pick(bytes.len()));
@@ -72,7 +77,10 @@ fn random_review_and_merge_allowed_match_reference() {
         let pr = review(&cands, &tests);
         let rr = ref_review(&cands, &tests);
         match (pr, rr) {
-            (Ok(prometheus_pipeline::Verdict::Pick(a)), Ok(prometheus_pipeline::Verdict::Pick(b))) => {
+            (
+                Ok(prometheus_pipeline::Verdict::Pick(a)),
+                Ok(prometheus_pipeline::Verdict::Pick(b)),
+            ) => {
                 assert_eq!(a, b, "step {step} pick")
             }
             (
@@ -81,7 +89,10 @@ fn random_review_and_merge_allowed_match_reference() {
             ) => {
                 assert!(!d1.is_empty() && !d2.is_empty(), "step {step} defects");
             }
-            (Err(prometheus_pipeline::Error::Other(_)), Err(prometheus_pipeline::Error::Other(_))) => {}
+            (
+                Err(prometheus_pipeline::Error::Other(_)),
+                Err(prometheus_pipeline::Error::Other(_)),
+            ) => {}
             (a, b) => panic!("step {step} review {a:?} vs {b:?}"),
         }
         let verdict = match rng.pick(3) {
@@ -119,13 +130,7 @@ fn random_work_payload_matches_reference() {
     }
 }
 
-fn apply_op(
-    p: &mut Pipeline,
-    r: &mut RefPipeline,
-    op: u32,
-    rng: &mut Lcg,
-    step: u32,
-) {
+fn apply_op(p: &mut Pipeline, r: &mut RefPipeline, op: u32, rng: &mut Lcg, step: u32) {
     let ctx = format!("step {step} op {op}");
     match op {
         0 => match (p.start_oracle(NOW), r.start_oracle(NOW)) {

@@ -48,7 +48,13 @@ fn pair() -> (
     let rs = refer.snapshot_from_image(&rid, 0).unwrap();
     let pg = prod.fork_group(&ps, 1, 0).unwrap();
     let rg = refer.fork_group(&rs, 1, 0).unwrap();
-    (prod, refer, pg.sandboxes[0].clone(), rg.sandboxes[0].clone(), ps)
+    (
+        prod,
+        refer,
+        pg.sandboxes[0].clone(),
+        rg.sandboxes[0].clone(),
+        ps,
+    )
 }
 
 #[test]
@@ -59,7 +65,10 @@ fn browser_serves_offline_page_at_or_before_cutoff() {
     let rr = refer.call(&ra, req, 1).unwrap();
     assert!(pr.ok && rr.ok);
     assert_eq!(pr.stdout_artifact.bytes, rr.stdout_artifact.bytes);
-    assert_eq!(pr.stdout_artifact.content_hash, rr.stdout_artifact.content_hash);
+    assert_eq!(
+        pr.stdout_artifact.content_hash,
+        rr.stdout_artifact.content_hash
+    );
     assert_eq!(pr.stdout_artifact.bytes, b"<html>ok</html>".len() as u64);
 }
 
@@ -87,7 +96,9 @@ fn browser_live_url_is_live_internet_or_egress_denied() {
 fn browser_missing_non_http_url_is_ok_false_no_panic() {
     let (mut prod, mut refer, a, ra, ps) = pair();
     let req = browser("b-miss", &ps.0, "offline://no-such-page");
-    let pr = prod.call(&a, req.clone(), 1).expect("missing url must not panic");
+    let pr = prod
+        .call(&a, req.clone(), 1)
+        .expect("missing url must not panic");
     let rr = refer.call(&ra, req, 1).expect("ref missing");
     assert!(!pr.ok);
     assert!(!rr.ok);
@@ -96,7 +107,11 @@ fn browser_missing_non_http_url_is_ok_false_no_panic() {
 #[test]
 fn shell_network_command_fails_closed() {
     let (mut prod, mut refer, a, ra, ps) = pair();
-    for cmd in ["curl https://example.com", "wget https://example.com", "nc 1.1.1.1 80"] {
+    for cmd in [
+        "curl https://example.com",
+        "wget https://example.com",
+        "nc 1.1.1.1 80",
+    ] {
         let req = shell("net", &ps.0, cmd);
         let pe = prod.call(&a, req.clone(), 2).expect_err(cmd);
         let re = refer.call(&ra, req, 2).expect_err(cmd);

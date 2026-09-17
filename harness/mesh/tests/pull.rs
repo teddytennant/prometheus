@@ -32,10 +32,7 @@ fn pull_claims_attempt_one_worker_is_node_id() {
     mesh.advertise(caps_cpu(), T0).expect("adv");
     let (_qparent, mut queue) = open_queue();
     queue.enqueue(item_plain("job-a"), T0).expect("enqueue");
-    let lease = mesh
-        .pull(&mut queue, T0)
-        .expect("pull")
-        .expect("claimed");
+    let lease = mesh.pull(&mut queue, T0).expect("pull").expect("claimed");
     assert_lease(&lease, "job-a", "n7", 1, T0 + short_ttl());
     let task = queue.get(&task_id("job-a")).expect("get");
     assert_leased(&task, "job-a", "n7", 1);
@@ -44,7 +41,10 @@ fn pull_claims_attempt_one_worker_is_node_id() {
     refer.advertise(caps_cpu(), T0).expect("ref adv");
     let (_q2, mut q2) = open_queue();
     q2.enqueue(item_plain("job-a"), T0).expect("enq");
-    let rlease = refer.pull(&mut q2, T0).expect("ref pull").expect("ref claimed");
+    let rlease = refer
+        .pull(&mut q2, T0)
+        .expect("ref pull")
+        .expect("ref claimed");
     assert_eq!(lease, rlease);
 }
 
@@ -102,10 +102,7 @@ fn pull_scans_past_mismatch_and_claims_later_fit() {
     assert_eq!(lease.task_id.0, "cpu-job");
     assert_eq!(lease.worker_id.0, "0");
     assert_eq!(lease.attempt, 1);
-    assert_queued(
-        queue.get(&task_id("gpu-job")).as_ref().unwrap(),
-        "gpu-job",
-    );
+    assert_queued(queue.get(&task_id("gpu-job")).as_ref().unwrap(), "gpu-job");
     assert_leased(
         queue.get(&task_id("cpu-job")).as_ref().unwrap(),
         "cpu-job",
@@ -120,12 +117,8 @@ fn pull_scans_two_mismatches_then_fit() {
     let mut mesh = Mesh::create(&dir, slot_config(0)).expect("create");
     mesh.advertise(caps_cpu(), T0).expect("adv");
     let (_qparent, mut queue) = open_queue();
-    queue
-        .enqueue(item_requires_gpus("g1", 1), T0)
-        .expect("g1");
-    queue
-        .enqueue(item_requires_gpus("g2", 2), T0)
-        .expect("g2");
+    queue.enqueue(item_requires_gpus("g1", 1), T0).expect("g1");
+    queue.enqueue(item_requires_gpus("g2", 2), T0).expect("g2");
     queue.enqueue(item_plain("ok"), T0).expect("ok");
     let lease = mesh.pull(&mut queue, T0).expect("pull").expect("claimed");
     assert_eq!(lease.task_id.0, "ok");
@@ -139,12 +132,8 @@ fn all_mismatched_queued_tasks_yield_none_none_claimed() {
     let mut mesh = Mesh::create(&dir, slot_config(0)).expect("create");
     mesh.advertise(caps_cpu(), T0).expect("adv");
     let (_qparent, mut queue) = open_queue();
-    queue
-        .enqueue(item_requires_gpus("g1", 1), T0)
-        .expect("g1");
-    queue
-        .enqueue(item_requires_gpus("g2", 1), T0)
-        .expect("g2");
+    queue.enqueue(item_requires_gpus("g1", 1), T0).expect("g1");
+    queue.enqueue(item_requires_gpus("g2", 1), T0).expect("g2");
     let got = mesh.pull(&mut queue, T0).expect("pull");
     assert!(got.is_none());
     assert_queued(queue.get(&task_id("g1")).as_ref().unwrap(), "g1");
@@ -180,11 +169,12 @@ fn no_advert_default_caps_skip_gpu_require() {
     let (_parent, dir) = fresh_node_dir();
     let mut mesh = Mesh::create(&dir, slot_config(0)).expect("create");
     let (_qparent, mut queue) = open_queue();
-    queue
-        .enqueue(item_requires_gpus("g", 1), T0)
-        .expect("enq");
+    queue.enqueue(item_requires_gpus("g", 1), T0).expect("enq");
     let got = mesh.pull(&mut queue, T0).expect("pull");
-    assert!(got.is_none(), "no advert / default caps cannot satisfy gpus=1");
+    assert!(
+        got.is_none(),
+        "no advert / default caps cannot satisfy gpus=1"
+    );
     assert_queued(queue.get(&task_id("g")).as_ref().unwrap(), "g");
 }
 
@@ -233,10 +223,7 @@ fn requires_providers_must_include_all() {
     mesh.advertise(caps_providers(&["cuda"]), T0).expect("adv");
     let (_qparent, mut queue) = open_queue();
     queue
-        .enqueue(
-            item_requires_providers("need-both", &["cuda", "rocm"]),
-            T0,
-        )
+        .enqueue(item_requires_providers("need-both", &["cuda", "rocm"]), T0)
         .expect("enq");
     assert!(mesh.pull(&mut queue, T0).expect("pull").is_none());
 
@@ -258,9 +245,7 @@ fn local_mesh_node_pull_uses_slot_id_as_worker() {
         .advertise(caps_gpu(1), T0)
         .expect("adv");
     let (_qparent, mut queue) = open_queue();
-    queue
-        .enqueue(item_requires_gpus("g", 1), T0)
-        .expect("enq");
+    queue.enqueue(item_requires_gpus("g", 1), T0).expect("enq");
     let lease = mesh
         .get(1)
         .expect("1")

@@ -7,9 +7,7 @@ use common::{
     default_pipeline_config, default_queue_config, drive_to_implement, drive_to_stub_must_fail,
     fresh_dir, implementer_extra, module, payloads_with_role, round_extra, NOW,
 };
-use prometheus_pipeline::{
-    work_payload, Pipeline, ROLE_IMPLEMENTER, ROLE_ORACLE, ROLE_REVIEWER,
-};
+use prometheus_pipeline::{work_payload, Pipeline, ROLE_IMPLEMENTER, ROLE_ORACLE, ROLE_REVIEWER};
 use reference::ref_work_payload;
 use serde_json::{json, Value};
 
@@ -69,7 +67,10 @@ fn work_payload_op_and_candidate_in_task_id() {
     let prod = work_payload(&m, "pipeline", extra.clone());
     let refer = ref_work_payload(&m, "pipeline", extra);
     assert_payload_eq(prod.clone(), refer);
-    assert_eq!(prod.task_id.0, format!("pipeline/{}/1/submit_candidate/0", m.0));
+    assert_eq!(
+        prod.task_id.0,
+        format!("pipeline/{}/1/submit_candidate/0", m.0)
+    );
 }
 
 #[test]

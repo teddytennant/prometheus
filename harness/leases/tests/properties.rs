@@ -3,10 +3,8 @@
 mod common;
 mod reference;
 
-use common::{
-    assert_task_eq, fresh_queue_dir, item, short_config, short_ttl, worker,
-};
-use prometheus_leases::{Queue, QueueConfig, TaskId, WorkerId, WorkItem};
+use common::{assert_task_eq, fresh_queue_dir, item, short_config, short_ttl, worker};
+use prometheus_leases::{Queue, QueueConfig, TaskId, WorkItem, WorkerId};
 use reference::RefQueue;
 
 struct Lcg(u64);
@@ -22,7 +20,10 @@ impl Lcg {
 }
 
 fn payload(n: u32) -> WorkItem {
-    item(&format!("p{n}"), serde_json::json!({"n": n, "blob": "opaque"}))
+    item(
+        &format!("p{n}"),
+        serde_json::json!({"n": n, "blob": "opaque"}),
+    )
 }
 
 fn workers() -> [WorkerId; 3] {

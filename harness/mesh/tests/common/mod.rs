@@ -32,12 +32,10 @@
 
 #![allow(dead_code)]
 
-use prometheus_leases::{
-    Lease, Queue, QueueConfig, Task, TaskId, TaskState, WorkItem, WorkerId,
-};
+use prometheus_leases::{Lease, Queue, QueueConfig, Task, TaskId, TaskState, WorkItem, WorkerId};
 use prometheus_mesh::{
-    Advert, Capabilities, Error, Freeze, LocalMesh, MeshConfig, NodeId, NowMs, PublicKey,
-    Result, Watch,
+    Advert, Capabilities, Error, Freeze, LocalMesh, MeshConfig, NodeId, NowMs, PublicKey, Result,
+    Watch,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -167,10 +165,7 @@ pub fn item_requires_kvm(id: &str, kvm: bool) -> WorkItem {
 }
 
 pub fn item_requires_providers(id: &str, providers: &[&str]) -> WorkItem {
-    item(
-        id,
-        json!({"requires": {"providers": providers}}),
-    )
+    item(id, json!({"requires": {"providers": providers}}))
 }
 
 pub fn item_plain(id: &str) -> WorkItem {

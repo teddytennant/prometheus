@@ -125,10 +125,7 @@ impl EventLog {
             )));
         }
         let path = dir.join(EVENTS_JSONL);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(&path)?;
+        let mut file = OpenOptions::new().read(true).append(true).open(&path)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let (events, complete_end, needs_newline) = replay_bytes(&bytes)?;
@@ -334,7 +331,9 @@ fn verify_events(events: &[Event]) -> Result<()> {
         }
         let ph = payload_hash(&ev.payload);
         if ev.payload_hash != ph {
-            return Err(Error::Corrupt(format!("payload_hash mismatch at seq {seq}")));
+            return Err(Error::Corrupt(format!(
+                "payload_hash mismatch at seq {seq}"
+            )));
         }
         let eh = event_hash(
             ev.seq,

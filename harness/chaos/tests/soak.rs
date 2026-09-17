@@ -4,9 +4,7 @@ mod common;
 mod reference;
 
 use common::{default_config, fresh_world_dir};
-use prometheus_chaos::{
-    run_soak, SoakConfig, World, SOAK_MS,
-};
+use prometheus_chaos::{run_soak, SoakConfig, World, SOAK_MS};
 use reference::{ref_run_soak, RefWorld};
 use std::time::{Duration, Instant};
 
@@ -28,7 +26,11 @@ fn soak_default_is_72h_injected() {
     assert_eq!(report.gate, prometheus_chaos::Gate::Soak);
     assert!(report.recovered);
     assert!(report.invariants.hold());
-    assert!(w.now() >= 60_000, "soak advances injected time, now={}", w.now());
+    assert!(
+        w.now() >= 60_000,
+        "soak advances injected time, now={}",
+        w.now()
+    );
 }
 
 #[test]

@@ -7,7 +7,7 @@ use common::{
     assert_close, assert_preds_eq, assert_shards_eq, config_full, doc, err_kind, fresh_orch_dir,
     label, ConstScorer,
 };
-use prometheus_classifiers::{agreement, LocalScorer, Orchestrator, Scores, Scorer};
+use prometheus_classifiers::{agreement, LocalScorer, Orchestrator, Scorer, Scores};
 use prometheus_extract::ExtractedDocument;
 use reference::{ref_agreement, RefLocalScorer, RefOrchestrator};
 
@@ -60,7 +60,13 @@ fn random_score_vs_ref() {
         let seed = rng.next();
         let n = rng.pick(12) + 1;
         let texts: Vec<String> = (0..n)
-            .map(|i| format!("t{i}-{}-{}", rng.next(), if rng.pick(4) == 0 { "π" } else { "x" }))
+            .map(|i| {
+                format!(
+                    "t{i}-{}-{}",
+                    rng.next(),
+                    if rng.pick(4) == 0 { "π" } else { "x" }
+                )
+            })
             .collect();
         let got = LocalScorer { seed }
             .score(&texts, rng.next())
@@ -228,9 +234,5 @@ fn const_scorer_run_vs_ref() {
             0,
         )
         .expect("ref");
-    assert_preds_eq(
-        orch.predictions(),
-        refer.predictions(),
-        "const",
-    );
+    assert_preds_eq(orch.predictions(), refer.predictions(), "const");
 }

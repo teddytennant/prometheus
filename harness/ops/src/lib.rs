@@ -401,11 +401,7 @@ impl Ops {
         };
         self.promote_store(store, &release)?;
         cluster.set_kernel_version(release.version.clone())?;
-        let event = self.append(
-            EVENT_PROMOTE,
-            json!({ "version": release.version }),
-            now,
-        )?;
+        let event = self.append(EVENT_PROMOTE, json!({ "version": release.version }), now)?;
         self.apply_event(&event)?;
         Ok(())
     }
@@ -626,10 +622,7 @@ impl Ops {
         if let Some(current) = &self.current_digest {
             unpin_ignore_missing(store, PIN_CURRENT)?;
             unpin_ignore_missing(store, PIN_PREVIOUS)?;
-            store.pin(
-                &Digest(current.clone()),
-                PinName(PIN_PREVIOUS.to_string()),
-            )?;
+            store.pin(&Digest(current.clone()), PinName(PIN_PREVIOUS.to_string()))?;
         }
         store.pin(&release.digest, PinName(PIN_CURRENT.to_string()))?;
         Ok(())
@@ -641,10 +634,7 @@ impl Ops {
             unpin_ignore_missing(store, PIN_CURRENT)?;
             if let Some(previous) = &self.previous_digest {
                 unpin_ignore_missing(store, PIN_PREVIOUS)?;
-                store.pin(
-                    &Digest(previous.clone()),
-                    PinName(PIN_CURRENT.to_string()),
-                )?;
+                store.pin(&Digest(previous.clone()), PinName(PIN_CURRENT.to_string()))?;
             }
         } else {
             unpin_ignore_missing(store, PIN_SHADOW)?;

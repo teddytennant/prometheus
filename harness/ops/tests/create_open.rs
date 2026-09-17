@@ -66,7 +66,10 @@ fn create_stores_custom_quorum() {
 fn open_missing_dir_fails() {
     let parent = tempfile::tempdir().expect("tempdir");
     let dir = parent.path().join("nope");
-    assert!(Ops::open(&dir, ops_cfg()).is_err(), "open missing must fail");
+    assert!(
+        Ops::open(&dir, ops_cfg()).is_err(),
+        "open missing must fail"
+    );
 }
 
 #[test]

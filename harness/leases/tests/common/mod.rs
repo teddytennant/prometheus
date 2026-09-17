@@ -30,7 +30,7 @@
 #![allow(dead_code)]
 
 use prometheus_leases::{
-    Error, Lease, NowMs, Queue, QueueConfig, Result, Task, TaskId, TaskState, WorkerId, WorkItem,
+    Error, Lease, NowMs, Queue, QueueConfig, Result, Task, TaskId, TaskState, WorkItem, WorkerId,
     DEFAULT_HEARTBEAT_PERIOD_MS, MISSED_HEARTBEATS,
 };
 use serde_json::Value;
@@ -118,7 +118,13 @@ pub fn assert_stale_or_not_holder(err: &Error, what: &str) {
     }
 }
 
-pub fn assert_lease_eq(got: &Lease, task_id: &str, worker_id: &str, attempt: u64, expires_at: NowMs) {
+pub fn assert_lease_eq(
+    got: &Lease,
+    task_id: &str,
+    worker_id: &str,
+    attempt: u64,
+    expires_at: NowMs,
+) {
     assert_eq!(got.task_id.0, task_id, "lease.task_id");
     assert_eq!(got.worker_id.0, worker_id, "lease.worker_id");
     assert_eq!(got.attempt, attempt, "lease.attempt");
@@ -147,13 +153,7 @@ pub fn assert_queued(task: &Task, id: &str, attempt: u64) {
     assert!(task.expires_at.is_none(), "queued expires_at");
 }
 
-pub fn assert_leased(
-    task: &Task,
-    id: &str,
-    worker_id: &str,
-    attempt: u64,
-    expires_at: NowMs,
-) {
+pub fn assert_leased(task: &Task, id: &str, worker_id: &str, attempt: u64, expires_at: NowMs) {
     assert_eq!(task.id.0, id);
     assert_eq!(task.state, TaskState::Leased, "expected Leased");
     assert_eq!(task.attempt, attempt);
@@ -181,11 +181,7 @@ pub fn assert_failed(task: &Task, id: &str, attempt: u64) {
 }
 
 pub fn event_types(queue: &Queue) -> Vec<String> {
-    queue
-        .log()
-        .iter()
-        .map(|e| e.event_type.clone())
-        .collect()
+    queue.log().iter().map(|e| e.event_type.clone()).collect()
 }
 
 pub fn default_ttl() -> u64 {

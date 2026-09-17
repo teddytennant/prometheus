@@ -5,9 +5,7 @@
 mod common;
 mod reference;
 
-use common::{
-    append_input, assert_torn_does_not_invent, events_path, f1_append, fresh_log_dir,
-};
+use common::{append_input, assert_torn_does_not_invent, events_path, f1_append, fresh_log_dir};
 use prometheus_log::EventLog;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -63,7 +61,10 @@ fn crash_after_append_exit_preserves_record() {
         "after_append_exit",
         &dir,
     );
-    assert!(status.success(), "child _exit(0) after append, got {status}");
+    assert!(
+        status.success(),
+        "child _exit(0) after append, got {status}"
+    );
     assert!(dir.join("appended.ok").is_file(), "append returned");
     let log = EventLog::open(&dir).expect("open after _exit");
     assert_eq!(log.len(), 1);
@@ -83,7 +84,10 @@ fn crash_after_append_abort_preserves_record() {
         "after_append_abort",
         &dir,
     );
-    assert!(dir.join("appended.ok").is_file(), "append returned before abort");
+    assert!(
+        dir.join("appended.ok").is_file(),
+        "append returned before abort"
+    );
     let log = EventLog::open(&dir).expect("open after abort");
     assert_eq!(log.len(), 1);
     assert_eq!(log.get(0).expect("get").payload, json!({"i": 0}));
@@ -97,11 +101,7 @@ fn crash_after_two_appends_preserves_both() {
         exit_hard();
     }
     let (_parent, dir) = fresh_log_dir();
-    let status = spawn_child(
-        "crash_after_two_appends_preserves_both",
-        "after_two",
-        &dir,
-    );
+    let status = spawn_child("crash_after_two_appends_preserves_both", "after_two", &dir);
     assert!(status.success(), "child _exit(0), got {status}");
     let log = EventLog::open(&dir).expect("open after two");
     assert_eq!(log.len(), 2);

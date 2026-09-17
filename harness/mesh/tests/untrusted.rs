@@ -21,7 +21,9 @@ fn untrusted_create_then_pull_is_untrusted() {
     queue.enqueue(item_plain("t1"), T0).expect("enqueue");
     let err = mesh.pull(&mut queue, T0).expect_err("untrusted pull");
     assert_untrusted(&err, "pull");
-    let task = queue.get(&prometheus_leases::TaskId("t1".into())).expect("t1");
+    let task = queue
+        .get(&prometheus_leases::TaskId("t1".into()))
+        .expect("t1");
     assert_queued(&task, "t1");
     assert_eq!(task.state, TaskState::Queued);
 

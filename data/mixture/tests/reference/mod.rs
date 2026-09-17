@@ -126,7 +126,9 @@ pub fn validate_mix(mix: &Mix) -> Result<()> {
 }
 
 pub fn canonical_json(mix: &Mix) -> Result<Vec<u8>> {
-    let s: String = parse(call(json!({ "op": "canonical_json", "mix": mix_json(mix) })))?;
+    let s: String = parse(call(
+        json!({ "op": "canonical_json", "mix": mix_json(mix) }),
+    ))?;
     Ok(s.into_bytes())
 }
 
@@ -151,7 +153,9 @@ pub fn drop_source(mix: &Mix, source: Source) -> Result<Mix> {
 }
 
 pub fn rung2_ablations(base: &Mix) -> Result<Vec<Mix>> {
-    parse(call(json!({ "op": "rung2_ablations", "mix": mix_json(base) })))
+    parse(call(
+        json!({ "op": "rung2_ablations", "mix": mix_json(base) }),
+    ))
 }
 
 pub fn tokens_seen(unique_tokens: Option<u64>, epochs: u32) -> Option<u64> {

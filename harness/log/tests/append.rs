@@ -4,7 +4,8 @@ mod common;
 mod reference;
 
 use common::{
-    append_input, assert_err, assert_event_fields, events_path, f1_append, f1_payload, fresh_log_dir,
+    append_input, assert_err, assert_event_fields, events_path, f1_append, f1_payload,
+    fresh_log_dir,
 };
 use prometheus_log::{canonical_json, event_hash, payload_hash, EventLog, GENESIS_PREV_HASH};
 use serde_json::json;
@@ -76,10 +77,7 @@ fn append_assigns_monotonic_seq_and_chain() {
     }
     assert_eq!(log.len(), 5);
     assert_eq!(log.last_index(), Some(4));
-    reference::verify_chain(
-        &log.iter().cloned().collect::<Vec<_>>(),
-    )
-    .expect("in-memory chain");
+    reference::verify_chain(&log.iter().cloned().collect::<Vec<_>>()).expect("in-memory chain");
     log.verify().expect("verify");
 }
 
@@ -116,7 +114,8 @@ fn last_len_iter_match_get() {
     let (_parent, dir) = fresh_log_dir();
     let mut log = EventLog::create(&dir).expect("create");
     for i in 0..3u64 {
-        log.append(append_input("n", json!({"i": i}))).expect("append");
+        log.append(append_input("n", json!({"i": i})))
+            .expect("append");
     }
     assert_eq!(log.len(), 3);
     assert_eq!(log.last().unwrap().seq, 2);
@@ -135,7 +134,8 @@ fn sequential_appends_are_totally_ordered() {
     let mut log = EventLog::create(&dir).expect("create");
     let n = 8u64;
     for i in 0..n {
-        log.append(append_input("seq", json!({"i": i}))).expect("append");
+        log.append(append_input("seq", json!({"i": i})))
+            .expect("append");
     }
     for i in 0..n {
         let ev = log.get(i).expect("get");
@@ -193,7 +193,12 @@ fn returned_event_hashes_use_canonical_payload() {
     let (_parent, dir) = fresh_log_dir();
     let mut log = EventLog::create(&dir).expect("create");
     let payload = json!({"z": 1, "a": 2});
-    let ev = log.append(append_input("k", payload.clone())).expect("append");
+    let ev = log
+        .append(append_input("k", payload.clone()))
+        .expect("append");
     assert_eq!(ev.payload_hash, payload_hash(&payload));
-    assert_eq!(canonical_json(&payload), reference::canonical_json_bytes(&payload));
+    assert_eq!(
+        canonical_json(&payload),
+        reference::canonical_json_bytes(&payload)
+    );
 }

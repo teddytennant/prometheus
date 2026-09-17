@@ -83,7 +83,9 @@ fn claim_if_head_matches_same_as_claim() {
     let mut refer = RefQueue::new(cfg);
     let t0 = 1_000u64;
     q.enqueue(item_n(1), t0).expect("enqueue");
-    via_claim.enqueue(item_n(1), t0).expect("enqueue claim twin");
+    via_claim
+        .enqueue(item_n(1), t0)
+        .expect("enqueue claim twin");
     refer.enqueue(item_n(1), t0).expect("ref enqueue");
 
     let lease = q
@@ -289,9 +291,7 @@ fn claim_if_none_match_still_expires_due_leases() {
     q.enqueue(item_n(2), t0).expect("t2");
     q.claim(&worker("A"), t0).expect("claim t1");
     let now = t0 + short_ttl();
-    let got = q
-        .claim_if(&worker("B"), now, never)
-        .expect("claim_if none");
+    let got = q.claim_if(&worker("B"), now, never).expect("claim_if none");
     assert!(got.is_none());
     assert_queued(q.get(&TaskId("t1".into())).expect("t1"), "t1", 1);
     assert_queued(q.get(&TaskId("t2".into())).expect("t2"), "t2", 0);
@@ -365,9 +365,7 @@ fn claim_if_pred_not_stored_second_call_can_match_skipped() {
     let mut q = Queue::create(&dir, short_config()).expect("create");
     q.enqueue(item_n(1), 0).expect("t1");
     q.enqueue(item_n(2), 0).expect("t2");
-    let first = q
-        .claim_if(&worker("w"), 0, never)
-        .expect("claim_if never");
+    let first = q.claim_if(&worker("w"), 0, never).expect("claim_if never");
     assert!(first.is_none());
     let second = q
         .claim_if(&worker("w"), 1, always)
@@ -481,8 +479,10 @@ fn claim_if_random_ops_match_reference() {
         .expect("ref claim_if");
     assert_eq!(a.as_ref().map(|l| l.task_id.0.as_str()), Some("t2"));
     assert_eq!(
-        a.as_ref().map(|l| (l.attempt, l.expires_at, l.worker_id.0.as_str())),
-        b.as_ref().map(|l| (l.attempt, l.expires_at, l.worker_id.0.as_str()))
+        a.as_ref()
+            .map(|l| (l.attempt, l.expires_at, l.worker_id.0.as_str())),
+        b.as_ref()
+            .map(|l| (l.attempt, l.expires_at, l.worker_id.0.as_str()))
     );
     now += 5;
     let c = q
@@ -492,10 +492,7 @@ fn claim_if_random_ops_match_reference() {
         .claim_if(&worker("w1"), now, |t| t.id.0 == "t4")
         .expect("ref t4");
     assert_eq!(c.as_ref().map(|l| l.task_id.0.as_str()), Some("t4"));
-    assert_eq!(
-        c.as_ref().map(|l| l.attempt),
-        d.as_ref().map(|l| l.attempt)
-    );
+    assert_eq!(c.as_ref().map(|l| l.attempt), d.as_ref().map(|l| l.attempt));
     let e = q.claim(&worker("w2"), now).expect("claim head");
     let f = refer.claim(&worker("w2"), now).expect("ref claim head");
     assert_eq!(

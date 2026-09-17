@@ -3,8 +3,12 @@
 mod common;
 mod reference;
 
-use common::{assert_candidate_failed, assert_no_candidate, assert_other, assert_planted_bad, cand};
-use prometheus_pipeline::{merge_allowed, review, Candidate, CandidateId, Verdict, PLANTED_BAD_MARKER};
+use common::{
+    assert_candidate_failed, assert_no_candidate, assert_other, assert_planted_bad, cand,
+};
+use prometheus_pipeline::{
+    merge_allowed, review, Candidate, CandidateId, Verdict, PLANTED_BAD_MARKER,
+};
 use reference::{ref_is_planted_bad, ref_merge_allowed, ref_review};
 
 fn same_review(cands: &[Candidate], tests_ok: &[bool]) {
@@ -15,8 +19,14 @@ fn same_review(cands: &[Candidate], tests_ok: &[bool]) {
             assert_eq!(a, b, "Pick id vs reference")
         }
         (Ok(Verdict::RejectAll { defects: d1 }), Ok(Verdict::RejectAll { defects: d2 })) => {
-            assert!(!d1.is_empty(), "production RejectAll defects must be non-empty");
-            assert!(!d2.is_empty(), "reference RejectAll defects must be non-empty");
+            assert!(
+                !d1.is_empty(),
+                "production RejectAll defects must be non-empty"
+            );
+            assert!(
+                !d2.is_empty(),
+                "reference RejectAll defects must be non-empty"
+            );
         }
         (Err(Error::Other(_)), Err(Error::Other(_))) => {}
         (a, b) => panic!("review mismatch prod={a:?} ref={b:?}"),
@@ -62,10 +72,7 @@ fn review_picks_first_passing_non_planted() {
 
 #[test]
 fn review_skips_planted_bad_even_if_tests_passed() {
-    let cands = vec![
-        cand("0", "evil", &planted()),
-        cand("1", "good", b"honest"),
-    ];
+    let cands = vec![cand("0", "evil", &planted()), cand("1", "good", b"honest")];
     let tests = [true, true];
     same_review(&cands, &tests);
     match review(&cands, &tests).expect("review") {

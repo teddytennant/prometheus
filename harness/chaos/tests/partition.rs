@@ -3,9 +3,7 @@
 mod common;
 mod reference;
 
-use common::{
-    assert_no_replica, default_config, event_types, fresh_world_dir, replica, task,
-};
+use common::{assert_no_replica, default_config, event_types, fresh_world_dir, replica, task};
 use prometheus_chaos::{Fault, World, EVENT_COMPLETED, EVENT_ENQUEUED};
 use reference::RefWorld;
 

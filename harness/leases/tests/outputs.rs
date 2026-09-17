@@ -3,11 +3,9 @@
 mod common;
 mod reference;
 
-use common::{
-    assert_completed, fresh_queue_dir, item_n, output_path, short_config, worker,
-};
+use common::{assert_completed, fresh_queue_dir, item_n, output_path, short_config, worker};
 use prometheus_leases::{Queue, TaskId};
-use reference::{assert_self_consistent_goldens, output_hash, GOLDEN_EMPTY_OUTPUT_HASH, RefQueue};
+use reference::{assert_self_consistent_goldens, output_hash, RefQueue, GOLDEN_EMPTY_OUTPUT_HASH};
 
 #[test]
 fn empty_output_hash_matches_reference_golden() {
@@ -56,11 +54,10 @@ fn get_output_missing_attempt_is_ok_none() {
     let (_parent, dir) = fresh_queue_dir();
     let mut q = Queue::create(&dir, short_config()).expect("create");
     q.enqueue(item_n(1), 0).expect("enqueue");
-    assert!(
-        q.get_output(&TaskId("t1".into()), 1)
-            .expect("get_output")
-            .is_none()
-    );
+    assert!(q
+        .get_output(&TaskId("t1".into()), 1)
+        .expect("get_output")
+        .is_none());
 }
 
 #[test]

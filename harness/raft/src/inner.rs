@@ -760,7 +760,11 @@ impl Bus {
             .iter()
             .max_by_key(|id| {
                 let n = &self.nodes[*id];
-                (n.last_log_term(), n.last_log_index(), std::cmp::Reverse(id.as_str()))
+                (
+                    n.last_log_term(),
+                    n.last_log_index(),
+                    std::cmp::Reverse(id.as_str()),
+                )
             })
             .cloned()
             .expect("connected non-empty");

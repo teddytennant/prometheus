@@ -35,10 +35,7 @@ fn complete_writes_hash_and_bytes() {
     );
     let got = q.get_output(&lease.task_id, 1).expect("get_output");
     assert_eq!(got.as_deref(), Some(&out[..]));
-    assert_eq!(
-        refer.get_output(&lease.task_id, 1).expect("ref out"),
-        got
-    );
+    assert_eq!(refer.get_output(&lease.task_id, 1).expect("ref out"), got);
 }
 
 #[test]

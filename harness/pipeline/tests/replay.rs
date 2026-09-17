@@ -92,9 +92,11 @@ fn replay_candidates_after_submit() {
         let mut r = RefPipeline::create(&ref_dir, module(), cfg.clone(), q).expect("rc");
         drive_to_implement(&mut p, NOW);
         drive_to_implement(&mut r, NOW);
-        p.submit_candidate(cand("2", "z", good_patch()), NOW).unwrap();
+        p.submit_candidate(cand("2", "z", good_patch()), NOW)
+            .unwrap();
         p.submit_candidate(cand("0", "evil", &patch), NOW).unwrap();
-        r.submit_candidate(cand("2", "z", good_patch()), NOW).unwrap();
+        r.submit_candidate(cand("2", "z", good_patch()), NOW)
+            .unwrap();
         r.submit_candidate(cand("0", "evil", &patch), NOW).unwrap();
     }
     let (p, r) = open_both(&prod_dir, &ref_dir, cfg);
@@ -213,7 +215,8 @@ fn open_then_continue_from_implement() {
     {
         let mut p = Pipeline::create(&dir, module(), cfg.clone(), q.clone()).expect("c");
         drive_to_implement(&mut p, NOW);
-        p.submit_candidate(cand("0", "a", good_patch()), NOW).unwrap();
+        p.submit_candidate(cand("0", "a", good_patch()), NOW)
+            .unwrap();
     }
     let mut p = Pipeline::open(&dir, module(), cfg, q).expect("open");
     assert_eq!(p.stage(), Stage::Implement);

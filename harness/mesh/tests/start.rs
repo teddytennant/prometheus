@@ -5,8 +5,8 @@ mod common;
 mod reference;
 
 use common::{
-    advert_set, assert_too_few_nodes, caps_gpu, fresh_base, slot_config, start3, start_n, unwrap_err,
-    T0,
+    advert_set, assert_too_few_nodes, caps_gpu, fresh_base, slot_config, start3, start_n,
+    unwrap_err, T0,
 };
 use prometheus_mesh::{LocalMesh, MIN_RING};
 use reference::RefLocalMesh;

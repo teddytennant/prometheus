@@ -122,12 +122,7 @@ fn event_hash_seq_decimal_has_no_leading_zeros() {
 
 #[test]
 fn hashes_are_64_lowercase_hex() {
-    for payload in [
-        json!(null),
-        json!(true),
-        json!([]),
-        json!({"k": [1, 2, 3]}),
-    ] {
+    for payload in [json!(null), json!(true), json!([]), json!({"k": [1, 2, 3]})] {
         let h = payload_hash(&payload);
         assert!(is_sha256_hex(&h), "payload_hash {h} for {payload}");
         assert_eq!(h, reference::payload_hash(&payload));

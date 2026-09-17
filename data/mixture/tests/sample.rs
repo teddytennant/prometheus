@@ -10,7 +10,10 @@ use prometheus_mixture::{sample_source, Source};
 fn u_zero_is_first_btree_source() {
     let mix = two_source();
     assert_eq!(sample_source(&mix, 0.0).expect("public"), Source::Web);
-    assert_eq!(reference::sample_source(&mix, 0.0).expect("ref"), Source::Web);
+    assert_eq!(
+        reference::sample_source(&mix, 0.0).expect("ref"),
+        Source::Web
+    );
 }
 
 #[test]
@@ -18,7 +21,11 @@ fn two_source_buckets() {
     let mix = two_source();
     // web=0.75, code=0.25. [0, 0.75) -> web; [0.75, 1) -> code.
     for u in [0.0, 0.1, 0.749999] {
-        assert_eq!(sample_source(&mix, u).expect("public"), Source::Web, "u={u}");
+        assert_eq!(
+            sample_source(&mix, u).expect("public"),
+            Source::Web,
+            "u={u}"
+        );
         assert_eq!(
             reference::sample_source(&mix, u).expect("ref"),
             Source::Web,
@@ -26,7 +33,11 @@ fn two_source_buckets() {
         );
     }
     for u in [0.75, 0.9, 0.999999] {
-        assert_eq!(sample_source(&mix, u).expect("public"), Source::Code, "u={u}");
+        assert_eq!(
+            sample_source(&mix, u).expect("public"),
+            Source::Code,
+            "u={u}"
+        );
         assert_eq!(
             reference::sample_source(&mix, u).expect("ref"),
             Source::Code,

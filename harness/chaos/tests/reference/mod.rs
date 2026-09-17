@@ -32,9 +32,7 @@
 
 #![allow(dead_code)]
 
-use crate::common::{
-    process_ids, replica_ids, replica_path, D1_LEASE_EXPIRY_MS, HOSTED_PROVIDERS,
-};
+use crate::common::{process_ids, replica_ids, replica_path, D1_LEASE_EXPIRY_MS, HOSTED_PROVIDERS};
 use prometheus_chaos::{
     Error, Fault, Gate, Invariants, JobId, NowMs, ProcessId, ReplicaId, Result, RunReport,
     SoakConfig, TaskId, WorldConfig, CLOCK_SKEW_MS, D0_KILLS, EVENT_COMPLETED, EVENT_ENQUEUED,
@@ -103,10 +101,7 @@ impl RefWorld {
         }
         let dir = dir.as_ref().to_path_buf();
         if dir.exists() {
-            return Err(Error::Other(format!(
-                "directory exists: {}",
-                dir.display()
-            )));
+            return Err(Error::Other(format!("directory exists: {}", dir.display())));
         }
         std::fs::create_dir(&dir).map_err(|e| Error::Other(e.to_string()))?;
         std::fs::create_dir(dir.join("replicas")).map_err(|e| Error::Other(e.to_string()))?;
@@ -665,9 +660,7 @@ fn bind_all(world: &RefWorld, faults: Vec<Fault>) -> Vec<Fault> {
 const WORK_N: u32 = 4;
 
 fn work_tasks() -> Vec<TaskId> {
-    (0..WORK_N)
-        .map(|i| TaskId(format!("t{i}")))
-        .collect()
+    (0..WORK_N).map(|i| TaskId(format!("t{i}"))).collect()
 }
 
 fn enqueue_work(world: &mut RefWorld) -> Result<Vec<TaskId>> {

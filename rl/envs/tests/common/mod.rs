@@ -138,7 +138,9 @@ pub fn assert_no_grader_paths(files: &BTreeMap<String, Vec<u8>>) {
 
 pub fn assert_has_grader_paths(files: &BTreeMap<String, Vec<u8>>) {
     assert!(
-        files.keys().any(|p| p == GRADER_ROOT || p.starts_with("/grader/")),
+        files
+            .keys()
+            .any(|p| p == GRADER_ROOT || p.starts_with("/grader/")),
         "grader view missing GRADER_ROOT paths: {:?}",
         files.keys().collect::<Vec<_>>()
     );
@@ -160,7 +162,9 @@ pub fn src_does_not_import_tests() {
                 continue;
             }
             assert!(
-                !t.contains("tests::") && !t.contains("tests/reference") && !t.contains("crate::tests"),
+                !t.contains("tests::")
+                    && !t.contains("tests/reference")
+                    && !t.contains("crate::tests"),
                 "{} must not import tests/: {t}",
                 f.display()
             );

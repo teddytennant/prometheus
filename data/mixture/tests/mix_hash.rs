@@ -9,8 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// serde_json compact Mix of two_source() (web 0.75, code 0.25).
-const TWO_SOURCE_JSON: &str =
-    r#"{"mix_id":"two","mix_bucket":"pretrain-r0","phase":"pretrain","weights":{"web":0.75,"code":0.25}}"#;
+const TWO_SOURCE_JSON: &str = r#"{"mix_id":"two","mix_bucket":"pretrain-r0","phase":"pretrain","weights":{"web":0.75,"code":0.25}}"#;
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
@@ -121,10 +120,7 @@ fn agentic_key_follows_enum_order_not_alpha() {
         "m",
         "b",
         Phase::Pretrain,
-        &[
-            (Source::AgenticTrajectories, 0.5),
-            (Source::Web, 0.5),
-        ],
+        &[(Source::AgenticTrajectories, 0.5), (Source::Web, 0.5)],
     );
     let s = String::from_utf8(canonical_json(&mix).expect("canonical")).expect("utf8");
     let want = reference::canonical_json(&mix).expect("ref");
@@ -138,12 +134,7 @@ fn agentic_key_follows_enum_order_not_alpha() {
 
 #[test]
 fn nan_weight_canonical_json_errors() {
-    let mix = common::mix(
-        "m",
-        "b",
-        Phase::Pretrain,
-        &[(Source::Web, f64::NAN)],
-    );
+    let mix = common::mix("m", "b", Phase::Pretrain, &[(Source::Web, f64::NAN)]);
     assert!(canonical_json(&mix).is_err());
     assert!(mix_hash(&mix).is_err());
     assert!(reference::canonical_json(&mix).is_err());

@@ -22,18 +22,10 @@ fn replay_shards_after_ingest() {
             orch.ingest(d.clone()).expect("ingest");
             refer.ingest(d).expect("ref");
         }
-        assert_shards_eq(
-            &orch.shards(),
-            &refer.shards(),
-            "before drop",
-        );
+        assert_shards_eq(&orch.shards(), &refer.shards(), "before drop");
     }
     let orch = Orchestrator::open(&dir, cfg).expect("open");
-    assert_shards_eq(
-        &orch.shards(),
-        &refer.shards(),
-        "after open",
-    );
+    assert_shards_eq(&orch.shards(), &refer.shards(), "after open");
 }
 
 #[test]
@@ -48,28 +40,15 @@ fn replay_predictions_after_run() {
             orch.ingest(d.clone()).expect("ingest");
             refer.ingest(d).expect("ref");
         }
-        orch.run(&mut LocalScorer { seed: 42 }, 11)
-            .expect("run");
+        orch.run(&mut LocalScorer { seed: 42 }, 11).expect("run");
         refer
             .run(&mut RefLocalScorer { seed: 42 }, 11)
             .expect("ref run");
-        assert_preds_eq(
-            orch.predictions(),
-            refer.predictions(),
-            "before drop",
-        );
+        assert_preds_eq(orch.predictions(), refer.predictions(), "before drop");
     }
     let orch = Orchestrator::open(&dir, cfg).expect("open");
-    assert_preds_eq(
-        orch.predictions(),
-        refer.predictions(),
-        "after open",
-    );
-    assert_shards_eq(
-        &orch.shards(),
-        &refer.shards(),
-        "shards after open",
-    );
+    assert_preds_eq(orch.predictions(), refer.predictions(), "after open");
+    assert_shards_eq(&orch.shards(), &refer.shards(), "shards after open");
 }
 
 #[test]
@@ -108,10 +87,7 @@ fn replay_without_run_has_no_predictions() {
     }
     let orch = Orchestrator::open(&dir, cfg).expect("open");
     assert_eq!(orch.shards()[0].len(), 1);
-    assert!(
-        orch.predictions().is_empty(),
-        "open must not invent scores"
-    );
+    assert!(orch.predictions().is_empty(), "open must not invent scores");
 }
 
 #[test]

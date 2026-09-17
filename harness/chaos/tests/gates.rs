@@ -3,12 +3,8 @@
 mod common;
 mod reference;
 
-use common::{
-    coordinator, default_config, fresh_world_dir, HOSTED_PROVIDERS,
-};
-use prometheus_chaos::{
-    faults_for, run_gate, Fault, Gate, ProcessId, ReplicaId, World, D0_KILLS,
-};
+use common::{coordinator, default_config, fresh_world_dir, HOSTED_PROVIDERS};
+use prometheus_chaos::{faults_for, run_gate, Fault, Gate, ProcessId, ReplicaId, World, D0_KILLS};
 use reference::{ref_faults_for, ref_run_gate, RefWorld};
 
 fn kinds(fs: &[Fault]) -> Vec<&'static str> {
@@ -117,7 +113,8 @@ fn faults_for_d5_outage_every_hosted_provider() {
     let fs = faults_for(Gate::D5);
     for p in HOSTED_PROVIDERS {
         assert!(
-            fs.iter().any(|f| matches!(f, Fault::Outage { provider } if provider == p)),
+            fs.iter()
+                .any(|f| matches!(f, Fault::Outage { provider } if provider == p)),
             "D5 must outage hosted provider {p}: {fs:?}"
         );
     }

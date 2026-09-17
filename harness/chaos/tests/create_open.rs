@@ -7,9 +7,7 @@ use common::{
     assert_default_shape, assert_err, assert_too_few, cfg, coordinator, default_config,
     events_jsonl, fresh_world_dir, process_ids, replica, replica_ids, replica_path, worker,
 };
-use prometheus_chaos::{
-    World, WorldConfig, DEFAULT_PROCESSES, MIN_REPLICAS,
-};
+use prometheus_chaos::{World, WorldConfig, DEFAULT_PROCESSES, MIN_REPLICAS};
 use reference::RefWorld;
 
 #[test]
@@ -49,7 +47,10 @@ fn create_two_replicas_layout_and_names() {
     assert_eq!(w.now(), 0);
     assert_eq!(w.replicas(), replica_ids(MIN_REPLICAS));
     assert_eq!(w.processes(), process_ids(DEFAULT_PROCESSES));
-    assert!(!w.processes().is_empty(), "processes() nonempty after create");
+    assert!(
+        !w.processes().is_empty(),
+        "processes() nonempty after create"
+    );
     assert_eq!(w.processes()[0], coordinator());
     assert_eq!(w.processes()[1], worker(0));
     for id in w.replicas() {

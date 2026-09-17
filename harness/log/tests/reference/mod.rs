@@ -254,17 +254,17 @@ pub fn assert_self_consistent_goldens() {
     let cycle = f1_payload();
     let ph = payload_hash(&cycle);
     assert_eq!(ph, F1_GENESIS_PAYLOAD_HASH, "F1 payload_hash recompute");
-    let eh = event_hash(
-        0,
-        GENESIS_PREV_HASH,
-        &ph,
-        F1_TIMESTAMP,
-        F1_EVENT_TYPE,
-    );
+    let eh = event_hash(0, GENESIS_PREV_HASH, &ph, F1_TIMESTAMP, F1_EVENT_TYPE);
     assert_eq!(eh, F1_GENESIS_EVENT_HASH, "F1 event_hash recompute");
-    assert_eq!(payload_hash(&serde_json::json!({})), GOLDEN_EMPTY_OBJECT_HASH);
+    assert_eq!(
+        payload_hash(&serde_json::json!({})),
+        GOLDEN_EMPTY_OBJECT_HASH
+    );
     assert_eq!(payload_hash(&fixed_payload()), GOLDEN_FIXED_PAYLOAD_HASH);
-    assert_eq!(payload_hash(&unicode_payload()), GOLDEN_UNICODE_PAYLOAD_HASH);
+    assert_eq!(
+        payload_hash(&unicode_payload()),
+        GOLDEN_UNICODE_PAYLOAD_HASH
+    );
     assert_eq!(GENESIS_PREV_HASH.len(), 64);
     assert!(GENESIS_PREV_HASH.chars().all(|c| c == '0'));
 }

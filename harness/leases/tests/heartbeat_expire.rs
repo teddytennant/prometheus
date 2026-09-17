@@ -19,10 +19,7 @@ fn heartbeat_extends_expiry_to_now_plus_ttl() {
     let t0 = 10_000u64;
     q.enqueue(item_n(1), t0).expect("enqueue");
     refer.enqueue(item_n(1), t0).expect("ref enqueue");
-    let lease = q
-        .claim(&worker("w"), t0)
-        .expect("claim")
-        .expect("lease");
+    let lease = q.claim(&worker("w"), t0).expect("claim").expect("lease");
     refer.claim(&worker("w"), t0).expect("ref claim");
     assert_eq!(lease.expires_at, t0 + short_ttl());
 
@@ -111,10 +108,7 @@ fn two_missed_periods_then_claim_is_attempt_two() {
     let t0 = 1_000u64;
     q.enqueue(item_n(1), t0).expect("enqueue");
     refer.enqueue(item_n(1), t0).expect("ref enqueue");
-    let lease = q
-        .claim(&worker("a"), t0)
-        .expect("claim")
-        .expect("lease");
+    let lease = q.claim(&worker("a"), t0).expect("claim").expect("lease");
     refer.claim(&worker("a"), t0).expect("ref claim");
     assert_eq!(lease.attempt, 1);
     assert_eq!(lease.expires_at, t0 + short_ttl());
@@ -123,10 +117,7 @@ fn two_missed_periods_then_claim_is_attempt_two() {
     let now = t0 + short_ttl();
     let _ = q.expire_due(now).expect("expire_due");
     let _ = refer.expire_due(now).expect("ref expire_due");
-    let reclaim = q
-        .claim(&worker("b"), now)
-        .expect("reclaim")
-        .expect("some");
+    let reclaim = q.claim(&worker("b"), now).expect("reclaim").expect("some");
     let rreclaim = refer
         .claim(&worker("b"), now)
         .expect("ref reclaim")
@@ -166,7 +157,10 @@ fn expired_tasks_append_behind_already_queued() {
     let next = q.claim(&worker("w"), now).expect("claim").expect("some");
     assert_eq!(next.task_id.0, "t2");
     assert_eq!(next.attempt, 1);
-    let reclaimed = q.claim(&worker("w"), now).expect("claim").expect("t1 again");
+    let reclaimed = q
+        .claim(&worker("w"), now)
+        .expect("claim")
+        .expect("t1 again");
     assert_eq!(reclaimed.task_id.0, "t1");
     assert_eq!(reclaimed.attempt, 2);
 }

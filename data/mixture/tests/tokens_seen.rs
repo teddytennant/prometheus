@@ -40,10 +40,7 @@ fn catalog_web_three_epochs() {
         .into_iter()
         .find(|e| e.source == Source::Web)
         .expect("web");
-    assert_eq!(
-        tokens_seen(web.unique_tokens, 3),
-        Some(60_000_000_000_000)
-    );
+    assert_eq!(tokens_seen(web.unique_tokens, 3), Some(60_000_000_000_000));
 }
 
 #[test]

@@ -3,9 +3,7 @@
 mod common;
 mod reference;
 
-use common::{
-    assert_err, events_jsonl, fresh_queue_dir, item_n, short_config, worker,
-};
+use common::{assert_err, events_jsonl, fresh_queue_dir, item_n, short_config, worker};
 use prometheus_leases::{Queue, TaskId};
 
 #[test]

@@ -93,11 +93,7 @@ fn python_reads_agent_files() {
 #[test]
 fn python_does_not_read_grader_files() {
     let (mut prod, mut refer, a, ra, ps) = pair();
-    let req = python(
-        "py-hidden",
-        &ps.0,
-        "print(open('/grader/test.py').read())",
-    );
+    let req = python("py-hidden", &ps.0, "print(open('/grader/test.py').read())");
     let pr = prod.call(&a, req.clone(), 0).unwrap();
     let rr = refer.call(&ra, req, 0).unwrap();
     assert!(!pr.ok && !rr.ok);

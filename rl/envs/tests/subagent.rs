@@ -7,7 +7,9 @@ use common::{editor_write, sample_image, src_does_not_import_tests, subagent, WO
 use prometheus_envs::{Error, Pool, SandboxId};
 use reference::RefPool;
 
-fn pair(cap: usize) -> (
+fn pair(
+    cap: usize,
+) -> (
     Pool<prometheus_envs::InProcess>,
     RefPool,
     prometheus_envs::SandboxId,

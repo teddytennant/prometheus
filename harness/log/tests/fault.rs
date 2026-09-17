@@ -207,7 +207,8 @@ fn append_then_corrupt_disk_open_fails() {
     {
         let mut log = EventLog::create(&dir).expect("create");
         log.append(f1_append()).expect("append");
-        log.append(append_input("next", json!({"x": 1}))).expect("append");
+        log.append(append_input("next", json!({"x": 1})))
+            .expect("append");
     }
     let mut bytes = fs::read(events_path(&dir)).expect("read");
     if let Some(pos) = bytes.iter().position(|&b| b == b'0') {

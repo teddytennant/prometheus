@@ -44,9 +44,7 @@ fn apply_world(w: &mut World, op: &Op) -> Result<(), prometheus_chaos::Error> {
         Op::KillCoord => w.inject(&Fault::Kill {
             process: coordinator(),
         }),
-        Op::KillWorker => w.inject(&Fault::Kill {
-            process: worker(0),
-        }),
+        Op::KillWorker => w.inject(&Fault::Kill { process: worker(0) }),
         Op::Partition { asymmetric } => w.inject(&Fault::Partition {
             from: replica("0"),
             to: replica("1"),
@@ -99,9 +97,7 @@ fn apply_ref(r: &mut RefWorld, op: &Op) -> Result<(), prometheus_chaos::Error> {
         Op::KillCoord => r.inject(&Fault::Kill {
             process: coordinator(),
         }),
-        Op::KillWorker => r.inject(&Fault::Kill {
-            process: worker(0),
-        }),
+        Op::KillWorker => r.inject(&Fault::Kill { process: worker(0) }),
         Op::Partition { asymmetric } => r.inject(&Fault::Partition {
             from: replica("0"),
             to: replica("1"),
@@ -197,10 +193,7 @@ fn world_matches_reference_scripted_ops() {
         let ar = apply_ref(&mut r, op);
         match (aw, ar) {
             (Ok(()), Ok(())) => {}
-            (Err(a), Err(b)) => assert!(
-                err_kind_eq(&a, &b),
-                "op {i} err mismatch {a:?} vs {b:?}"
-            ),
+            (Err(a), Err(b)) => assert!(err_kind_eq(&a, &b), "op {i} err mismatch {a:?} vs {b:?}"),
             (aw, ar) => panic!("op {i} Ok/Err mismatch: {aw:?} vs {ar:?}"),
         }
         assert_pair(&w, &r, &format!("op {i}"));

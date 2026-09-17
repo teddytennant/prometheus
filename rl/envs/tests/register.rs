@@ -45,10 +45,7 @@ fn register_image_rejects_credential_like_env_keys() {
         let (mut prod, mut refer) = pools();
         let mut img = sample_image("img-cred");
         img.env.insert(k.to_string(), "x".into());
-        assert_err_eq(
-            prod.register_image(img.clone()),
-            refer.register_image(img),
-        );
+        assert_err_eq(prod.register_image(img.clone()), refer.register_image(img));
         let (mut prod, _) = pools();
         let mut img = sample_image("img-cred");
         img.env.insert(k.to_string(), "x".into());
@@ -79,10 +76,7 @@ fn register_image_rejects_hidden_tests_outside_grader_root() {
     let mut img = sample_image("img-leak");
     img.hidden_tests
         .insert("/workspace/hidden.py".into(), b"assert 0\n".to_vec());
-    assert_err_eq(
-        prod.register_image(img.clone()),
-        refer.register_image(img),
-    );
+    assert_err_eq(prod.register_image(img.clone()), refer.register_image(img));
     let (mut prod, _) = pools();
     let mut img = sample_image("img-leak");
     img.hidden_tests
@@ -96,10 +90,7 @@ fn register_image_rejects_agent_files_under_grader_root() {
     let mut img = sample_image("img-agent-grader");
     img.agent_files
         .insert(format!("{GRADER_ROOT}/owned.py"), b"x".to_vec());
-    assert_err_eq(
-        prod.register_image(img.clone()),
-        refer.register_image(img),
-    );
+    assert_err_eq(prod.register_image(img.clone()), refer.register_image(img));
     let (mut prod, _) = pools();
     let mut img = sample_image("img-agent-grader");
     img.agent_files

@@ -12,8 +12,21 @@ use crate::{
 };
 
 const NETWORK_BINS: &[&str] = &[
-    "curl", "wget", "nc", "netcat", "ssh", "scp", "sftp", "nmap", "ping", "telnet", "ftp", "host",
-    "dig", "nslookup", "traceroute",
+    "curl",
+    "wget",
+    "nc",
+    "netcat",
+    "ssh",
+    "scp",
+    "sftp",
+    "nmap",
+    "ping",
+    "telnet",
+    "ftp",
+    "host",
+    "dig",
+    "nslookup",
+    "traceroute",
 ];
 
 struct Snap {
@@ -136,11 +149,7 @@ impl Engine {
         Ok((id, 0))
     }
 
-    pub(crate) fn fork(
-        &mut self,
-        snapshot: &SnapshotId,
-        _now: NowMs,
-    ) -> Result<(SandboxId, u64)> {
+    pub(crate) fn fork(&mut self, snapshot: &SnapshotId, _now: NowMs) -> Result<(SandboxId, u64)> {
         self.fork_one(snapshot)
     }
 
@@ -288,7 +297,12 @@ impl Engine {
         }
     }
 
-    fn ok_resp(&self, req: &ToolRequest, stdout: &[u8], extra_path: Option<String>) -> ToolResponse {
+    fn ok_resp(
+        &self,
+        req: &ToolRequest,
+        stdout: &[u8],
+        extra_path: Option<String>,
+    ) -> ToolResponse {
         let mut stdout_artifact = artifact_for(stdout);
         stdout_artifact.path = extra_path;
         ToolResponse {
@@ -583,9 +597,7 @@ impl Engine {
 fn check_image_isolation(image: &Image) -> Result<()> {
     for name in image.env.keys() {
         if credential_like_key(name) {
-            return Err(Error::CredentialInSandbox {
-                name: name.clone(),
-            });
+            return Err(Error::CredentialInSandbox { name: name.clone() });
         }
     }
     for path in image.hidden_tests.keys() {
@@ -662,7 +674,10 @@ enum PythonEval {
 
 fn eval_python_print(code: &str, agent_files: &BTreeMap<String, Vec<u8>>) -> PythonEval {
     let trimmed = code.trim();
-    let rest = match trimmed.strip_prefix("print(").and_then(|s| s.strip_suffix(')')) {
+    let rest = match trimmed
+        .strip_prefix("print(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         Some(inner) => inner.trim(),
         None => return PythonEval::Fail("unsupported python".into()),
     };

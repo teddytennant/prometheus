@@ -8,11 +8,7 @@ use prometheus_ops::{has_quorum, DEFAULT_QUORUM};
 use reference::ref_has_quorum;
 
 fn assert_both(rel: &prometheus_ops::Release, quorum: usize, expect: bool) {
-    assert_eq!(
-        ref_has_quorum(rel, quorum),
-        expect,
-        "reference has_quorum"
-    );
+    assert_eq!(ref_has_quorum(rel, quorum), expect, "reference has_quorum");
     assert_eq!(has_quorum(rel, quorum), expect, "ops has_quorum");
     assert_eq!(has_quorum(rel, quorum), ref_has_quorum(rel, quorum));
 }
@@ -58,11 +54,7 @@ fn empty_signature_bytes_do_not_count() {
 
 #[test]
 fn two_empty_signatures_count_zero() {
-    let rel = release(
-        "v1",
-        v1_digest(),
-        vec![sig("alice", b""), sig("bob", b"")],
-    );
+    let rel = release("v1", v1_digest(), vec![sig("alice", b""), sig("bob", b"")]);
     assert_both(&rel, 1, false);
     assert_both(&rel, 0, true);
 }

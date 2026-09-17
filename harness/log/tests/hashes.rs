@@ -46,7 +46,10 @@ fn payload_hash_fixed_payload() {
 fn payload_hash_unicode() {
     let payload = reference::unicode_payload();
     assert_payload_eq(&payload);
-    assert_eq!(payload_hash(&payload), reference::GOLDEN_UNICODE_PAYLOAD_HASH);
+    assert_eq!(
+        payload_hash(&payload),
+        reference::GOLDEN_UNICODE_PAYLOAD_HASH
+    );
     let bytes = canonical_json(&payload);
     assert_eq!(bytes, reference::canonical_json_bytes(&payload));
     let s = std::str::from_utf8(&bytes).expect("utf-8");

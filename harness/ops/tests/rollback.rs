@@ -24,7 +24,11 @@ fn rollout_to_current(
         &refer.propose(rel, bytes),
         "propose",
     );
-    assert_result_tag(&ops.start_shadow(&mut world.store, world.now), &refer.start_shadow(), "shadow");
+    assert_result_tag(
+        &ops.start_shadow(&mut world.store, world.now),
+        &refer.start_shadow(),
+        "shadow",
+    );
     assert_result_tag(&ops.shadow_pass(world.now), &refer.shadow_pass(), "pass");
     let members = membership(world);
     for m in &members {
@@ -124,7 +128,10 @@ fn rollback_after_promote_restores_previous_kernel_and_pin() {
     assert_eq!(refer.kernel_version, "v1");
     assert_pin(&world.store, PIN_CURRENT, V1_HEX);
     assert_no_pin(&world.store, PIN_SHADOW);
-    assert_eq!(cas_pins(&world.store).get(PIN_CURRENT).map(String::as_str), Some(V1_HEX));
+    assert_eq!(
+        cas_pins(&world.store).get(PIN_CURRENT).map(String::as_str),
+        Some(V1_HEX)
+    );
     let st = status_of(&ops, &mut world);
     assert_state_rolled_back(&st, "v2 is bad");
     assert_eq!(st.kernel_version, "v1");

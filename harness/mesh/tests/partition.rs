@@ -4,9 +4,7 @@
 mod common;
 mod reference;
 
-use common::{
-    advert_set, caps_gpu, fresh_base, good_freeze, start3, watch_pairs, T0,
-};
+use common::{advert_set, caps_gpu, fresh_base, good_freeze, start3, watch_pairs, T0};
 use prometheus_mesh::MIN_WATCHERS;
 use reference::RefLocalMesh;
 
@@ -33,7 +31,10 @@ fn partitioned_node_applies_freeze_on_tick_after_heal() {
 
     mesh.tick(T0).expect("tick while partitioned");
     refer.tick(T0).expect("ref tick");
-    assert!(mesh.get(1).expect("1").is_frozen(), "connected peer freezes");
+    assert!(
+        mesh.get(1).expect("1").is_frozen(),
+        "connected peer freezes"
+    );
     assert!(
         !mesh.get(2).expect("2").is_frozen(),
         "partitioned node must not freeze before heal"

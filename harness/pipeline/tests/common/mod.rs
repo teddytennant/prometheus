@@ -404,11 +404,7 @@ impl Pipe for RefPipeline {
 pub fn assert_state<P: Pipe, R: Pipe>(prod: &P, refer: &R, ctx: &str) {
     assert_eq!(prod.stage(), refer.stage(), "{ctx} stage");
     assert_eq!(prod.round(), refer.round(), "{ctx} round");
-    assert_eq!(
-        prod.stub_failed(),
-        refer.stub_failed(),
-        "{ctx} stub_failed"
-    );
+    assert_eq!(prod.stub_failed(), refer.stub_failed(), "{ctx} stub_failed");
     assert_eq!(prod.module(), refer.module(), "{ctx} module");
     assert_eq!(
         prod.config().n_implementers,
@@ -425,7 +421,12 @@ pub fn assert_state<P: Pipe, R: Pipe>(prod: &P, refer: &R, ctx: &str) {
     assert_eq!(pc, rc, "{ctx} candidates");
 }
 
-pub fn assert_fresh_interface<P: Pipe>(p: &P, dir: &Path, module: &ModuleId, config: &PipelineConfig) {
+pub fn assert_fresh_interface<P: Pipe>(
+    p: &P,
+    dir: &Path,
+    module: &ModuleId,
+    config: &PipelineConfig,
+) {
     assert_eq!(p.dir(), dir);
     assert_eq!(p.queue().dir(), queue_dir(dir));
     assert_eq!(p.module(), module);
@@ -457,7 +458,11 @@ pub fn drive_to_implement<P: Pipe>(p: &mut P, now: NowMs) -> Vec<TaskId> {
 
 pub fn drive_to_review<P: Pipe>(p: &mut P, now: NowMs, patches: &[&[u8]]) -> TaskId {
     let n = p.config().n_implementers as usize;
-    assert_eq!(patches.len(), n, "drive_to_review: one patch per implementer");
+    assert_eq!(
+        patches.len(),
+        n,
+        "drive_to_review: one patch per implementer"
+    );
     let _ = drive_to_implement(p, now);
     for (i, patch) in patches.iter().enumerate() {
         p.submit_candidate(cand(&i.to_string(), &format!("angle-{i}"), patch), now)

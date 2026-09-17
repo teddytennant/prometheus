@@ -360,14 +360,8 @@ pub fn assert_result_tag(got: &Result<()>, exp: &Result<()>, what: &str) {
         (Err(a), Err(b)) => {
             assert_eq!(err_tag(a), err_tag(b), "{what}: {a} vs {b}");
             if let (
-                Error::NoQuorum {
-                    have: ha,
-                    need: na,
-                },
-                Error::NoQuorum {
-                    have: hb,
-                    need: nb,
-                },
+                Error::NoQuorum { have: ha, need: na },
+                Error::NoQuorum { have: hb, need: nb },
             ) = (a, b)
             {
                 assert_eq!(ha, hb, "{what} have");
@@ -416,7 +410,10 @@ pub fn assert_live_applied(status: &Status, version: &str) {
 }
 
 pub fn assert_membership_live(status: &Status, members: &[NodeId]) {
-    let mut got: Vec<String> = live_nodes(status).into_iter().map(|n| n.id.0.clone()).collect();
+    let mut got: Vec<String> = live_nodes(status)
+        .into_iter()
+        .map(|n| n.id.0.clone())
+        .collect();
     let mut exp: Vec<String> = members.iter().map(|n| n.0.clone()).collect();
     got.sort();
     exp.sort();

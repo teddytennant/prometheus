@@ -4,8 +4,8 @@ mod common;
 mod reference;
 
 use common::{
-    assert_close, assert_empty, assert_gate_failed, assert_missing_label, config_full, config_shards,
-    doc, fresh_orch_dir, label, pred, ConstScorer, ScriptedScorer,
+    assert_close, assert_empty, assert_gate_failed, assert_missing_label, config_full,
+    config_shards, doc, fresh_orch_dir, label, pred, ConstScorer, ScriptedScorer,
 };
 use prometheus_classifiers::{agreement, Orchestrator, Scores, DEFAULT_MIN_AGREEMENT};
 use reference::RefOrchestrator;
@@ -219,5 +219,9 @@ fn min_agreement_zero_always_ok_if_labels_score() {
     .expect("run");
     let labels = vec![label(&d.content_hash, false, false)];
     orch.gate(&labels).expect("0.0 is not < min 0.0");
-    assert_close(orch.agreement(&labels).expect("agree"), 0.0, "total mismatch still Ok at min 0");
+    assert_close(
+        orch.agreement(&labels).expect("agree"),
+        0.0,
+        "total mismatch still Ok at min 0",
+    );
 }

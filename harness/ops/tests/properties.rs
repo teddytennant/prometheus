@@ -15,7 +15,10 @@ use reference::{ref_has_quorum, RefOps};
 fn src_does_not_import_tests_and_has_quorum_agrees() {
     assert_src_does_not_import_tests();
     let rel = v1_signed();
-    assert_eq!(has_quorum(&rel, DEFAULT_QUORUM), ref_has_quorum(&rel, DEFAULT_QUORUM));
+    assert_eq!(
+        has_quorum(&rel, DEFAULT_QUORUM),
+        ref_has_quorum(&rel, DEFAULT_QUORUM)
+    );
     assert!(has_quorum(&rel, 2));
 }
 
@@ -99,11 +102,7 @@ fn random_ops_match_reference_errors_state_pins_kernel() {
                 }
                 5 => {
                     let i = leader_idx(&mut world);
-                    let got = ops.promote(
-                        world.group.get(i).unwrap(),
-                        &mut world.store,
-                        world.now,
-                    );
+                    let got = ops.promote(world.group.get(i).unwrap(), &mut world.store, world.now);
                     let exp = refer.promote();
                     assert_result_tag(&got, &exp, &format!("t{trial}s{step} promote"));
                 }
@@ -140,7 +139,10 @@ fn random_ops_match_reference_errors_state_pins_kernel() {
                 refer.kernel_version,
                 "t{trial}s{step} kernel"
             );
-            assert_eq!(st.kernel_version, refer.kernel_version, "t{trial}s{step} status kernel");
+            assert_eq!(
+                st.kernel_version, refer.kernel_version,
+                "t{trial}s{step} status kernel"
+            );
             assert_eq!(
                 has_shadow_role(&st),
                 refer.nodes.iter().any(|n| n.role == NodeRole::Shadow),
@@ -189,7 +191,11 @@ fn refuse_then_valid_propose_then_shadow_never_touches_kernel_until_promote() {
         "ok",
     );
     assert_eq!(kernel_leader(&mut world), kernel);
-    assert_result_tag(&ops.start_shadow(&mut world.store, world.now), &refer.start_shadow(), "sh");
+    assert_result_tag(
+        &ops.start_shadow(&mut world.store, world.now),
+        &refer.start_shadow(),
+        "sh",
+    );
     assert_eq!(kernel_leader(&mut world), kernel);
     assert_result_tag(&ops.shadow_pass(world.now), &refer.shadow_pass(), "pass");
     for m in &members {

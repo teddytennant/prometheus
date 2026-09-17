@@ -39,7 +39,7 @@
 #![allow(dead_code)]
 
 use prometheus_classifiers::{
-    ClassifierConfig, Error, HumanLabel, NowMs, Prediction, Result, Scores, Scorer,
+    ClassifierConfig, Error, HumanLabel, NowMs, Prediction, Result, Scorer, Scores,
 };
 use prometheus_extract::ExtractedDocument;
 use std::path::{Path, PathBuf};
@@ -147,10 +147,7 @@ impl RefOrchestrator {
         }
         let dir = dir.as_ref();
         if dir.exists() {
-            return Err(Error::WrongState(format!(
-                "dir exists: {}",
-                dir.display()
-            )));
+            return Err(Error::WrongState(format!("dir exists: {}", dir.display())));
         }
         std::fs::create_dir(dir).map_err(|e| Error::Other(e.to_string()))?;
         Ok(Self {
@@ -170,11 +167,7 @@ impl RefOrchestrator {
     }
 
     pub fn ingest(&mut self, doc: ExtractedDocument) -> Result<()> {
-        if self
-            .docs
-            .iter()
-            .any(|d| d.content_hash == doc.content_hash)
-        {
+        if self.docs.iter().any(|d| d.content_hash == doc.content_hash) {
             return Err(Error::WrongState(format!(
                 "duplicate content_hash {}",
                 doc.content_hash

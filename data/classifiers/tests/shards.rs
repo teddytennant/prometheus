@@ -7,14 +7,7 @@ use common::{assert_shards_eq, config_shards, doc, doc_n, fresh_orch_dir};
 use prometheus_classifiers::Orchestrator;
 use reference::RefOrchestrator;
 
-fn setup(
-    shard_size: usize,
-    n_docs: u32,
-) -> (
-    tempfile::TempDir,
-    Orchestrator,
-    RefOrchestrator,
-) {
+fn setup(shard_size: usize, n_docs: u32) -> (tempfile::TempDir, Orchestrator, RefOrchestrator) {
     let (parent, dir) = fresh_orch_dir();
     let cfg = config_shards(shard_size);
     let mut orch = Orchestrator::create(&dir, cfg.clone()).expect("create");
@@ -79,11 +72,7 @@ fn shard_size_larger_than_n() {
 #[test]
 fn shards_match_reference() {
     let (_p, orch, refer) = setup(5, 12);
-    assert_shards_eq(
-        &orch.shards(),
-        &refer.shards(),
-        "vs ref",
-    );
+    assert_shards_eq(&orch.shards(), &refer.shards(), "vs ref");
 }
 
 #[test]

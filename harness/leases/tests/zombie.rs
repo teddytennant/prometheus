@@ -4,8 +4,8 @@ mod common;
 mod reference;
 
 use common::{
-    assert_completed, assert_stale_or_not_holder, fresh_queue_dir, item_n, output_path, short_config,
-    short_ttl, worker,
+    assert_completed, assert_stale_or_not_holder, fresh_queue_dir, item_n, output_path,
+    short_config, short_ttl, worker,
 };
 use prometheus_leases::{Queue, TaskId};
 use reference::output_hash;
@@ -36,15 +36,11 @@ fn zombie_complete_after_reclaim_is_refused_and_new_output_wins() {
         .expect_err("zombie complete");
     assert_stale_or_not_holder(&err, "zombie complete");
     assert!(
-        q.get_output(&a.task_id, 1)
-            .expect("out1")
-            .is_none(),
+        q.get_output(&a.task_id, 1).expect("out1").is_none(),
         "refused zombie complete must not write attempt 1"
     );
     assert!(
-        q.get_output(&a.task_id, 2)
-            .expect("out2")
-            .is_none(),
+        q.get_output(&a.task_id, 2).expect("out2").is_none(),
         "refused zombie complete must not write attempt 2"
     );
 
@@ -57,9 +53,7 @@ fn zombie_complete_after_reclaim_is_refused_and_new_output_wins() {
         Some(&b"from-B"[..])
     );
     assert!(
-        q.get_output(&b.task_id, 1)
-            .expect("A bytes")
-            .is_none(),
+        q.get_output(&b.task_id, 1).expect("A bytes").is_none(),
         "attempt 1 was never successfully completed"
     );
 
@@ -85,7 +79,10 @@ fn zombie_heartbeat_after_reclaim_is_refused() {
     q.claim(&worker("A"), 0).expect("claim A");
     let now = short_ttl();
     let _ = q.expire_due(now).expect("expire_due");
-    let b = q.claim(&worker("B"), now).expect("claim B").expect("lease B");
+    let b = q
+        .claim(&worker("B"), now)
+        .expect("claim B")
+        .expect("lease B");
     assert_eq!(b.attempt, 2);
     let err = q
         .heartbeat(&TaskId("t1".into()), &worker("A"), 1, now + 1)

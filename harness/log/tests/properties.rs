@@ -64,7 +64,10 @@ fn payload_key_order_does_not_change_payload_hash() {
     let ea = log.append(append_input("k", a)).expect("a");
     let eb = log.append(append_input("k", b)).expect("b");
     assert_eq!(ea.payload_hash, eb.payload_hash);
-    assert_eq!(ea.payload_hash, reference::payload_hash(&json!({"a": 2, "b": 1})));
+    assert_eq!(
+        ea.payload_hash,
+        reference::payload_hash(&json!({"a": 2, "b": 1}))
+    );
     assert_ne!(ea.hash, eb.hash, "seq differs so event_hash differs");
 }
 
@@ -77,7 +80,9 @@ fn unicode_payloads_roundtrip() {
         "jp": "日本語",
         "emoji": "🦀"
     });
-    let ev = log.append(append_input("uni", payload.clone())).expect("append");
+    let ev = log
+        .append(append_input("uni", payload.clone()))
+        .expect("append");
     assert_eq!(ev.payload, payload);
     assert_eq!(ev.payload_hash, payload_hash(&payload));
     assert_eq!(ev.payload_hash, reference::payload_hash(&payload));
@@ -91,7 +96,9 @@ fn unicode_payloads_roundtrip() {
 fn empty_payload_object() {
     let (_parent, dir) = fresh_log_dir();
     let mut log = EventLog::create(&dir).expect("create");
-    let ev = log.append(append_input("empty", json!({}))).expect("append");
+    let ev = log
+        .append(append_input("empty", json!({})))
+        .expect("append");
     assert_eq!(ev.payload, json!({}));
     assert_eq!(ev.payload_hash, reference::GOLDEN_EMPTY_OBJECT_HASH);
     assert_eq!(ev.seq, 0);

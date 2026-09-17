@@ -180,9 +180,7 @@ pub fn canonical_json(mix: &Mix) -> Result<Vec<u8>> {
 pub fn decay_reweight(mix: &Mix, factor: f64) -> Result<Mix> {
     validate_mix(mix)?;
     if !factor.is_finite() || factor <= 1.0 {
-        return Err(Error::Config(
-            "decay factor must be finite and > 1".into(),
-        ));
+        return Err(Error::Config("decay factor must be finite and > 1".into()));
     }
     let mut weights = mix.weights.clone();
     for src in DECAY_SOURCES {
@@ -273,10 +271,7 @@ fn renormalize(weights: BTreeMap<Source, f64>) -> Result<BTreeMap<Source, f64>> 
     if !total.is_finite() || total <= 0.0 {
         return Err(Error::Config("cannot renormalize weights".into()));
     }
-    Ok(weights
-        .into_iter()
-        .map(|(k, w)| (k, w / total))
-        .collect())
+    Ok(weights.into_iter().map(|(k, w)| (k, w / total)).collect())
 }
 
 fn source_name(source: Source) -> String {

@@ -30,7 +30,9 @@ fn proposed(world: &mut common::World) -> (prometheus_ops::Ops, RefOps) {
 fn start_shadow_wrong_state_if_not_proposed() {
     let mut world = fresh_world();
     let mut ops = create_ops(&world);
-    let err = ops.start_shadow(&mut world.store, world.now).expect_err("idle");
+    let err = ops
+        .start_shadow(&mut world.store, world.now)
+        .expect_err("idle");
     assert_wrong_state(&err);
 }
 
@@ -64,9 +66,12 @@ fn start_shadow_pins_shadow_does_not_change_live_kernel_or_live_applied() {
 fn start_shadow_twice_is_wrong_state() {
     let mut world = fresh_world();
     let (mut ops, mut refer) = proposed(&mut world);
-    ops.start_shadow(&mut world.store, world.now).expect("first");
+    ops.start_shadow(&mut world.store, world.now)
+        .expect("first");
     refer.start_shadow().expect("ref first");
-    let err = ops.start_shadow(&mut world.store, world.now).expect_err("second");
+    let err = ops
+        .start_shadow(&mut world.store, world.now)
+        .expect_err("second");
     assert_wrong_state(&err);
     assert_wrong_state(&refer.start_shadow().unwrap_err());
 }
@@ -85,7 +90,10 @@ fn shadow_pass_wrong_state_if_not_shadowing() {
 fn shadow_fail_wrong_state_if_not_shadowing() {
     let mut world = fresh_world();
     let mut ops = create_ops(&world);
-    assert_wrong_state(&ops.shadow_fail("nope", &mut world.store, world.now).unwrap_err());
+    assert_wrong_state(
+        &ops.shadow_fail("nope", &mut world.store, world.now)
+            .unwrap_err(),
+    );
 }
 
 #[test]
@@ -156,7 +164,11 @@ fn shadow_node_is_distinct_from_live() {
     assert!(!shadows.is_empty(), "expected a shadow node");
     for s in &shadows {
         assert_eq!(s.role, NodeRole::Shadow);
-        assert!(!live.contains(&s.id), "shadow id {} also listed as live", s.id.0);
+        assert!(
+            !live.contains(&s.id),
+            "shadow id {} also listed as live",
+            s.id.0
+        );
     }
     for n in live_nodes(&st) {
         assert_eq!(n.role, NodeRole::Live);

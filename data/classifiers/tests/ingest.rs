@@ -54,11 +54,7 @@ fn ingest_order_preserved() {
         orch.ingest(d.clone()).expect("ingest");
         refer.ingest(d).expect("ref ingest");
     }
-    common::assert_shards_eq(
-        &orch.shards(),
-        &refer.shards(),
-        "ingest order",
-    );
+    common::assert_shards_eq(&orch.shards(), &refer.shards(), "ingest order");
 }
 
 #[test]

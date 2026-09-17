@@ -3,9 +3,7 @@
 mod common;
 mod reference;
 
-use prometheus_obs::{
-    Event, RunRegistry, EVENT_SCHEMA_ID, EVENT_SCHEMA_VERSION, GENESIS_HASH,
-};
+use prometheus_obs::{Event, RunRegistry, EVENT_SCHEMA_ID, EVENT_SCHEMA_VERSION, GENESIS_HASH};
 use serde_json::json;
 
 use common::{assert_rfc3339ish, assert_unknown_run, is_sha256_hex, sample_run};
@@ -15,10 +13,17 @@ fn register(reg: &mut RunRegistry, run_id: &str) {
 }
 
 fn assert_event_hashes(ev: &Event) {
-    assert!(is_sha256_hex(&ev.payload_hash), "payload_hash hex: {}", ev.payload_hash);
+    assert!(
+        is_sha256_hex(&ev.payload_hash),
+        "payload_hash hex: {}",
+        ev.payload_hash
+    );
     assert!(is_sha256_hex(&ev.hash), "hash hex: {}", ev.hash);
     let expected_ph = reference::payload_hash(&ev.payload);
-    assert_eq!(ev.payload_hash, expected_ph, "payload_hash vs tests/reference");
+    assert_eq!(
+        ev.payload_hash, expected_ph,
+        "payload_hash vs tests/reference"
+    );
     let expected_eh = reference::event_hash(
         ev.seq,
         &ev.prev_hash,
@@ -107,10 +112,7 @@ fn events_unknown_run_errors() {
 #[test]
 fn append_event_unknown_run_errors() {
     let mut reg = RunRegistry::new();
-    assert_unknown_run(
-        reg.append_event("no-such", "x", json!({})),
-        "no-such",
-    );
+    assert_unknown_run(reg.append_event("no-such", "x", json!({})), "no-such");
 }
 
 #[test]
@@ -126,12 +128,8 @@ fn event_chains_are_per_run() {
     let mut reg = RunRegistry::new();
     register(&mut reg, "rA");
     register(&mut reg, "rB");
-    let a = reg
-        .append_event("rA", "a", json!({"who": "A"}))
-        .expect("A");
-    let b = reg
-        .append_event("rB", "b", json!({"who": "B"}))
-        .expect("B");
+    let a = reg.append_event("rA", "a", json!({"who": "A"})).expect("A");
+    let b = reg.append_event("rB", "b", json!({"who": "B"})).expect("B");
     assert_eq!(a.seq, 1);
     assert_eq!(b.seq, 1);
     assert_eq!(a.prev_hash, GENESIS_HASH);

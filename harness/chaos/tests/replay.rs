@@ -3,9 +3,7 @@
 mod common;
 mod reference;
 
-use common::{
-    default_config, events_jsonl, fresh_world_dir, replica, task,
-};
+use common::{default_config, events_jsonl, fresh_world_dir, replica, task};
 use prometheus_chaos::World;
 use reference::RefWorld;
 
@@ -18,10 +16,7 @@ fn drop_and_open_same_replica_ids_log_len_invariants() {
         w.enqueue_task(&task("keep"), w.now()).unwrap();
         w.complete_task(&task("keep"), 1, b"ok", w.now()).unwrap();
         let ids = w.replicas();
-        let lens: Vec<usize> = ids
-            .iter()
-            .map(|id| w.log_len(id).expect("len"))
-            .collect();
+        let lens: Vec<usize> = ids.iter().map(|id| w.log_len(id).expect("len")).collect();
         let inv = w.invariants().expect("inv");
         (ids, lens, inv)
     };

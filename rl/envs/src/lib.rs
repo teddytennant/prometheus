@@ -311,12 +311,7 @@ impl Backend for InProcess {
         self.inner.fork(snapshot, now)
     }
 
-    fn call(
-        &mut self,
-        sandbox: &SandboxId,
-        req: &ToolRequest,
-        now: NowMs,
-    ) -> Result<ToolResponse> {
+    fn call(&mut self, sandbox: &SandboxId, req: &ToolRequest, now: NowMs) -> Result<ToolResponse> {
         self.inner.call(sandbox, req.clone(), now)
     }
 

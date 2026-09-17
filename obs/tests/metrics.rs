@@ -7,9 +7,7 @@ mod common;
 
 use prometheus_obs::Metrics;
 
-use common::{
-    assert_kind_mismatch, assert_some_f64, empty_labels, labels, METRIC_TOL,
-};
+use common::{assert_kind_mismatch, assert_some_f64, empty_labels, labels, METRIC_TOL};
 
 #[test]
 fn get_missing_name_is_ok_none() {

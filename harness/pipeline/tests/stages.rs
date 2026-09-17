@@ -7,18 +7,13 @@ use common::{
     assert_no_candidate, assert_planted_bad, assert_state, assert_stub_not_failed,
     assert_stub_passed, assert_wrong_stage, assert_wrong_stage_expected, cand, cfg,
     default_pipeline_config, default_queue_config, drive_to_implement, drive_to_oracle,
-    drive_to_review, drive_to_stub_must_fail, good_patch, merge_record, module,
-    payloads_with_role, pick, planted_patch, reject_all, unwrap_err, NOW,
+    drive_to_review, drive_to_stub_must_fail, good_patch, merge_record, module, payloads_with_role,
+    pick, planted_patch, reject_all, unwrap_err, NOW,
 };
 use prometheus_pipeline::{Pipeline, Stage, ROLE_IMPLEMENTER};
 use reference::RefPipeline;
 
-fn pair() -> (
-    tempfile::TempDir,
-    std::path::PathBuf,
-    Pipeline,
-    RefPipeline,
-) {
+fn pair() -> (tempfile::TempDir, std::path::PathBuf, Pipeline, RefPipeline) {
     let parent = tempfile::tempdir().expect("tempdir");
     let prod_dir = parent.path().join("prod");
     let ref_dir = parent.path().join("refer");
@@ -100,7 +95,10 @@ fn submit_unknown_candidate_is_no_candidate() {
     drive_to_implement(&mut p, NOW);
     drive_to_implement(&mut r, NOW);
     let c = cand("nope", "x", good_patch());
-    assert_no_candidate(unwrap_err(p.submit_candidate(c.clone(), NOW), "prod"), "nope");
+    assert_no_candidate(
+        unwrap_err(p.submit_candidate(c.clone(), NOW), "prod"),
+        "nope",
+    );
     assert_no_candidate(unwrap_err(r.submit_candidate(c, NOW), "ref"), "nope");
     assert!(p.candidates().expect("cands").is_empty());
     assert_eq!(p.stage(), Stage::Implement);
@@ -113,10 +111,12 @@ fn submit_records_in_first_submit_order_last_write_wins() {
     drive_to_implement(&mut r, NOW);
     p.submit_candidate(cand("1", "first-1", b"a"), NOW).unwrap();
     p.submit_candidate(cand("0", "first-0", b"b"), NOW).unwrap();
-    p.submit_candidate(cand("1", "updated-1", b"c"), NOW).unwrap();
+    p.submit_candidate(cand("1", "updated-1", b"c"), NOW)
+        .unwrap();
     r.submit_candidate(cand("1", "first-1", b"a"), NOW).unwrap();
     r.submit_candidate(cand("0", "first-0", b"b"), NOW).unwrap();
-    r.submit_candidate(cand("1", "updated-1", b"c"), NOW).unwrap();
+    r.submit_candidate(cand("1", "updated-1", b"c"), NOW)
+        .unwrap();
     let got = p.candidates().expect("cands");
     assert_eq!(got.len(), 2);
     assert_eq!(got[0].id.0, "1");
@@ -143,8 +143,10 @@ fn start_review_from_implement() {
     let (_t, _d, mut p, mut r) = pair();
     drive_to_implement(&mut p, NOW);
     drive_to_implement(&mut r, NOW);
-    p.submit_candidate(cand("0", "a", good_patch()), NOW).unwrap();
-    r.submit_candidate(cand("0", "a", good_patch()), NOW).unwrap();
+    p.submit_candidate(cand("0", "a", good_patch()), NOW)
+        .unwrap();
+    r.submit_candidate(cand("0", "a", good_patch()), NOW)
+        .unwrap();
     p.start_review(NOW).unwrap();
     r.start_review(NOW).unwrap();
     assert_eq!(p.stage(), Stage::Review);
@@ -215,8 +217,8 @@ fn reject_all_at_max_rounds_blocks() {
     let parent = tempfile::tempdir().expect("tempdir");
     let prod_dir = parent.path().join("prod");
     let cfg = cfg(1, 1);
-    let mut p = Pipeline::create(&prod_dir, module(), cfg.clone(), default_queue_config())
-        .expect("create");
+    let mut p =
+        Pipeline::create(&prod_dir, module(), cfg.clone(), default_queue_config()).expect("create");
     let mut r = RefPipeline::create(
         parent.path().join("refer"),
         module(),

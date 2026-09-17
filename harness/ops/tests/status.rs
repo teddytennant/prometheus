@@ -95,9 +95,7 @@ fn status_json_after_shadowing_uses_snake_case_state() {
         .unwrap();
     ops.start_shadow(&mut world.store, world.now).unwrap();
     let i = leader_idx(&mut world);
-    let json = ops
-        .status_json(world.group.get(i).unwrap())
-        .expect("json");
+    let json = ops.status_json(world.group.get(i).unwrap()).expect("json");
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["state"], "shadowing");
     let nodes = v["nodes"].as_array().expect("nodes array");

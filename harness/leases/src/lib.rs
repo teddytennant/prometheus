@@ -219,12 +219,7 @@ impl Queue {
     /// Skipped tasks stay `Queued` with unchanged attempt and no claim/expire
     /// events. `Ok(None)` if no queued task matches. Mesh pull uses this so a
     /// cap-mismatch is not claimed.
-    pub fn claim_if<F>(
-        &mut self,
-        worker: &WorkerId,
-        now: NowMs,
-        pred: F,
-    ) -> Result<Option<Lease>>
+    pub fn claim_if<F>(&mut self, worker: &WorkerId, now: NowMs, pred: F) -> Result<Option<Lease>>
     where
         F: Fn(&Task) -> bool,
     {

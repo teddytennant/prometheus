@@ -5,10 +5,11 @@ mod reference;
 
 use common::{
     assert_close, assert_empty, assert_preds_eq, assert_serve, assert_wrong_state, config_shards,
-    doc, doc_hashed, doc_n, fresh_orch_dir, BoomScorer, RecordingScorer, WrongLenScorer, ZeroScorer,
+    doc, doc_hashed, doc_n, fresh_orch_dir, BoomScorer, RecordingScorer, WrongLenScorer,
+    ZeroScorer,
 };
 use prometheus_classifiers::{
-    Error, LocalScorer, Orchestrator, Scores, Scorer, ServeScorer, DEFAULT_QUALITY_THRESHOLD,
+    Error, LocalScorer, Orchestrator, Scorer, Scores, ServeScorer, DEFAULT_QUALITY_THRESHOLD,
     DEFAULT_SAFETY_THRESHOLD,
 };
 use prometheus_providers::{AimdConfig, ProviderId};
@@ -104,11 +105,7 @@ fn local_scorer_len_and_range() {
     let got = s.score(&texts, 0).expect("score");
     assert_eq!(got.len(), 3);
     for (i, sc) in got.iter().enumerate() {
-        assert!(
-            (0.0..=1.0).contains(&sc.quality),
-            "q[{i}]={}",
-            sc.quality
-        );
+        assert!((0.0..=1.0).contains(&sc.quality), "q[{i}]={}", sc.quality);
         assert!((0.0..=1.0).contains(&sc.safety), "s[{i}]={}", sc.safety);
     }
 }
@@ -125,7 +122,10 @@ fn local_scorer_quality_safety_independent() {
             break;
         }
     }
-    assert!(found, "quality and safety must not be identical for all texts");
+    assert!(
+        found,
+        "quality and safety must not be identical for all texts"
+    );
 }
 
 #[test]
