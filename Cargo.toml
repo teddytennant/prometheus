@@ -11,6 +11,7 @@ members = [
     "harness/ledger",
     "harness/leases",
     "harness/log",
+    "harness/mesh",
     "harness/raft",
     "harness/slurm",
     "obs",

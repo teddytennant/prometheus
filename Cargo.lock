@@ -1217,6 +1217,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-mesh"
+version = "0.0.1"
+dependencies = [
+ "prometheus-leases",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-mixture"
 version = "0.0.1"
 dependencies = [

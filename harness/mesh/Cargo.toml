@@ -1,0 +1,20 @@
+[package]
+name = "prometheus-mesh"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Mesh work distribution: capability adverts, pull claiming, signed freeze, watcher ring"
+publish = false
+
+[dependencies]
+prometheus-leases = { path = "../leases" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+gpu = []
