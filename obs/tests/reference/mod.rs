@@ -103,3 +103,7 @@ pub const GOLDEN_EMPTY_OBJECT_HASH: &str =
 
 pub const GOLDEN_UNICODE_PAYLOAD_HASH: &str =
     "e8d13b8f2f569be2e3ef0a2803761f39ed4d93cf167636d3e3c7a6d3c7562e00";
+
+/// I10 independent reference: loss-spike policy, MetricLog, dashboard snapshots.
+#[allow(dead_code)]
+pub mod i10;
