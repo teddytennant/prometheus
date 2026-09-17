@@ -9,4 +9,5 @@ members = [
     "harness/ledger",
     "harness/slurm",
     "obs",
+    "verify/ncshare",
 ]

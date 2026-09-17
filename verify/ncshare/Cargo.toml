@@ -1,0 +1,12 @@
+[package]
+name = "prometheus-verify-ncshare"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "V0-V10 NCShare job templates and exit checkers (spec 16, 15.5 F4)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

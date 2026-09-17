@@ -1202,6 +1202,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-verify-ncshare"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
