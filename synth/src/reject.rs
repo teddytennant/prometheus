@@ -10,7 +10,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Generator, Result, TokenCounter, DEFAULT_MAX_BATCH, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE};
+use crate::{
+    Error, Generator, Result, TokenCounter, DEFAULT_MAX_BATCH, DEFAULT_MAX_TOKENS,
+    DEFAULT_TEMPERATURE,
+};
 
 /// Default group size. Matches the GRPO group size in spec 9.2.
 pub const DEFAULT_N_SAMPLES: u32 = 8;
@@ -213,11 +216,7 @@ impl RejectionSampler {
 
     /// `n` completions per problem, chunked by `max_batch`. Empty `problems`
     /// is [`Error::EmptyBatch`]. Result order matches `problems`.
-    pub fn sample_many(
-        &mut self,
-        problems: &[Problem],
-        n: u32,
-    ) -> Result<Vec<RejectionResult>> {
+    pub fn sample_many(&mut self, problems: &[Problem], n: u32) -> Result<Vec<RejectionResult>> {
         let _ = (problems, n);
         unimplemented!("E2 RejectionSampler::sample_many")
     }
