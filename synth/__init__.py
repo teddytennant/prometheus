@@ -844,51 +844,460 @@ class DiversityStats:
     collision_rate: float
 
 
+_TOO_MANY_SPECS = "requested more family specs than the parameter grid"
+_DISTINCT_PAIR_FAIL = "could not sample distinct pairs"
+_MAX_SAMPLE_DIM = 8
+_MAX_PAIR_ATTEMPTS = 10000
+_MASK64 = (1 << 64) - 1
+_SPLITMIX_GOLDEN = 0x9E3779B97F4A7C15
+_SPLITMIX_M1 = 0xBF58476D1CE4E5B9
+_SPLITMIX_M2 = 0x94D049BB133111EB
+
+
+class _SplitMix64:
+    """Portable PRNG. Must match the E3 oracle SplitMix64."""
+
+    __slots__ = ("state",)
+
+    def __init__(self, seed: int) -> None:
+        self.state = seed & _MASK64
+
+    def next_u64(self) -> int:
+        self.state = (self.state + _SPLITMIX_GOLDEN) & _MASK64
+        z = self.state
+        z = ((z ^ (z >> 30)) * _SPLITMIX_M1) & _MASK64
+        z = ((z ^ (z >> 27)) * _SPLITMIX_M2) & _MASK64
+        return z ^ (z >> 31)
+
+    def next_bounded(self, n: int) -> int:
+        return self.next_u64() % n
+
+
+class _SpecFamily:
+    """Generator for one validated family. ``generate`` uses DEFAULT_N_TRAIN."""
+
+    def __init__(self, spec: FamilySpec) -> None:
+        self._spec = spec
+        self._id = spec.family_id()
+
+    def id(self) -> str:
+        return self._id
+
+    def kind(self) -> FamilyKind:
+        return self._spec.kind
+
+    def generate(self, seed: int) -> Task:
+        return _generate_task(self._spec, seed, DEFAULT_N_TRAIN)
+
+
 def apply_dihedral(grid: Grid, dihedral: Dihedral) -> Grid:
     """Apply a D4 action. ``rot90`` is clockwise. Output size swaps on rot90,
     rot270, transpose, anti-transpose."""
-    raise NotImplementedError("E3 apply_dihedral")
+    src = grid.cells
+    h = len(src)
+    w = len(src[0])
+    k = dihedral.index()
+    if k == 0:
+        oh, ow = h, w
+
+        def cell(r: int, c: int) -> int:
+            return src[r][c]
+    elif k == 1:
+        oh, ow = w, h
+
+        def cell(r: int, c: int) -> int:
+            return src[h - 1 - c][r]
+    elif k == 2:
+        oh, ow = h, w
+
+        def cell(r: int, c: int) -> int:
+            return src[h - 1 - r][w - 1 - c]
+    elif k == 3:
+        oh, ow = w, h
+
+        def cell(r: int, c: int) -> int:
+            return src[c][w - 1 - r]
+    elif k == 4:
+        oh, ow = h, w
+
+        def cell(r: int, c: int) -> int:
+            return src[r][w - 1 - c]
+    elif k == 5:
+        oh, ow = h, w
+
+        def cell(r: int, c: int) -> int:
+            return src[h - 1 - r][c]
+    elif k == 6:
+        oh, ow = w, h
+
+        def cell(r: int, c: int) -> int:
+            return src[c][r]
+    elif k == 7:
+        oh, ow = w, h
+
+        def cell(r: int, c: int) -> int:
+            return src[h - 1 - c][w - 1 - r]
+    else:
+        raise SynthError(f"dihedral index {k} out of range")
+    return Grid(cells=[[cell(r, c) for c in range(ow)] for r in range(oh)])
 
 
 def apply_color_perm(grid: Grid, perm: Sequence[int]) -> Grid:
     """``perm[c]`` is the new color of ``c``. Must be a permutation of
     ``0..N_COLORS``."""
-    raise NotImplementedError("E3 apply_color_perm")
+    p = [int(x) for x in perm]
+    if len(p) != N_COLORS:
+        raise SynthError("color permutation is not a permutation of 0..10")
+    seen = [False] * N_COLORS
+    for v in p:
+        if v < 0 or v >= N_COLORS or seen[v]:
+            raise SynthError("color permutation is not a permutation of 0..10")
+        seen[v] = True
+    return Grid(cells=[[p[c] for c in row] for row in grid.cells])
 
 
 def augment_pair(pair: Pair, dihedral: Dihedral, perm: Sequence[int]) -> Pair:
     """Same dihedral and color perm on every grid in the pair."""
-    raise NotImplementedError("E3 augment_pair")
+    return Pair(
+        input=apply_color_perm(apply_dihedral(pair.input, dihedral), perm),
+        output=apply_color_perm(apply_dihedral(pair.output, dihedral), perm),
+    )
 
 
 def augment_task(task: Task, dihedral: Dihedral, perm: Sequence[int]) -> Task:
     """Same dihedral and color perm on every grid in the task. ``family_id``
     and ``seed`` are unchanged. Augmentation is a training-time view, not a
     new family."""
-    raise NotImplementedError("E3 augment_task")
+    return Task(
+        family_id=task.family_id,
+        seed=task.seed,
+        train=[augment_pair(p, dihedral, perm) for p in task.train],
+        test=augment_pair(task.test, dihedral, perm),
+    )
 
 
 def tokenize_grid(tok: GridTokenizer, grid: Grid) -> list[int]:
     """F6 encode of ``grid.flatten()``."""
-    raise NotImplementedError("E3 tokenize_grid")
+    return list(tok.encode_grid(grid.flatten()))
+
+
+def _require(spec: FamilySpec, keys: set[str]) -> dict[str, int]:
+    d = dict(spec.params)
+    if set(d) != keys:
+        raise SynthError("unknown family")
+    return d
+
+
+def _color(v: int) -> int:
+    if v < 0 or v >= N_COLORS:
+        raise SynthError("unknown family")
+    return v
+
+
+def _validate_spec(spec: FamilySpec) -> dict[str, int]:
+    kind = spec.kind
+    if kind is FamilyKind.TRANSLATE:
+        d = _require(spec, {"dx", "dy", "bg"})
+        _color(d["bg"])
+        return d
+    if kind is FamilyKind.RECOLOR:
+        d = _require(spec, {"src", "dst"})
+        src, dst = _color(d["src"]), _color(d["dst"])
+        if src == dst:
+            raise SynthError("unknown family")
+        return d
+    if kind is FamilyKind.CROP:
+        d = _require(spec, {"bg"})
+        _color(d["bg"])
+        return d
+    if kind is FamilyKind.TILE:
+        d = _require(spec, {"nx", "ny"})
+        if d["nx"] < 1 or d["ny"] < 1 or d["nx"] > MAX_GRID_SIZE or d["ny"] > MAX_GRID_SIZE:
+            raise SynthError("unknown family")
+        return d
+    if kind is FamilyKind.GRAVITY:
+        d = _require(spec, {"dir", "bg"})
+        if d["dir"] < 0 or d["dir"] > 3:
+            raise SynthError("unknown family")
+        _color(d["bg"])
+        return d
+    if kind is FamilyKind.MIRROR:
+        d = _require(spec, {"dihedral"})
+        if d["dihedral"] < 0 or d["dihedral"] >= N_DIHEDRAL:
+            raise SynthError("unknown family")
+        return d
+    if kind is FamilyKind.SCALE:
+        d = _require(spec, {"factor"})
+        if d["factor"] not in (2, 3):
+            raise SynthError("unknown family")
+        return d
+    if kind is FamilyKind.BORDER:
+        d = _require(spec, {"color", "width"})
+        _color(d["color"])
+        if d["width"] not in (1, 2):
+            raise SynthError("unknown family")
+        return d
+    raise SynthError("unknown family")
+
+
+def _wrap(i: int, n: int) -> int:
+    r = i % n
+    if r < 0:
+        r += n
+    return r
+
+
+def _translate(grid: Grid, dx: int, dy: int, bg: int) -> Grid:
+    h, w = grid.rows(), grid.cols()
+    out = [[bg for _ in range(w)] for _ in range(h)]
+    for r, row in enumerate(grid.cells):
+        for c, val in enumerate(row):
+            if val != bg:
+                out[_wrap(r + dy, h)][_wrap(c + dx, w)] = val
+    return Grid(cells=out)
+
+
+def _recolor(grid: Grid, src: int, dst: int) -> Grid:
+    return Grid(cells=[[dst if c == src else c for c in row] for row in grid.cells])
+
+
+def _crop(grid: Grid, bg: int) -> Grid:
+    coords = [(r, c) for r, row in enumerate(grid.cells) for c, val in enumerate(row) if val != bg]
+    if not coords:
+        return Grid(cells=[[bg]])
+    min_r = min(r for r, _ in coords)
+    max_r = max(r for r, _ in coords)
+    min_c = min(c for _, c in coords)
+    max_c = max(c for _, c in coords)
+    return Grid(cells=[row[min_c : max_c + 1] for row in grid.cells[min_r : max_r + 1]])
+
+
+def _tile(grid: Grid, nx: int, ny: int) -> Grid:
+    h = grid.rows()
+    out: list[list[int]] = []
+    for _tr in range(ny):
+        for r in range(h):
+            row: list[int] = []
+            for _tc in range(nx):
+                row.extend(grid.cells[r])
+            out.append(row)
+    return Grid(cells=out)
+
+
+def _gravity(grid: Grid, direction: int, bg: int) -> Grid:
+    h, w = grid.rows(), grid.cols()
+    out = [[bg for _ in range(w)] for _ in range(h)]
+    if direction == 0:
+        for c in range(w):
+            objs = [grid.cells[r][c] for r in range(h) if grid.cells[r][c] != bg]
+            start = h - len(objs)
+            for i, val in enumerate(objs):
+                out[start + i][c] = val
+    elif direction == 1:
+        for c in range(w):
+            objs = [grid.cells[r][c] for r in range(h) if grid.cells[r][c] != bg]
+            for i, val in enumerate(objs):
+                out[i][c] = val
+    elif direction == 2:
+        for r in range(h):
+            objs = [val for val in grid.cells[r] if val != bg]
+            for i, val in enumerate(objs):
+                out[r][i] = val
+    else:
+        for r in range(h):
+            objs = [val for val in grid.cells[r] if val != bg]
+            start = w - len(objs)
+            for i, val in enumerate(objs):
+                out[r][start + i] = val
+    return Grid(cells=out)
+
+
+def _scale(grid: Grid, factor: int) -> Grid:
+    out = []
+    for row in grid.cells:
+        scaled = [c for c in row for _ in range(factor)]
+        for _ in range(factor):
+            out.append(list(scaled))
+    return Grid(cells=out)
+
+
+def _border(grid: Grid, color: int, width: int) -> Grid:
+    h, w = grid.rows(), grid.cols()
+    oh, ow = h + 2 * width, w + 2 * width
+    out = [[color for _ in range(ow)] for _ in range(oh)]
+    for r, row in enumerate(grid.cells):
+        for c, val in enumerate(row):
+            out[r + width][c + width] = val
+    return Grid(cells=out)
+
+
+def _apply_family(grid: Grid, spec: FamilySpec) -> Grid:
+    d = _validate_spec(spec)
+    kind = spec.kind
+    if kind is FamilyKind.TRANSLATE:
+        return _translate(grid, d["dx"], d["dy"], d["bg"])
+    if kind is FamilyKind.RECOLOR:
+        return _recolor(grid, d["src"], d["dst"])
+    if kind is FamilyKind.CROP:
+        return _crop(grid, d["bg"])
+    if kind is FamilyKind.TILE:
+        return _tile(grid, d["nx"], d["ny"])
+    if kind is FamilyKind.GRAVITY:
+        return _gravity(grid, d["dir"], d["bg"])
+    if kind is FamilyKind.MIRROR:
+        return apply_dihedral(grid, Dihedral.from_index(d["dihedral"]))
+    if kind is FamilyKind.SCALE:
+        return _scale(grid, d["factor"])
+    return _border(grid, d["color"], d["width"])
 
 
 def family_from_spec(spec: FamilySpec) -> Family:
     """Construct a family from a spec. Unknown or invalid params raise
     :class:`SynthError`."""
-    raise NotImplementedError("E3 family_from_spec")
+    _validate_spec(spec)
+    return _SpecFamily(spec)
+
+
+def _max_in_hw(spec: FamilySpec) -> tuple[int, int]:
+    d = dict(spec.params)
+    kind = spec.kind
+    if kind is FamilyKind.TILE:
+        return MAX_GRID_SIZE // d["ny"], MAX_GRID_SIZE // d["nx"]
+    if kind is FamilyKind.SCALE:
+        f = d["factor"]
+        return MAX_GRID_SIZE // f, MAX_GRID_SIZE // f
+    if kind is FamilyKind.BORDER:
+        w = d["width"]
+        return MAX_GRID_SIZE - 2 * w, MAX_GRID_SIZE - 2 * w
+    return MAX_GRID_SIZE, MAX_GRID_SIZE
+
+
+def _cells_key(grid: Grid) -> tuple[tuple[int, ...], ...]:
+    return tuple(tuple(row) for row in grid.cells)
+
+
+def _sample_pair(rng: _SplitMix64, spec: FamilySpec) -> Pair:
+    max_h, max_w = _max_in_hw(spec)
+    max_h = min(_MAX_SAMPLE_DIM, max_h)
+    max_w = min(_MAX_SAMPLE_DIM, max_w)
+    h = 1 + rng.next_bounded(max_h)
+    w = 1 + rng.next_bounded(max_w)
+    cells = [[rng.next_bounded(N_COLORS) for _ in range(w)] for _ in range(h)]
+    inp = Grid(cells=cells)
+    return Pair(input=inp, output=_apply_family(inp, spec))
+
+
+def _generate_task(spec: FamilySpec, seed: int, n_train: int) -> Task:
+    _validate_spec(spec)
+    if n_train <= 0:
+        raise SynthError("empty train")
+    rng = _SplitMix64(seed)
+    need = n_train + 1
+    pairs: list[Pair] = []
+    seen: set[tuple] = set()
+    attempts = 0
+    while len(pairs) < need:
+        attempts += 1
+        if attempts > _MAX_PAIR_ATTEMPTS:
+            raise SynthError(_DISTINCT_PAIR_FAIL)
+        pair = _sample_pair(rng, spec)
+        key = (_cells_key(pair.input), _cells_key(pair.output))
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(pair)
+    return Task(
+        family_id=spec.family_id(),
+        seed=seed & _MASK64,
+        train=pairs[:-1],
+        test=pairs[-1],
+    )
+
+
+def _parameter_grid() -> list[FamilySpec]:
+    specs: list[FamilySpec] = []
+    for bg in range(N_COLORS):
+        for dx in range(-3, 4):
+            for dy in range(-3, 4):
+                specs.append(FamilySpec.make(FamilyKind.TRANSLATE, {"dx": dx, "dy": dy, "bg": bg}))
+    for src in range(N_COLORS):
+        for dst in range(N_COLORS):
+            if src != dst:
+                specs.append(FamilySpec.make(FamilyKind.RECOLOR, {"src": src, "dst": dst}))
+    for bg in range(N_COLORS):
+        specs.append(FamilySpec.make(FamilyKind.CROP, {"bg": bg}))
+    for nx in range(1, 5):
+        for ny in range(1, 5):
+            specs.append(FamilySpec.make(FamilyKind.TILE, {"nx": nx, "ny": ny}))
+    for bg in range(N_COLORS):
+        for direction in range(4):
+            specs.append(FamilySpec.make(FamilyKind.GRAVITY, {"dir": direction, "bg": bg}))
+    for d in range(N_DIHEDRAL):
+        specs.append(FamilySpec.make(FamilyKind.MIRROR, {"dihedral": d}))
+    for factor in (2, 3):
+        specs.append(FamilySpec.make(FamilyKind.SCALE, {"factor": factor}))
+    for color in range(N_COLORS):
+        for width in (1, 2):
+            specs.append(FamilySpec.make(FamilyKind.BORDER, {"color": color, "width": width}))
+    return specs
 
 
 def sample_family_specs(n: int, seed: int) -> list[FamilySpec]:
     """``n`` distinct specs from the parameter grid, deterministic in
     ``seed``."""
-    raise NotImplementedError("E3 sample_family_specs")
+    if n == 0:
+        return []
+    specs = _parameter_grid()
+    if n < 0 or n > len(specs):
+        raise SynthError(_TOO_MANY_SPECS)
+    rng = _SplitMix64(seed)
+    for i in range(len(specs)):
+        j = i + rng.next_bounded(len(specs) - i)
+        specs[i], specs[j] = specs[j], specs[i]
+    return specs[:n]
 
 
 def diversity_stats(tasks: Sequence[Task]) -> DiversityStats:
     """Gate: uniqueness and color/shape coverage over ``tasks``. Empty is
     zeros and ``collision_rate == 0.0``."""
-    raise NotImplementedError("E3 diversity_stats")
+    n_tasks = len(tasks)
+    families: set[str] = set()
+    test_in: set[tuple] = set()
+    test_out: set[tuple] = set()
+    task_keys: set[tuple] = set()
+    hist = [0] * N_COLORS
+    shapes: set[tuple[int, int]] = set()
+
+    def acc(grid: Grid) -> None:
+        shapes.add((grid.rows(), grid.cols()))
+        for row in grid.cells:
+            for c in row:
+                hist[c] += 1
+
+    for task in tasks:
+        families.add(task.family_id)
+        test_in.add(_cells_key(task.test.input))
+        test_out.add(_cells_key(task.test.output))
+        train_key = tuple((_cells_key(p.input), _cells_key(p.output)) for p in task.train)
+        task_keys.add((train_key, _cells_key(task.test.input), _cells_key(task.test.output)))
+        for pair in task.train:
+            acc(pair.input)
+            acc(pair.output)
+        acc(task.test.input)
+        acc(task.test.output)
+
+    unique_tasks = len(task_keys)
+    collision = 0.0 if n_tasks == 0 else 1.0 - unique_tasks / n_tasks
+    return DiversityStats(
+        n_tasks=n_tasks,
+        n_families=len(families),
+        unique_test_inputs=len(test_in),
+        unique_test_outputs=len(test_out),
+        unique_tasks=unique_tasks,
+        color_histogram=tuple(hist),
+        unique_shapes=len(shapes),
+        collision_rate=collision,
+    )
 
 
 class ProceduralCorpus:
@@ -908,5 +1317,15 @@ class ProceduralCorpus:
         """``n`` tasks, cycling specs, seeds ``seed + i``. Empty ``specs``
         raises :class:`SynthError`. ``n == 0`` raises :class:`SynthError`.
         """
-        raise NotImplementedError("E3 ProceduralCorpus.sample")
+        if n == 0:
+            raise SynthError("empty tasks")
+        if not self.specs:
+            raise SynthError("unknown family")
+        if self.n_train <= 0:
+            raise SynthError("empty train")
+        out: list[Task] = []
+        for i in range(n):
+            spec = self.specs[i % len(self.specs)]
+            out.append(_generate_task(spec, self.seed + i, self.n_train))
+        return out
 
