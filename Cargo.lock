@@ -1259,6 +1259,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-ops"
+version = "0.0.1"
+dependencies = [
+ "prometheus-cas",
+ "prometheus-log",
+ "prometheus-raft",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-pipeline"
 version = "0.0.1"
 dependencies = [
