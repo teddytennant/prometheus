@@ -1,0 +1,11 @@
+[package]
+name = "prometheus-eval-gate"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Held-out harness benchmark; scores only, never tasks (spec 15.5 L2)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

@@ -10,6 +10,7 @@ members = [
     "data/mixture",
     "harness/cas",
     "harness/chaos",
+    "harness/eval-gate",
     "harness/kernel",
     "harness/ledger",
     "harness/leases",
