@@ -1,0 +1,12 @@
+{"source": "Water boils at 100 degrees Celsius at sea level and water freezes at 0 degrees and water is a liquid", "claim": "Water boils at 100 degrees Celsius", "gold": "supported"}
+{"source": "Water boils at 100 degrees Celsius at sea level and water freezes at 0 degrees and water is a liquid", "claim": "Water boils at 90 degrees", "gold": "contradicted"}
+{"source": "Water boils at 100 degrees Celsius at sea level and water freezes at 0 degrees and water is a liquid", "claim": "Water is a liquid", "gold": "supported"}
+{"source": "Water boils at 100 degrees Celsius at sea level and water freezes at 0 degrees and water is a liquid", "claim": "Helium is a liquid", "gold": "not_in_source"}
+{"source": "The solution is not acidic and the mixture contains salt", "claim": "The solution is acidic", "gold": "contradicted"}
+{"source": "Paris is the capital of France and the city has many museums", "claim": "Paris is the capital of France", "gold": "supported"}
+{"source": "Paris is the capital of France and the city has many museums", "claim": "Berlin is the capital of Germany", "gold": "not_in_source"}
+{"source": "Paris is the capital of France and the city has many museums", "claim": "France is the capital of Paris", "gold": "contradicted"}
+{"source": "Water boils at 100 degrees Celsius at sea level and water freezes at 0 degrees and water is a liquid", "claim": "is a", "gold": "supported"}
+{"source": "The mass is 3.14 kilograms", "claim": "The mass is 2.71 kilograms", "gold": "contradicted"}
+{"source": "There are no cats in the library", "claim": "There are cats in the library", "gold": "contradicted"}
+{"source": "Paris is the capital of France and the city has many museums", "claim": "Paris is the capital of France and Rome is in Italy", "gold": "not_in_source"}
