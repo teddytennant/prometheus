@@ -11,6 +11,7 @@ Gate: supported-class precision of :func:`check_claim` on a labeled sample.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -161,14 +162,88 @@ def generate_prompt(doc: SourceDocument, style: Style) -> str:
     )
 
 
+_CONTENT_STOPLIST = frozenset(
+    {
+        "that",
+        "this",
+        "with",
+        "from",
+        "they",
+        "them",
+        "have",
+        "been",
+        "were",
+        "will",
+        "would",
+        "could",
+        "should",
+        "into",
+        "over",
+        "under",
+        "than",
+        "then",
+        "when",
+        "what",
+        "which",
+        "their",
+    }
+)
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _content_words(tokens: Sequence[str]) -> list[str]:
+    return [t for t in tokens if len(t) >= 4 and t not in _CONTENT_STOPLIST]
+
+
+def _numbers(text: str) -> list[str]:
+    return _NUMBER.findall(text)
+
+
 def extract_claims(text: str) -> list[str]:
     """Split a rewrite into atomic factual claims. Empty text is empty."""
-    raise NotImplementedError("E1 extract_claims")
+    if not text.split():
+        return []
+    return [piece.strip() for piece in _SENTENCE_SPLIT.split(text) if piece.strip()]
 
 
 def check_claim(source: str, claim: str) -> Verdict:
     """Ground ``claim`` in ``source``. Empty source raises :class:`SynthError`."""
-    raise NotImplementedError("E1 check_claim")
+    if source == "":
+        raise SynthError("empty source")
+    if not claim.split():
+        return Verdict.NOT_IN_SOURCE
+
+    src_nums = _numbers(source)
+    if src_nums:
+        src_num_set = set(src_nums)
+        if any(n not in src_num_set for n in _numbers(claim)):
+            return Verdict.CONTRADICTED
+
+    src_norm = _normalize(source)
+    claim_norm = _normalize(claim)
+    src_tokens = src_norm.split()
+    claim_tokens = claim_norm.split()
+    claim_content = _content_words(claim_tokens)
+
+    content_set = set(claim_content)
+    for i in range(len(src_tokens) - 1):
+        if src_tokens[i] in ("not", "no") and src_tokens[i + 1] in content_set:
+            return Verdict.CONTRADICTED
+
+    if claim_content:
+        src_token_set = set(src_tokens)
+        if all(w in src_token_set for w in claim_content):
+            return Verdict.SUPPORTED
+        return Verdict.NOT_IN_SOURCE
+    if claim_norm in src_norm:
+        return Verdict.SUPPORTED
+    return Verdict.NOT_IN_SOURCE
 
 
 def fact_check(source: str, rewrite: str) -> FactCheck:
@@ -176,17 +251,26 @@ def fact_check(source: str, rewrite: str) -> FactCheck:
 
     Empty source raises :class:`SynthError`. Empty rewrite is zero claims.
     """
-    raise NotImplementedError("E1 fact_check")
+    if source == "":
+        raise SynthError("empty source")
+    if rewrite == "":
+        return FactCheck(claims=())
+    claims = tuple(Claim(text=c, verdict=check_claim(source, c)) for c in extract_claims(rewrite))
+    return FactCheck(claims=claims)
 
 
 def accept(check: FactCheck) -> bool:
     """Keep a rewrite iff no claim is contradicted. ``not_in_source`` is kept."""
-    raise NotImplementedError("E1 accept")
+    return check.n_contradicted == 0
 
 
 def token_count(text: str, tokenizer: TokenCounter | None = None) -> int:
     """``len(tokenizer.encode(text))`` if given, else whitespace words. Empty is 0."""
-    raise NotImplementedError("E1 token_count")
+    if text == "":
+        return 0
+    if tokenizer is not None:
+        return len(tokenizer.encode(text))
+    return len(text.split())
 
 
 def precision(examples: Sequence[LabeledExample]) -> float:
@@ -196,7 +280,35 @@ def precision(examples: Sequence[LabeledExample]) -> float:
     and gold not supported. Empty examples, or no predicted supported, is
     0.0 (fail-closed).
     """
-    raise NotImplementedError("E1 precision")
+    tp = 0
+    fp = 0
+    for ex in examples:
+        pred = check_claim(ex.source, ex.claim)
+        if pred == Verdict.SUPPORTED:
+            if ex.gold == Verdict.SUPPORTED:
+                tp += 1
+            else:
+                fp += 1
+    if tp + fp == 0:
+        return 0.0
+    return tp / (tp + fp)
+
+
+def _rewrite_from_completion(
+    doc: SourceDocument,
+    style: Style,
+    completion: str,
+    tokenizer: TokenCounter | None = None,
+) -> Rewrite:
+    check = fact_check(doc.text, completion)
+    return Rewrite(
+        source_id=doc.source_id,
+        style=style,
+        text=completion,
+        token_count=token_count(completion, tokenizer),
+        fact_check=check,
+        accepted=accept(check),
+    )
 
 
 class Orchestrator:
@@ -212,11 +324,17 @@ class Orchestrator:
         tokenizer: TokenCounter | None = None,
         config: OrchestratorConfig | None = None,
     ) -> None:
-        raise NotImplementedError("E1 Orchestrator")
+        self.generator = generator
+        self.tokenizer = tokenizer
+        self.config = config if config is not None else OrchestratorConfig()
 
     def rephrase(self, doc: SourceDocument, style: Style) -> Rewrite:
         """One document, one style. Empty source raises :class:`SynthError`."""
-        raise NotImplementedError("E1 rephrase")
+        prompt = generate_prompt(doc, style)
+        outs = self.generator.generate([prompt], self.config.max_tokens, self.config.temperature)
+        if len(outs) != 1:
+            raise SynthError(f"generator returned {len(outs)} completions for 1 prompts")
+        return _rewrite_from_completion(doc, style, outs[0], self.tokenizer)
 
     def rephrase_many(
         self,
@@ -228,4 +346,22 @@ class Orchestrator:
         Empty ``docs`` raises :class:`SynthError`. Default styles are
         ``config.styles``. Result order is docs-major, then styles.
         """
-        raise NotImplementedError("E1 rephrase_many")
+        if len(docs) == 0:
+            raise SynthError("empty batch")
+        use_styles: Sequence[Style] = self.config.styles if styles is None else styles
+        pairs = [(doc, style) for doc in docs for style in use_styles]
+        prompts = [generate_prompt(doc, style) for doc, style in pairs]
+        max_batch = self.config.max_batch
+        completions: list[str] = []
+        for i in range(0, len(prompts), max_batch):
+            chunk = prompts[i : i + max_batch]
+            outs = self.generator.generate(chunk, self.config.max_tokens, self.config.temperature)
+            if len(outs) != len(chunk):
+                raise SynthError(
+                    f"generator returned {len(outs)} completions for {len(chunk)} prompts"
+                )
+            completions.extend(outs)
+        return [
+            _rewrite_from_completion(doc, style, text, self.tokenizer)
+            for (doc, style), text in zip(pairs, completions, strict=True)
+        ]

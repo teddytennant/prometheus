@@ -7,6 +7,8 @@
 //!
 //! Gate: supported-class precision of [`check_claim`] on a labeled sample.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -208,36 +210,195 @@ pub fn generate_prompt(doc: &SourceDocument, style: Style) -> Result<String> {
     ))
 }
 
+const STOPLIST: &[&str] = &[
+    "that", "this", "with", "from", "they", "them", "have", "been", "were", "will", "would",
+    "could", "should", "into", "over", "under", "than", "then", "when", "what", "which", "their",
+];
+
+fn is_stop(tok: &str) -> bool {
+    STOPLIST.contains(&tok)
+}
+
+fn normalize(text: &str) -> String {
+    text.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn content_words(tokens: &[String]) -> Vec<String> {
+    tokens
+        .iter()
+        .filter(|t| t.chars().count() >= 4 && !is_stop(t))
+        .cloned()
+        .collect()
+}
+
+/// ASCII numbers matching `[0-9]+(?:\.[0-9]+)?`.
+fn extract_numbers(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < chars.len()
+                && chars[i] == '.'
+                && i + 1 < chars.len()
+                && chars[i + 1].is_ascii_digit()
+            {
+                i += 1;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            out.push(chars[start..i].iter().collect());
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn rewrite_from_completion(
+    doc: &SourceDocument,
+    style: Style,
+    completion: &str,
+    tokenizer: Option<&dyn TokenCounter>,
+) -> Result<Rewrite> {
+    let check = fact_check(&doc.text, completion)?;
+    let accepted = accept(&check);
+    let n_tokens = token_count(completion, tokenizer);
+    Ok(Rewrite {
+        source_id: doc.source_id.clone(),
+        style,
+        text: completion.to_string(),
+        token_count: n_tokens,
+        fact_check: check,
+        accepted,
+    })
+}
+
 /// Split a rewrite into atomic factual claims. Empty text is empty.
 pub fn extract_claims(text: &str) -> Vec<String> {
-    let _ = text;
-    unimplemented!("E1 extract_claims")
+    if text.split_whitespace().next().is_none() {
+        return Vec::new();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        current.push(ch);
+        if matches!(ch, '.' | '!' | '?') {
+            let mut j = i + 1;
+            if j < chars.len() && chars[j].is_whitespace() {
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    pieces.push(trimmed.to_string());
+                }
+                current.clear();
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        pieces.push(trimmed.to_string());
+    }
+    pieces
 }
 
 /// Ground `claim` in `source`. Empty source is [`Error::EmptySource`].
 pub fn check_claim(source: &str, claim: &str) -> Result<Verdict> {
-    let _ = (source, claim);
-    unimplemented!("E1 check_claim")
+    if source.is_empty() {
+        return Err(Error::EmptySource);
+    }
+    if claim.split_whitespace().next().is_none() {
+        return Ok(Verdict::NotInSource);
+    }
+
+    let src_nums = extract_numbers(source);
+    if !src_nums.is_empty() {
+        let src_set: HashSet<&str> = src_nums.iter().map(String::as_str).collect();
+        if extract_numbers(claim)
+            .iter()
+            .any(|n| !src_set.contains(n.as_str()))
+        {
+            return Ok(Verdict::Contradicted);
+        }
+    }
+
+    let src_norm = normalize(source);
+    let claim_norm = normalize(claim);
+    let src_tokens: Vec<String> = src_norm.split_whitespace().map(str::to_string).collect();
+    let claim_tokens: Vec<String> = claim_norm.split_whitespace().map(str::to_string).collect();
+    let claim_content = content_words(&claim_tokens);
+    let content_set: HashSet<&str> = claim_content.iter().map(String::as_str).collect();
+
+    for window in src_tokens.windows(2) {
+        if (window[0] == "not" || window[0] == "no") && content_set.contains(window[1].as_str()) {
+            return Ok(Verdict::Contradicted);
+        }
+    }
+
+    if !claim_content.is_empty() {
+        let src_token_set: HashSet<&str> = src_tokens.iter().map(String::as_str).collect();
+        if claim_content
+            .iter()
+            .all(|w| src_token_set.contains(w.as_str()))
+        {
+            return Ok(Verdict::Supported);
+        }
+        return Ok(Verdict::NotInSource);
+    }
+    if src_norm.contains(&claim_norm) {
+        return Ok(Verdict::Supported);
+    }
+    Ok(Verdict::NotInSource)
 }
 
 /// Extract claims from `rewrite` and ground each in `source`.
 ///
 /// Empty source is [`Error::EmptySource`]. Empty rewrite is zero claims.
 pub fn fact_check(source: &str, rewrite: &str) -> Result<FactCheck> {
-    let _ = (source, rewrite);
-    unimplemented!("E1 fact_check")
+    if source.is_empty() {
+        return Err(Error::EmptySource);
+    }
+    if rewrite.is_empty() {
+        return Ok(FactCheck { claims: Vec::new() });
+    }
+    let mut claims = Vec::new();
+    for text in extract_claims(rewrite) {
+        let verdict = check_claim(source, &text)?;
+        claims.push(Claim { text, verdict });
+    }
+    Ok(FactCheck { claims })
 }
 
 /// Keep a rewrite iff no claim is contradicted. `not_in_source` is kept.
 pub fn accept(check: &FactCheck) -> bool {
-    let _ = check;
-    unimplemented!("E1 accept")
+    check.n_contradicted() == 0
 }
 
 /// `counter.token_count(text)` if given, else whitespace words. Empty is 0.
 pub fn token_count(text: &str, counter: Option<&dyn TokenCounter>) -> u32 {
-    let _ = (text, counter);
-    unimplemented!("E1 token_count")
+    if text.is_empty() {
+        return 0;
+    }
+    if let Some(counter) = counter {
+        return counter.token_count(text);
+    }
+    text.split_whitespace().count() as u32
 }
 
 /// Supported-class precision of [`check_claim`] vs gold.
@@ -246,8 +407,22 @@ pub fn token_count(text: &str, counter: Option<&dyn TokenCounter>) -> u32 {
 /// and gold not supported. Empty examples, or no predicted supported, is
 /// 0.0 (fail-closed).
 pub fn precision(examples: &[LabeledExample]) -> Result<f64> {
-    let _ = examples;
-    unimplemented!("E1 precision")
+    let mut tp = 0u64;
+    let mut fp = 0u64;
+    for ex in examples {
+        let pred = check_claim(&ex.source, &ex.claim)?;
+        if pred == Verdict::Supported {
+            if ex.gold == Verdict::Supported {
+                tp += 1;
+            } else {
+                fp += 1;
+            }
+        }
+    }
+    if tp + fp == 0 {
+        return Ok(0.0);
+    }
+    Ok(tp as f64 / (tp + fp) as f64)
 }
 
 /// Batch rephrase over documents × styles, then fact-check.
@@ -255,7 +430,9 @@ pub fn precision(examples: &[LabeledExample]) -> Result<f64> {
 /// `generator` is F5. `tokenizer` is F6 when token counts should match the
 /// frozen vocab; omit it to count whitespace words.
 pub struct Orchestrator {
-    _private: (),
+    generator: Box<dyn Generator>,
+    tokenizer: Option<Box<dyn TokenCounter>>,
+    config: OrchestratorConfig,
 }
 
 impl Orchestrator {
@@ -263,23 +440,37 @@ impl Orchestrator {
     where
         G: Generator + 'static,
     {
-        let _ = (generator, config);
-        unimplemented!("E1 Orchestrator::new")
+        Ok(Self {
+            generator: Box::new(generator),
+            tokenizer: None,
+            config,
+        })
     }
 
     /// Use F6 encode length for [`Rewrite::token_count`].
-    pub fn with_tokenizer<T>(self, tokenizer: T) -> Self
+    pub fn with_tokenizer<T>(mut self, tokenizer: T) -> Self
     where
         T: TokenCounter + 'static,
     {
-        let _ = tokenizer;
-        unimplemented!("E1 Orchestrator::with_tokenizer")
+        self.tokenizer = Some(Box::new(tokenizer));
+        self
     }
 
     /// One document, one style. Empty source is [`Error::EmptySource`].
     pub fn rephrase(&mut self, doc: &SourceDocument, style: Style) -> Result<Rewrite> {
-        let _ = (doc, style);
-        unimplemented!("E1 rephrase")
+        let prompt = generate_prompt(doc, style)?;
+        let outs = self.generator.generate(
+            std::slice::from_ref(&prompt),
+            self.config.max_tokens,
+            self.config.temperature,
+        )?;
+        if outs.len() != 1 {
+            return Err(Error::LengthMismatch {
+                want: 1,
+                got: outs.len(),
+            });
+        }
+        rewrite_from_completion(doc, style, &outs[0], self.tokenizer.as_deref())
     }
 
     /// Cartesian product of docs and styles, chunked by `max_batch`.
@@ -291,7 +482,44 @@ impl Orchestrator {
         docs: &[SourceDocument],
         styles: Option<&[Style]>,
     ) -> Result<Vec<Rewrite>> {
-        let _ = (docs, styles);
-        unimplemented!("E1 rephrase_many")
+        if docs.is_empty() {
+            return Err(Error::EmptyBatch);
+        }
+        let default_styles = self.config.styles.clone();
+        let use_styles: &[Style] = styles.unwrap_or(&default_styles);
+        let mut pairs: Vec<(&SourceDocument, Style)> = Vec::new();
+        for doc in docs {
+            for &style in use_styles {
+                pairs.push((doc, style));
+            }
+        }
+        let mut prompts = Vec::with_capacity(pairs.len());
+        for (doc, style) in &pairs {
+            prompts.push(generate_prompt(doc, *style)?);
+        }
+        let mut completions = Vec::with_capacity(prompts.len());
+        let max_batch = self.config.max_batch as usize;
+        for chunk in prompts.chunks(max_batch) {
+            let outs =
+                self.generator
+                    .generate(chunk, self.config.max_tokens, self.config.temperature)?;
+            if outs.len() != chunk.len() {
+                return Err(Error::LengthMismatch {
+                    want: chunk.len(),
+                    got: outs.len(),
+                });
+            }
+            completions.extend(outs);
+        }
+        let mut out = Vec::with_capacity(pairs.len());
+        for ((doc, style), text) in pairs.iter().zip(completions.iter()) {
+            out.push(rewrite_from_completion(
+                doc,
+                *style,
+                text,
+                self.tokenizer.as_deref(),
+            )?);
+        }
+        Ok(out)
     }
 }
