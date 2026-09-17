@@ -6,6 +6,7 @@ members = [
     "data/decontam",
     "data/extract",
     "data/loader",
+    "data/mixture",
     "harness/ledger",
     "harness/slurm",
     "obs",

@@ -1,0 +1,13 @@
+[package]
+name = "prometheus-mixture"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Pretraining mix ratios, decay reweight, and rung-2 ablations (spec 7.1, 15.5 B6)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
