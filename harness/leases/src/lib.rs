@@ -214,6 +214,23 @@ impl Queue {
         }))
     }
 
+    /// Claim the first FIFO queued task for which `pred` is true.
+    ///
+    /// Skipped tasks stay `Queued` with unchanged attempt and no claim/expire
+    /// events. `Ok(None)` if no queued task matches. Mesh pull uses this so a
+    /// cap-mismatch is not claimed.
+    pub fn claim_if<F>(
+        &mut self,
+        _worker: &WorkerId,
+        _now: NowMs,
+        _pred: F,
+    ) -> Result<Option<Lease>>
+    where
+        F: Fn(&Task) -> bool,
+    {
+        unimplemented!("H3: Queue::claim_if")
+    }
+
     pub fn heartbeat(
         &mut self,
         task_id: &TaskId,
