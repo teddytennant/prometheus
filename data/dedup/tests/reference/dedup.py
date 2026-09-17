@@ -12,9 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 
@@ -83,7 +83,7 @@ class DedupConfig:
     rows: int
 
     @staticmethod
-    def standard() -> "DedupConfig":
+    def standard() -> DedupConfig:
         return DedupConfig(5, 128, 32, 4)
 
 

@@ -64,7 +64,7 @@ def method_hash(items: list[dict[str, str]], ngram_n: int = NGRAM_N) -> str:
     ordered = sorted(items, key=lambda it: (it["suite"], it["id"]))
     h = hashlib.sha256()
     h.update(b"prometheus-decontam/v1\n")
-    h.update(f"ngram_n={int(ngram_n)}\n".encode("utf-8"))
+    h.update(f"ngram_n={int(ngram_n)}\n".encode())
     h.update(b"embed_model=\n")
     for item in ordered:
         h.update(item["suite"].encode("utf-8"))
