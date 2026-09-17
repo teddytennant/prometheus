@@ -1125,6 +1125,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-decontam"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-dedup"
 version = "0.0.1"
 dependencies = [
