@@ -17,6 +17,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod engine;
+mod mirror;
+mod query;
+
 pub use prometheus_ledger::{Record, RecordId, Replication, ReplicationStatus};
 
 pub type NowMs = u64;
@@ -315,108 +319,106 @@ pub fn is_mirror_url(url: &str) -> bool {
 }
 
 pub struct Kernel {
-    _private: (),
+    inner: engine::Engine,
 }
 
 impl Kernel {
-    pub fn open(_cfg: KernelConfig) -> Result<Self> {
-        unimplemented!("L1 Kernel::open")
+    pub fn open(cfg: KernelConfig) -> Result<Self> {
+        Ok(Self {
+            inner: engine::Engine::open(cfg)?,
+        })
     }
 
     /// Spawn a child. Depth is parent.depth + 1 and must be <= [`MAX_SPAWN_DEPTH`].
     /// Instructions are stored with [`KERNEL_INVARIANT`] prepended.
-    pub fn spawn(&mut self, _req: SpawnRequest, _now: NowMs) -> Result<AgentHandle> {
-        unimplemented!("L1 Kernel::spawn")
+    pub fn spawn(&mut self, req: SpawnRequest, now: NowMs) -> Result<AgentHandle> {
+        self.inner.spawn(req, now)
     }
 
     pub fn send(
         &mut self,
-        _from: &AgentId,
-        _to: &AgentId,
-        _body: &str,
-        _now: NowMs,
+        from: &AgentId,
+        to: &AgentId,
+        body: &str,
+        now: NowMs,
     ) -> Result<MessageId> {
-        unimplemented!("L1 Kernel::send")
+        self.inner.send(from, to, body, now)
     }
 
     /// Next message for `to`, or `Ok(None)` if none arrives before `timeout_ms`
     /// of injected time.
-    pub fn recv(
-        &mut self,
-        _to: &AgentId,
-        _timeout_ms: u64,
-        _now: NowMs,
-    ) -> Result<Option<Message>> {
-        unimplemented!("L1 Kernel::recv")
+    pub fn recv(&mut self, to: &AgentId, timeout_ms: u64, now: NowMs) -> Result<Option<Message>> {
+        self.inner.recv(to, timeout_ms, now)
     }
 
     /// Submit a GPU job. Rung > 0 refuses unless the ledger has the 14.6
     /// check ("has this been tried?") and pre-register rows.
-    pub fn submit_job(&mut self, _req: JobRequest, _now: NowMs) -> Result<JobHandle> {
-        unimplemented!("L1 Kernel::submit_job")
+    pub fn submit_job(&mut self, req: JobRequest, now: NowMs) -> Result<JobHandle> {
+        self.inner.submit_job(req, now)
     }
 
-    pub fn remaining(&self, _agent: &AgentId) -> Result<Quota> {
-        unimplemented!("L1 Kernel::remaining")
+    pub fn remaining(&self, agent: &AgentId) -> Result<Quota> {
+        self.inner.remaining(agent)
     }
 
-    pub fn ledger_append(&mut self, _record: Record) -> Result<RecordId> {
-        unimplemented!("L1 Kernel::ledger_append")
+    pub fn ledger_append(&mut self, record: Record) -> Result<RecordId> {
+        self.inner.ledger_append(record)
     }
 
-    pub fn ledger_query(&self, _sql_or_embedding: &str) -> Result<Vec<Record>> {
-        unimplemented!("L1 Kernel::ledger_query")
+    pub fn ledger_query(&self, sql_or_embedding: &str) -> Result<Vec<Record>> {
+        self.inner.ledger_query(sql_or_embedding)
     }
 
     /// Bytes from the local read-only mirror. Refuses URLs outside
     /// [`MIRROR_HOSTS`] and URLs not present on disk. Never writes outbound.
-    pub fn fetch(&self, _url: &str) -> Result<Vec<u8>> {
-        unimplemented!("L1 Kernel::fetch")
+    pub fn fetch(&self, url: &str) -> Result<Vec<u8>> {
+        self.inner.fetch(url)
     }
 
     pub fn propose_patch(
         &mut self,
-        _author: &AgentId,
-        _diff: &str,
-        _rationale: &str,
-        _target: PatchTarget,
-        _now: NowMs,
+        author: &AgentId,
+        diff: &str,
+        rationale: &str,
+        target: PatchTarget,
+        now: NowMs,
     ) -> Result<PatchId> {
-        unimplemented!("L1 Kernel::propose_patch")
+        self.inner
+            .propose_patch(author, diff, rationale, target, now)
     }
 
-    pub fn patch(&self, _id: &PatchId) -> Result<Patch> {
-        unimplemented!("L1 Kernel::patch")
+    pub fn patch(&self, id: &PatchId) -> Result<Patch> {
+        self.inner.patch(id)
     }
 
     /// Genome promote: unit tests + smoke, eval-gate, 5% canary for
     /// [`CANARY_MS`], then rollout or revert (spec 14.8).
-    pub fn promote_genome(&mut self, _id: &PatchId, _now: NowMs) -> Result<PatchState> {
-        unimplemented!("L1 Kernel::promote_genome")
+    pub fn promote_genome(&mut self, id: &PatchId, now: NowMs) -> Result<PatchState> {
+        self.inner.promote_genome(id, now)
     }
 
     /// Weight promote: section 11 evals, harness benchmark, then human
     /// sign-off. A promoted checkpoint swaps into serving.
     pub fn promote_weights(
         &mut self,
-        _checkpoint: &str,
-        _signatures: &[Signature],
-        _now: NowMs,
+        checkpoint: &str,
+        signatures: &[Signature],
+        now: NowMs,
     ) -> Result<WeightPromoteState> {
-        unimplemented!("L1 Kernel::promote_weights")
+        self.inner.promote_weights(checkpoint, signatures, now)
     }
 
     pub fn escalate(
         &mut self,
-        _author: &AgentId,
-        _summary: &str,
-        _evidence: &str,
-        _now: NowMs,
+        author: &AgentId,
+        summary: &str,
+        evidence: &str,
+        now: NowMs,
     ) -> Result<TicketId> {
-        unimplemented!("L1 Kernel::escalate")
+        self.inner.escalate(author, summary, evidence, now)
     }
 
-    pub fn ticket(&self, _id: &TicketId) -> Result<Ticket> {
-        unimplemented!("L1 Kernel::ticket")
+    pub fn ticket(&self, id: &TicketId) -> Result<Ticket> {
+        self.inner.ticket(id)
     }
 }

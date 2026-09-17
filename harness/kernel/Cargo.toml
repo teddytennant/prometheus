@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 prometheus-ledger = { path = "../ledger" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
