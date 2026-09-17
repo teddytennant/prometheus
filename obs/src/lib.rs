@@ -462,6 +462,7 @@ pub struct SpikeLog {
     pub last_checkpoint_step: u64,
     skipped: Vec<SkipShardRecord>,
     spikes: Vec<SpikeEvent>,
+    history: Vec<f64>,
 }
 
 impl SpikeLog {
@@ -471,13 +472,76 @@ impl SpikeLog {
             last_checkpoint_step,
             skipped: Vec::new(),
             spikes: Vec::new(),
+            history: Vec::new(),
         }
     }
 
     /// Record one loss sample. Returns the actions to take (possibly empty).
     pub fn observe(&mut self, sample: &LossSample) -> Result<Vec<SpikeAction>> {
-        let _ = sample;
-        unimplemented!("I10 SpikeLog::observe")
+        if self.config.relative_threshold <= 0.0 {
+            return Err(Error::BadSpikeConfig("relative_threshold must be > 0"));
+        }
+        if self.config.baseline_window == 0 {
+            return Err(Error::BadSpikeConfig("baseline_window must be > 0"));
+        }
+        if !sample.loss.is_finite() {
+            return Err(Error::BadSpikeConfig("loss must be finite"));
+        }
+
+        let window = self.config.baseline_window;
+        if self.history.len() < window {
+            self.history.push(sample.loss);
+            return Ok(Vec::new());
+        }
+
+        let start = self.history.len() - window;
+        let baseline = self.history[start..].iter().sum::<f64>() / (window as f64);
+        let is_spike =
+            baseline > 0.0 && sample.loss > baseline * (1.0 + self.config.relative_threshold);
+        self.history.push(sample.loss);
+
+        if !is_spike {
+            return Ok(Vec::new());
+        }
+
+        let event = SpikeEvent {
+            step: sample.step,
+            loss: sample.loss,
+            baseline,
+            shard_id: sample.shard_id.clone(),
+            run_id: sample.run_id.clone(),
+        };
+
+        let page = self.spikes.iter().any(|prev| {
+            let dist = sample.step.abs_diff(prev.step);
+            dist <= self.config.page_window_steps
+        });
+
+        self.spikes.push(event.clone());
+        self.skipped.push(SkipShardRecord {
+            shard_id: sample.shard_id.clone(),
+            step: sample.step,
+            run_id: sample.run_id.clone(),
+            reason: EVENT_LOSS_SPIKE.to_string(),
+        });
+
+        let mut actions = vec![
+            SpikeAction::Log {
+                event: event.clone(),
+            },
+            SpikeAction::SkipShard {
+                shard_id: sample.shard_id.clone(),
+            },
+            SpikeAction::Rollback {
+                checkpoint_step: self.last_checkpoint_step,
+            },
+        ];
+        if page {
+            actions.push(SpikeAction::Page {
+                message: format!("{EVENT_PAGE} run_id={} step={}", sample.run_id, sample.step),
+            });
+        }
+        Ok(actions)
     }
 
     pub fn skipped_shards(&self) -> &[SkipShardRecord] {
@@ -500,7 +564,8 @@ pub struct SeriesPoint {
 /// the current value of each series.
 #[derive(Debug, Default, Clone)]
 pub struct MetricLog {
-    _private: (),
+    /// name → labels → step → value. BTreeMap keeps steps sorted.
+    inner: BTreeMap<String, BTreeMap<Labels, BTreeMap<u64, f64>>>,
 }
 
 impl MetricLog {
@@ -509,13 +574,30 @@ impl MetricLog {
     }
 
     pub fn record(&mut self, name: &str, labels: &Labels, step: u64, value: f64) -> Result<()> {
-        let _ = (name, labels, step, value);
-        unimplemented!("I10 MetricLog::record")
+        self.inner
+            .entry(name.to_string())
+            .or_default()
+            .entry(labels.clone())
+            .or_default()
+            .insert(step, value);
+        Ok(())
     }
 
     pub fn series(&self, name: &str, labels: &Labels) -> Result<Vec<SeriesPoint>> {
-        let _ = (name, labels);
-        unimplemented!("I10 MetricLog::series")
+        if self.inner.is_empty() {
+            return Err(Error::EmptyHistory);
+        }
+        match self
+            .inner
+            .get(name)
+            .and_then(|by_labels| by_labels.get(labels))
+        {
+            None => Err(Error::UnknownMetric(name.to_string())),
+            Some(by_step) => Ok(by_step
+                .iter()
+                .map(|(&step, &value)| SeriesPoint { step, value })
+                .collect()),
+        }
     }
 }
 
@@ -565,6 +647,28 @@ pub fn snapshot(
     spikes: &[SpikeEvent],
     generated_at: &str,
 ) -> Result<DashboardSnapshot> {
-    let _ = (dashboard, log, spikes, generated_at);
-    unimplemented!("I10 snapshot")
+    let unlabeled = Labels::new();
+    let mut panels = Vec::with_capacity(dashboard.panels.len());
+    for panel in &dashboard.panels {
+        let points = match panel.kind {
+            PanelKind::Timeseries | PanelKind::Gauge => {
+                let pts = log.series(&panel.metric_name, &unlabeled)?;
+                if pts.is_empty() {
+                    return Err(Error::EmptyHistory);
+                }
+                pts
+            }
+            PanelKind::Table | PanelKind::Log => Vec::new(),
+        };
+        panels.push(PanelSnapshot {
+            panel_id: panel.id.clone(),
+            points,
+        });
+    }
+    Ok(DashboardSnapshot {
+        dashboard_id: dashboard.id.clone(),
+        generated_at: generated_at.to_string(),
+        panels,
+        recent_spikes: spikes.to_vec(),
+    })
 }
