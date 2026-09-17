@@ -1115,39 +1115,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prometheus-chaos"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-ckpt"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-classifiers"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
 name = "prometheus-contracts"
 version = "0.0.1"
 dependencies = [
@@ -1158,77 +1125,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "prometheus-control"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-decontam"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-dedup"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-eval-gate"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
 name = "prometheus-extract"
 version = "0.0.1"
 dependencies = [
  "lopdf",
  "scraper",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-genome-seed"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-kernel"
-version = "0.0.1"
-dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1259,110 +1160,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "prometheus-mixture"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-monitors"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-ops"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-pipeline"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-providers"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-rl-coordinator"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-rl-envs"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-serve"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
 name = "prometheus-slurm"
 version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "prometheus-swarm"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "thiserror",
 ]

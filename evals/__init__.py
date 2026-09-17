@@ -18,20 +18,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from evals.remaining import (  # noqa: F401
-    CANARY_PREFIX,
-    attach_efficiency,
-    brier,
-    contamination_canaries,
-    efficiency_metrics,
-    latent_scaling,
-    leak_probe,
-    log_score,
-    paper_pnl,
-    run_forecasting,
-    scan_canaries,
-)
-
 SCHEMA_ID = "prometheus.eval_result"
 SCHEMA_VERSION = 1
 
