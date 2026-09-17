@@ -10,6 +10,7 @@ members = [
     "harness/ledger",
     "harness/leases",
     "harness/log",
+    "harness/raft",
     "harness/slurm",
     "obs",
     "verify/ncshare",
