@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 
 PUBLIC_SUITES: tuple[str, ...] = (
     "re_bench",
