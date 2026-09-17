@@ -25,7 +25,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-pythonpath = ["."]
+pythonpath = [".", "sglang-fork"]
 markers = [
     "gpu: V1 H200 GPU tests (JAX vs numpy reference); skipped without a GPU",
 ]
