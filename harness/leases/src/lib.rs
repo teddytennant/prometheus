@@ -221,14 +221,49 @@ impl Queue {
     /// cap-mismatch is not claimed.
     pub fn claim_if<F>(
         &mut self,
-        _worker: &WorkerId,
-        _now: NowMs,
-        _pred: F,
+        worker: &WorkerId,
+        now: NowMs,
+        pred: F,
     ) -> Result<Option<Lease>>
     where
         F: Fn(&Task) -> bool,
     {
-        unimplemented!("H3: Queue::claim_if")
+        self.expire_due(now)?;
+        let mut match_id: Option<String> = None;
+        for id in self.queued.iter() {
+            let task = self.tasks.get(id).expect("queued id must exist");
+            if pred(task) {
+                match_id = Some(id.clone());
+                break;
+            }
+        }
+        let Some(id) = match_id else {
+            return Ok(None);
+        };
+        let attempt = self
+            .tasks
+            .get(&id)
+            .map(|t| t.attempt.saturating_add(1))
+            .expect("queued id must exist");
+        let expires_at = now.saturating_add(self.config.lease_ttl_ms());
+        let payload = json!({
+            "worker_id": worker.0,
+            "expires_at": expires_at,
+        });
+        self.append(
+            EVENT_CLAIMED,
+            Some(id.as_str()),
+            Some(attempt),
+            payload,
+            Some(worker.0.as_str()),
+            now,
+        )?;
+        Ok(Some(Lease {
+            task_id: TaskId(id),
+            worker_id: worker.clone(),
+            attempt,
+            expires_at,
+        }))
     }
 
     pub fn heartbeat(
