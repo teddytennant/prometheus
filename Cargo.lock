@@ -1212,6 +1212,7 @@ version = "0.0.1"
 dependencies = [
  "prometheus-ledger",
  "serde",
+ "tempfile",
  "thiserror",
 ]
 
