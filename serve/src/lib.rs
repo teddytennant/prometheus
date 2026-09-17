@@ -9,7 +9,7 @@
 //! clock.
 
 use prometheus_providers::{Aimd, AimdConfig, Failover, ProviderId};
-use prometheus_slurm::{Client, JobId};
+use prometheus_slurm::{Client, JobId, SubmitRequest, ALLOWED_GPUS};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -64,7 +64,22 @@ pub struct GenerateResponse {
 impl GenerateResponse {
     /// OpenAI-style JSON body for [`prometheus_providers::validate_response`].
     pub fn openai_body(&self) -> Vec<u8> {
-        unimplemented!("F5: GenerateResponse::openai_body")
+        let choices: Vec<serde_json::Value> = self
+            .completions
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "index": c.prompt_index,
+                    "message": { "role": "assistant", "content": c.text },
+                    "finish_reason": c.finish_reason,
+                })
+            })
+            .collect();
+        serde_json::to_vec(&serde_json::json!({
+            "model": self.model,
+            "choices": choices,
+        }))
+        .expect("serialize openai_body")
     }
 }
 
@@ -117,6 +132,39 @@ impl From<prometheus_providers::Error> for Error {
     }
 }
 
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for &b in bytes {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+fn mix32(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x
+}
+
+fn completion_text(prompt: &str, max_tokens: u32, temperature: f32) -> String {
+    if max_tokens == 0 {
+        return String::new();
+    }
+    let seed = fnv1a32(prompt.as_bytes())
+        ^ max_tokens.wrapping_mul(0x9E37_79B9)
+        ^ temperature.to_bits();
+    let mut parts = Vec::with_capacity(max_tokens as usize);
+    for j in 0..max_tokens {
+        let token = mix32(seed.wrapping_add((j.wrapping_add(1)).wrapping_mul(0x85EB_CA6B)));
+        parts.push(format!("{token:08x}"));
+    }
+    parts.join(" ")
+}
+
 /// In-process stock engine. Deterministic completions. Not SGLang.
 pub struct LocalEngine {
     cfg: EngineConfig,
@@ -125,8 +173,10 @@ pub struct LocalEngine {
 
 impl LocalEngine {
     pub fn start(cfg: EngineConfig) -> Result<Self> {
-        let _ = cfg;
-        unimplemented!("F5: LocalEngine::start")
+        if !ALLOWED_GPUS.contains(&cfg.gpus) {
+            return Err(Error::BadGpuCount(cfg.gpus));
+        }
+        Ok(Self { cfg, up: true })
     }
 
     pub fn config(&self) -> &EngineConfig {
@@ -142,15 +192,37 @@ impl LocalEngine {
     }
 
     pub fn mark_down(&mut self) {
-        unimplemented!("F5: LocalEngine::mark_down")
+        self.up = false;
     }
 
     pub fn mark_up(&mut self) {
-        unimplemented!("F5: LocalEngine::mark_up")
+        self.up = true;
     }
 
-    pub fn generate(&mut self, _req: GenerateRequest, _now: NowMs) -> Result<GenerateResponse> {
-        unimplemented!("F5: LocalEngine::generate")
+    pub fn generate(&mut self, req: GenerateRequest, _now: NowMs) -> Result<GenerateResponse> {
+        if !self.is_up() {
+            return Err(Error::EngineDown);
+        }
+        if req.prompts.is_empty() {
+            return Err(Error::EmptyBatch);
+        }
+        if req.prompts.len() > self.cfg.max_batch as usize {
+            return Err(Error::BatchTooLarge(self.cfg.max_batch));
+        }
+        let completions = req
+            .prompts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Completion {
+                prompt_index: i,
+                text: completion_text(p, req.max_tokens, req.temperature),
+                finish_reason: "stop".to_string(),
+            })
+            .collect();
+        Ok(GenerateResponse {
+            model: self.cfg.model.clone(),
+            completions,
+        })
     }
 }
 
@@ -179,16 +251,32 @@ impl Deployer {
     /// `sbatch` via H7. Refuses a gpu count H7 would refuse.
     pub fn submit(
         &self,
-        _cfg: &EngineConfig,
-        _run_id: &str,
-        _suffix: &str,
-        _walltime: &str,
+        cfg: &EngineConfig,
+        run_id: &str,
+        suffix: &str,
+        walltime: &str,
     ) -> Result<Deployment> {
-        unimplemented!("F5: Deployer::submit")
+        if !ALLOWED_GPUS.contains(&cfg.gpus) {
+            return Err(Error::BadGpuCount(cfg.gpus));
+        }
+        let job = self.client.submit(SubmitRequest {
+            run_id: run_id.to_string(),
+            suffix: suffix.to_string(),
+            script: self.script.clone(),
+            walltime: walltime.to_string(),
+            gpus: cfg.gpus,
+        })?;
+        Ok(Deployment {
+            job,
+            endpoint: format!("http://127.0.0.1:{}", cfg.port),
+            model: cfg.model.clone(),
+            gpus: cfg.gpus,
+        })
     }
 
-    pub fn teardown(&self, _dep: &Deployment) -> Result<()> {
-        unimplemented!("F5: Deployer::teardown")
+    pub fn teardown(&self, dep: &Deployment) -> Result<()> {
+        self.client.cancel(&dep.job)?;
+        Ok(())
     }
 }
 
@@ -201,8 +289,30 @@ pub struct Router {
 
 impl Router {
     /// `hosted` are tried first. The engine is appended as last resort.
-    pub fn new(_hosted: Vec<ProviderId>, _engine: LocalEngine, _aimd: AimdConfig) -> Result<Self> {
-        unimplemented!("F5: Router::new")
+    pub fn new(hosted: Vec<ProviderId>, engine: LocalEngine, aimd: AimdConfig) -> Result<Self> {
+        let mut providers = hosted;
+        let already_last = providers
+            .last()
+            .map(|p| p.0.as_str() == LAST_RESORT_ID)
+            .unwrap_or(false);
+        if !already_last {
+            providers.push(ProviderId(LAST_RESORT_ID.to_string()));
+        }
+        let failover = Failover::new(providers);
+        let mut aimd = Aimd::new(aimd);
+        let max = aimd.config().max_window;
+        while aimd.window() < max {
+            let before = aimd.window();
+            aimd.on_success(0);
+            if aimd.window() <= before {
+                break;
+            }
+        }
+        Ok(Self {
+            failover,
+            aimd,
+            engine,
+        })
     }
 
     pub fn failover(&self) -> &Failover {
@@ -222,19 +332,33 @@ impl Router {
     }
 
     /// Mark a hosted provider down. Last resort stays up unless the engine is.
-    pub fn mark_down(&mut self, _id: &ProviderId) -> Result<()> {
-        unimplemented!("F5: Router::mark_down")
+    pub fn mark_down(&mut self, id: &ProviderId) -> Result<()> {
+        let hosted_up = id.0 != LAST_RESORT_ID && !self.failover.down().contains(id);
+        self.failover.mark_down(id)?;
+        if hosted_up {
+            self.aimd.on_outage();
+        }
+        Ok(())
     }
 
-    pub fn mark_up(&mut self, _id: &ProviderId) -> Result<()> {
-        unimplemented!("F5: Router::mark_up")
+    pub fn mark_up(&mut self, id: &ProviderId) -> Result<()> {
+        self.failover.mark_up(id)?;
+        Ok(())
     }
 
     /// Generate on the current provider. Hosted ids without a local backend
     /// return [`Error::Hosted`]. When every hosted provider is down, this
     /// uses the last-resort engine (D5) and the AIMD window is the reduced
     /// swarm size.
-    pub fn generate(&mut self, _req: GenerateRequest, _now: NowMs) -> Result<GenerateResponse> {
-        unimplemented!("F5: Router::generate")
+    pub fn generate(&mut self, req: GenerateRequest, now: NowMs) -> Result<GenerateResponse> {
+        let current = match self.failover.current() {
+            Ok(id) => id.clone(),
+            Err(prometheus_providers::Error::NoProvider) => return Err(Error::EngineDown),
+            Err(err) => return Err(err.into()),
+        };
+        if current.0 != LAST_RESORT_ID {
+            return Err(Error::Hosted(current.0));
+        }
+        self.engine.generate(req, now)
     }
 }
