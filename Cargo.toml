@@ -8,4 +8,5 @@ members = [
     "data/loader",
     "harness/ledger",
     "harness/slurm",
+    "obs",
 ]
