@@ -13,6 +13,8 @@ serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
+prometheus-leases = { path = "../leases" }
+serde_json = "1"
 tempfile = "3"
 
 [features]
