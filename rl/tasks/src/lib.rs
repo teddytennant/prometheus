@@ -1,9 +1,8 @@
-//! Task factories: wave 1 (D3) and wave 2 types (I6, spec 9.4, 15.5).
+//! Task factories: wave 1 (D3) and wave 2 (I6, spec 9.4, 15.5).
 //!
 //! Wave 1 mints an F1 [`TaskSpec`], attaches a D2 exact verifier, and drops
 //! tasks an injected solver always solves or never solves. Wave 2 factories
-//! (research, long-horizon, ARC-3, forecasting, open-ended) have types and
-//! signatures; `mint` is unimplemented until I6 lands.
+//! mint research, long-horizon, ARC, forecast, and open-ended tasks.
 //!
 //! Solvers are a [`Solver`] so CPU tests inject [`ScriptedSolver`]. F5
 //! serving can wrap this later; nothing here starts an engine.
@@ -23,6 +22,7 @@ use thiserror::Error;
 
 pub use prometheus_envs::{Image, NowMs};
 pub use prometheus_rewards::{Criterion, Rubric};
+use prometheus_verifiers::PROB_EPS;
 pub use prometheus_verifiers::{
     CodeTask, Grid, GridTask, MarketTask, MathTask, VerifierId, VerifierKind, GRID_PASS_K,
 };
@@ -46,9 +46,25 @@ const SWE_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS * 2;
 const MATH_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
 const CODE_TIMEOUT_S: u32 = 5;
 const SWE_TIMEOUT_S: u32 = 10;
+const ARC_HORIZON_S: u32 = 30;
+const ARC_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
+const FORECAST_HORIZON_S: u32 = 30;
+const FORECAST_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
+const OPEN_ENDED_HORIZON_S: u32 = 30;
+const OPEN_ENDED_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
+const RESEARCH_HORIZON_S: u32 = 600;
+const RESEARCH_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
+const LONG_HORIZON_S: u32 = 3600;
+const LONG_HORIZON_MAX_TOOL_CALLS: u32 = 2000;
 
 const MATH_VERIFIER_ID: &str = "symbolic-math";
 const CODE_VERIFIER_ID: &str = "sandboxed-tests";
+const ARC_VERIFIER_ID: &str = "grid-match";
+const FORECAST_VERIFIER_ID: &str = "market-resolution";
+const RESEARCH_VERIFIER_ID: &str = "research-numeric";
+const LONG_HORIZON_VERIFIER_ID: &str = "long-horizon";
+const OPEN_ENDED_VERIFIER_ID: &str = "open-ended-rubric";
+const MAX_CELL: u8 = 9;
 
 const HIDDEN_TEST_NAME: &str = "hidden.py";
 const HIDDEN_TEST_BODY: &[u8] = b"# hidden\nprint(open('/workspace/out.txt').read())\n";
@@ -362,7 +378,8 @@ impl SolveRateFilter {
 
 /// Math: attempt equals `MathTask.expected`.
 /// Code: attempt bytes equal `TestRun.expected_stdout`.
-/// Neither payload: [`Error::Unverifiable`]. Math wins if both are set.
+/// Wave-2 payloads: grid / market / research / long-horizon / open-ended.
+/// No payload: [`Error::Unverifiable`]. Math wins if both math and code are set.
 fn score_attempt(task: &MintedTask, attempt: &str) -> Result<bool> {
     if let Some(math) = &task.math {
         return Ok(attempt == math.expected);
@@ -370,7 +387,173 @@ fn score_attempt(task: &MintedTask, attempt: &str) -> Result<bool> {
     if let Some(code) = &task.code {
         return Ok(attempt.as_bytes() == code.run.expected_stdout.as_slice());
     }
+    if let Some(passed) = score_wave2(task, attempt) {
+        return Ok(passed);
+    }
     Err(Error::Unverifiable("no D2 payload".into()))
+}
+
+fn score_wave2(task: &MintedTask, attempt: &str) -> Option<bool> {
+    if let Some(grid) = &task.grid {
+        return Some(score_grid(&grid.expected, attempt));
+    }
+    if let Some(market) = &task.market {
+        return Some(score_market(market, attempt));
+    }
+    if let Some(research) = &task.research {
+        return Some(score_research(research, attempt));
+    }
+    if let Some(lh) = &task.long_horizon {
+        return Some(score_long_horizon(lh, attempt));
+    }
+    if let Some(oe) = &task.open_ended {
+        return Some(score_open_ended(oe, attempt));
+    }
+    None
+}
+
+#[derive(Deserialize)]
+struct LhAttempt {
+    checkpoints: Vec<String>,
+    #[serde(rename = "final")]
+    final_outcome: String,
+}
+
+fn parse_grids(attempt: &str) -> Option<Vec<Grid>> {
+    let s = attempt.trim();
+    if let Ok(cells3) = serde_json::from_str::<Vec<Vec<Vec<u8>>>>(s) {
+        return Some(cells3.into_iter().map(Grid::new).collect());
+    }
+    if let Ok(cells2) = serde_json::from_str::<Vec<Vec<u8>>>(s) {
+        return Some(vec![Grid::new(cells2)]);
+    }
+    None
+}
+
+fn grid_ok(g: &Grid) -> bool {
+    if g.cells.is_empty() {
+        return false;
+    }
+    let w = g.cells[0].len();
+    if w == 0 {
+        return false;
+    }
+    g.cells
+        .iter()
+        .all(|row| row.len() == w && row.iter().all(|&v| v <= MAX_CELL))
+}
+
+fn score_grid(expected: &Grid, attempt: &str) -> bool {
+    let Some(predicted) = parse_grids(attempt) else {
+        return false;
+    };
+    if predicted.len() > GRID_PASS_K {
+        return false;
+    }
+    if !grid_ok(expected) || predicted.iter().any(|g| !grid_ok(g)) {
+        return false;
+    }
+    predicted.iter().any(|g| g == expected)
+}
+
+fn clamp_prob(p: f64) -> f64 {
+    p.clamp(PROB_EPS, 1.0 - PROB_EPS)
+}
+
+fn relative_log_score(p_model: f64, p_market: f64, outcome: bool) -> f64 {
+    let p = clamp_prob(p_model);
+    let m = clamp_prob(p_market);
+    if outcome {
+        p.ln() - m.ln()
+    } else {
+        (1.0 - p).ln() - (1.0 - m).ln()
+    }
+}
+
+fn score_market(task: &MarketTask, attempt: &str) -> bool {
+    let Ok(p) = attempt.trim().parse::<f64>() else {
+        return false;
+    };
+    if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+        return false;
+    }
+    if !task.market_p.is_finite() || !(0.0..=1.0).contains(&task.market_p) {
+        return false;
+    }
+    relative_log_score(p, task.market_p, task.outcome) > 0.0
+}
+
+#[allow(clippy::float_cmp)]
+fn score_research(task: &ResearchTask, attempt: &str) -> bool {
+    match attempt.trim().parse::<f64>() {
+        Ok(x) if x.is_finite() && task.target.is_finite() => x == task.target,
+        _ => false,
+    }
+}
+
+fn score_payload_math_code_grid(
+    math: &Option<MathTask>,
+    code: &Option<CodeTask>,
+    grid: &Option<GridTask>,
+    attempt: &str,
+) -> bool {
+    if let Some(math) = math {
+        return attempt == math.expected;
+    }
+    if let Some(code) = code {
+        return attempt.as_bytes() == code.run.expected_stdout.as_slice();
+    }
+    if let Some(grid) = grid {
+        return score_grid(&grid.expected, attempt);
+    }
+    false
+}
+
+fn score_long_horizon(task: &LongHorizonTask, attempt: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<LhAttempt>(attempt.trim()) else {
+        return false;
+    };
+    if v.checkpoints.len() != task.checkpoints.len() {
+        return false;
+    }
+    for (cp, ans) in task.checkpoints.iter().zip(&v.checkpoints) {
+        if !score_payload_math_code_grid(&cp.math, &cp.code, &cp.grid, ans) {
+            return false;
+        }
+    }
+    score_payload_math_code_grid(&task.final_math, &task.final_code, &None, &v.final_outcome)
+}
+
+#[allow(clippy::float_cmp)]
+fn weighted_mean(rubric: &Rubric, values: &[f64]) -> f64 {
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for (c, v) in rubric.criteria.iter().zip(values) {
+        num += c.weight * v;
+        den += c.weight;
+    }
+    if den == 0.0 {
+        0.0
+    } else {
+        num / den
+    }
+}
+
+fn score_open_ended(task: &OpenEndedTask, attempt: &str) -> bool {
+    let Ok(scores) = serde_json::from_str::<BTreeMap<String, f64>>(attempt.trim()) else {
+        return false;
+    };
+    let mut values = Vec::new();
+    for c in &task.rubric.criteria {
+        let Some(&v) = scores.get(&c.id.0) else {
+            return false;
+        };
+        if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+            return false;
+        }
+        values.push(v);
+    }
+    weighted_mean(&task.rubric, &values) > 0.5
 }
 
 /// Tool-call curriculum (spec 9.4). Starts at [`START_TOOL_CALLS`].
@@ -682,6 +865,7 @@ pub struct OpenEndedSource {
 pub struct ResearchFactory {
     id: FactoryId,
     sources: Vec<ResearchSource>,
+    cursor: usize,
 }
 
 impl ResearchFactory {
@@ -689,6 +873,7 @@ impl ResearchFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -701,8 +886,18 @@ impl ResearchFactory {
     }
 
     pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
-        let _ = (now, created_at);
-        unimplemented!("I6 ResearchFactory::mint")
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_research(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -710,6 +905,7 @@ impl ResearchFactory {
 pub struct LongHorizonFactory {
     id: FactoryId,
     sources: Vec<LongHorizonSource>,
+    cursor: usize,
 }
 
 impl LongHorizonFactory {
@@ -717,6 +913,7 @@ impl LongHorizonFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -729,8 +926,18 @@ impl LongHorizonFactory {
     }
 
     pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
-        let _ = (now, created_at);
-        unimplemented!("I6 LongHorizonFactory::mint")
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_long_horizon(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -738,6 +945,7 @@ impl LongHorizonFactory {
 pub struct ArcFactory {
     id: FactoryId,
     sources: Vec<ArcSource>,
+    cursor: usize,
 }
 
 impl ArcFactory {
@@ -745,6 +953,7 @@ impl ArcFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -757,8 +966,18 @@ impl ArcFactory {
     }
 
     pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
-        let _ = (now, created_at);
-        unimplemented!("I6 ArcFactory::mint")
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_arc(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -766,6 +985,7 @@ impl ArcFactory {
 pub struct ForecastFactory {
     id: FactoryId,
     sources: Vec<ForecastSource>,
+    cursor: usize,
 }
 
 impl ForecastFactory {
@@ -773,6 +993,7 @@ impl ForecastFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -785,8 +1006,18 @@ impl ForecastFactory {
     }
 
     pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
-        let _ = (now, created_at);
-        unimplemented!("I6 ForecastFactory::mint")
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_forecast(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -794,6 +1025,7 @@ impl ForecastFactory {
 pub struct OpenEndedFactory {
     id: FactoryId,
     sources: Vec<OpenEndedSource>,
+    cursor: usize,
 }
 
 impl OpenEndedFactory {
@@ -801,6 +1033,7 @@ impl OpenEndedFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -813,8 +1046,18 @@ impl OpenEndedFactory {
     }
 
     pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
-        let _ = (now, created_at);
-        unimplemented!("I6 OpenEndedFactory::mint")
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_open_ended(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -1031,6 +1274,228 @@ fn mint_swe(factory_id: &str, source: &Source, created_at: &str) -> MintedTask {
         SWE_MUTANT_BODY,
         Some((SWE_REPO_PATH, source.body.as_bytes().to_vec())),
     )
+}
+
+fn hidden_hash_grid(expected: &Grid) -> String {
+    sha256_hex(&serde_json::to_vec(&expected.cells).expect("grid json"))
+}
+
+fn hidden_hash_market(market: &MarketTask) -> String {
+    sha256_hex(format!("{}:{}", market.outcome, market.market_p).as_bytes())
+}
+
+fn hidden_hash_research(target: f64) -> String {
+    sha256_hex(&target.to_le_bytes())
+}
+
+fn hidden_hash_long_horizon(task: &LongHorizonTask) -> String {
+    let mut buf = Vec::new();
+    for cp in &task.checkpoints {
+        buf.extend_from_slice(checkpoint_hidden_bytes(cp).as_bytes());
+        buf.push(0);
+    }
+    buf.extend_from_slice(b"final:");
+    buf.extend_from_slice(final_hidden_bytes(task).as_bytes());
+    sha256_hex(&buf)
+}
+
+fn hidden_hash_open_ended(rubric: &Rubric) -> String {
+    let mut buf = Vec::new();
+    for c in &rubric.criteria {
+        buf.extend_from_slice(c.id.0.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(c.prompt.as_bytes());
+        buf.push(0);
+    }
+    sha256_hex(&buf)
+}
+
+fn checkpoint_hidden_bytes(cp: &Checkpoint) -> String {
+    if let Some(math) = &cp.math {
+        return format!("math:{}", math.expected);
+    }
+    if let Some(code) = &cp.code {
+        return format!(
+            "code:{}",
+            String::from_utf8_lossy(&code.run.expected_stdout)
+        );
+    }
+    if let Some(grid) = &cp.grid {
+        return format!("grid:{}", hidden_hash_grid(&grid.expected));
+    }
+    String::new()
+}
+
+fn final_hidden_bytes(task: &LongHorizonTask) -> String {
+    if let Some(math) = &task.final_math {
+        return format!("math:{}", math.expected);
+    }
+    if let Some(code) = &task.final_code {
+        return format!(
+            "code:{}",
+            String::from_utf8_lossy(&code.run.expected_stdout)
+        );
+    }
+    String::new()
+}
+
+fn mint_research(factory_id: &str, row: &ResearchSource, created_at: &str) -> MintedTask {
+    let statement = row.source.body.clone();
+    let research = ResearchTask {
+        kind: row.kind,
+        target: row.target,
+        budget_gpu_minutes: row.budget_gpu_minutes,
+        rubric: row.rubric.clone(),
+    };
+    let hidden = hidden_hash_research(row.target);
+    MintedTask {
+        spec: spec(
+            factory_id,
+            &row.source,
+            TaskDomain::Science,
+            &statement,
+            hidden,
+            RESEARCH_VERIFIER_ID,
+            None,
+            RESEARCH_HORIZON_S,
+            RESEARCH_MAX_TOOL_CALLS,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::LeanKernel,
+        verifier_id: VerifierId(RESEARCH_VERIFIER_ID.to_string()),
+        statement,
+        code: None,
+        math: None,
+        grid: None,
+        market: None,
+        research: Some(research),
+        long_horizon: None,
+        open_ended: None,
+    }
+}
+
+fn mint_long_horizon(factory_id: &str, row: &LongHorizonSource, created_at: &str) -> MintedTask {
+    let statement = row.source.body.clone();
+    let task = LongHorizonTask {
+        checkpoints: row.checkpoints.clone(),
+        final_math: row.final_math.clone(),
+        final_code: row.final_code.clone(),
+    };
+    let hidden = hidden_hash_long_horizon(&task);
+    MintedTask {
+        spec: spec(
+            factory_id,
+            &row.source,
+            TaskDomain::Agent,
+            &statement,
+            hidden,
+            LONG_HORIZON_VERIFIER_ID,
+            None,
+            LONG_HORIZON_S,
+            LONG_HORIZON_MAX_TOOL_CALLS,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::LeanKernel,
+        verifier_id: VerifierId(LONG_HORIZON_VERIFIER_ID.to_string()),
+        statement,
+        code: None,
+        math: None,
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: Some(task),
+        open_ended: None,
+    }
+}
+
+fn mint_arc(factory_id: &str, row: &ArcSource, created_at: &str) -> MintedTask {
+    let statement = row.source.body.clone();
+    let expected = row.expected.clone();
+    let hidden = hidden_hash_grid(&expected);
+    MintedTask {
+        spec: spec(
+            factory_id,
+            &row.source,
+            TaskDomain::Arc,
+            &statement,
+            hidden,
+            ARC_VERIFIER_ID,
+            None,
+            ARC_HORIZON_S,
+            ARC_MAX_TOOL_CALLS,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::GridMatch,
+        verifier_id: VerifierId(ARC_VERIFIER_ID.to_string()),
+        statement,
+        code: None,
+        math: None,
+        grid: Some(GridTask::new(expected)),
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
+    }
+}
+
+fn mint_forecast(factory_id: &str, row: &ForecastSource, created_at: &str) -> MintedTask {
+    let statement = row.source.body.clone();
+    let market = row.market.clone();
+    let hidden = hidden_hash_market(&market);
+    MintedTask {
+        spec: spec(
+            factory_id,
+            &row.source,
+            TaskDomain::Other,
+            &statement,
+            hidden,
+            FORECAST_VERIFIER_ID,
+            None,
+            FORECAST_HORIZON_S,
+            FORECAST_MAX_TOOL_CALLS,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::MarketResolution,
+        verifier_id: VerifierId(FORECAST_VERIFIER_ID.to_string()),
+        statement,
+        code: None,
+        math: None,
+        grid: None,
+        market: Some(market),
+        research: None,
+        long_horizon: None,
+        open_ended: None,
+    }
+}
+
+fn mint_open_ended(factory_id: &str, row: &OpenEndedSource, created_at: &str) -> MintedTask {
+    let statement = row.source.body.clone();
+    let rubric = row.rubric.clone();
+    let hidden = hidden_hash_open_ended(&rubric);
+    MintedTask {
+        spec: spec(
+            factory_id,
+            &row.source,
+            TaskDomain::Other,
+            &statement,
+            hidden,
+            OPEN_ENDED_VERIFIER_ID,
+            None,
+            OPEN_ENDED_HORIZON_S,
+            OPEN_ENDED_MAX_TOOL_CALLS,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::LeanKernel,
+        verifier_id: VerifierId(OPEN_ENDED_VERIFIER_ID.to_string()),
+        statement,
+        code: None,
+        math: None,
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: Some(OpenEndedTask { rubric }),
+    }
 }
 
 #[derive(Debug, Error, PartialEq)]
