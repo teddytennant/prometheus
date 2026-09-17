@@ -271,6 +271,11 @@ fn mint_math(factory_id: &str, source: &Source, created_at: &str) -> MintedTask 
         statement,
         code: None,
         math: Some(MathTask::new(expected)),
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
     }
 }
 
@@ -321,6 +326,11 @@ fn mint_sandboxed(
         statement,
         code: Some(code),
         math: None,
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
     }
 }
 

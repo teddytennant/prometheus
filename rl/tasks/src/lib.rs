@@ -1,8 +1,9 @@
-//! Task factories wave 1: code, SWE, math (spec 9.4, 15.5 D3).
+//! Task factories: wave 1 (D3) and wave 2 types (I6, spec 9.4, 15.5).
 //!
-//! Each factory mints an F1 [`TaskSpec`], attaches a D2 exact verifier, and
-//! drops tasks an injected solver always solves or never solves. Wave 2
-//! (research, long-horizon, ARC-3, forecasting, open-ended) is I6.
+//! Wave 1 mints an F1 [`TaskSpec`], attaches a D2 exact verifier, and drops
+//! tasks an injected solver always solves or never solves. Wave 2 factories
+//! (research, long-horizon, ARC-3, forecasting, open-ended) have types and
+//! signatures; `mint` is unimplemented until I6 lands.
 //!
 //! Solvers are a [`Solver`] so CPU tests inject [`ScriptedSolver`]. F5
 //! serving can wrap this later; nothing here starts an engine.
@@ -21,7 +22,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub use prometheus_envs::{Image, NowMs};
-pub use prometheus_verifiers::{CodeTask, MathTask, VerifierId, VerifierKind};
+pub use prometheus_rewards::{Criterion, Rubric};
+pub use prometheus_verifiers::{
+    CodeTask, Grid, GridTask, MarketTask, MathTask, VerifierId, VerifierKind, GRID_PASS_K,
+};
 
 pub const SCHEMA_TASK_SPEC: &str = "prometheus.task_spec";
 pub const SCHEMA_VERSION: u32 = 1;
@@ -222,9 +226,8 @@ impl TaskSpec {
     }
 }
 
-/// Minted task: F1 spec plus the D2 checker payload. Hidden tests live on
-/// the [`CodeTask`] image / [`MathTask`] expected answer, never in the
-/// public statement.
+/// Minted task: F1 spec plus the D2 / I3 checker payload. Hidden tests live
+/// on the verifier payload, never in the public statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MintedTask {
     pub spec: TaskSpec,
@@ -233,6 +236,11 @@ pub struct MintedTask {
     pub statement: String,
     pub code: Option<CodeTask>,
     pub math: Option<MathTask>,
+    pub grid: Option<GridTask>,
+    pub market: Option<MarketTask>,
+    pub research: Option<ResearchTask>,
+    pub long_horizon: Option<LongHorizonTask>,
+    pub open_ended: Option<OpenEndedTask>,
 }
 
 impl MintedTask {
@@ -565,6 +573,321 @@ impl Factory for MathFactory {
     }
 }
 
+/// Three research task shapes from spec 9.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchKind {
+    /// Held-out val-loss after N GPU-minutes.
+    Speedrun,
+    /// Paper reproduction: I3 rubric plus a numeric match.
+    PaperRepro,
+    /// Kaggle-style held-out metric.
+    Kaggle,
+}
+
+/// Numeric research target plus optional I3 rubric for paper reproduction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResearchTask {
+    pub kind: ResearchKind,
+    /// Held-out number: val-loss, paper figure, or Kaggle metric.
+    pub target: f64,
+    /// Speedrun GPU-minute budget. None for paper-repro / Kaggle.
+    pub budget_gpu_minutes: Option<u32>,
+    /// Paper-repro rubric. None for pure numeric kinds.
+    pub rubric: Option<Rubric>,
+}
+
+impl ResearchTask {
+    pub fn new(kind: ResearchKind, target: f64) -> Self {
+        Self {
+            kind,
+            target,
+            budget_gpu_minutes: None,
+            rubric: None,
+        }
+    }
+}
+
+/// One verifiable subgoal on a long-horizon task (spec 9.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Checkpoint {
+    pub id: String,
+    pub statement: String,
+    pub math: Option<MathTask>,
+    pub code: Option<CodeTask>,
+    pub grid: Option<GridTask>,
+}
+
+/// Final outcome plus ordered subgoal checkpoints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LongHorizonTask {
+    pub checkpoints: Vec<Checkpoint>,
+    pub final_math: Option<MathTask>,
+    pub final_code: Option<CodeTask>,
+}
+
+/// Open-ended task scored only by an I3 rubric (spec 9.1, 9.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpenEndedTask {
+    pub rubric: Rubric,
+}
+
+impl OpenEndedTask {
+    pub fn new(rubric: Rubric) -> Self {
+        Self { rubric }
+    }
+}
+
+/// Catalog row for [`ResearchFactory`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResearchSource {
+    pub source: Source,
+    pub kind: ResearchKind,
+    pub target: f64,
+    pub budget_gpu_minutes: Option<u32>,
+    pub rubric: Option<Rubric>,
+}
+
+/// Catalog row for [`LongHorizonFactory`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct LongHorizonSource {
+    pub source: Source,
+    pub checkpoints: Vec<Checkpoint>,
+    pub final_math: Option<MathTask>,
+    pub final_code: Option<CodeTask>,
+}
+
+/// Catalog row for [`ArcFactory`]. Expected grid is the hidden test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArcSource {
+    pub source: Source,
+    pub expected: Grid,
+}
+
+/// Catalog row for [`ForecastFactory`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForecastSource {
+    pub source: Source,
+    pub market: MarketTask,
+}
+
+/// Catalog row for [`OpenEndedFactory`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenEndedSource {
+    pub source: Source,
+    pub rubric: Rubric,
+}
+
+/// Research factory (spec 9.1, 9.4). Domain `science`.
+pub struct ResearchFactory {
+    id: FactoryId,
+    sources: Vec<ResearchSource>,
+}
+
+impl ResearchFactory {
+    pub fn new(id: impl Into<String>, sources: Vec<ResearchSource>) -> Self {
+        Self {
+            id: FactoryId(id.into()),
+            sources,
+        }
+    }
+
+    pub fn id(&self) -> &FactoryId {
+        &self.id
+    }
+
+    pub fn sources(&self) -> &[ResearchSource] {
+        &self.sources
+    }
+
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = (now, created_at);
+        unimplemented!("I6 ResearchFactory::mint")
+    }
+}
+
+/// Long-horizon factory (spec 9.1, 9.4). Domain `agent`. Hours-scale horizon.
+pub struct LongHorizonFactory {
+    id: FactoryId,
+    sources: Vec<LongHorizonSource>,
+}
+
+impl LongHorizonFactory {
+    pub fn new(id: impl Into<String>, sources: Vec<LongHorizonSource>) -> Self {
+        Self {
+            id: FactoryId(id.into()),
+            sources,
+        }
+    }
+
+    pub fn id(&self) -> &FactoryId {
+        &self.id
+    }
+
+    pub fn sources(&self) -> &[LongHorizonSource] {
+        &self.sources
+    }
+
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = (now, created_at);
+        unimplemented!("I6 LongHorizonFactory::mint")
+    }
+}
+
+/// ARC-3 factory (spec 9.1, 9.4). Domain `arc`. Exact grid match, pass@2.
+pub struct ArcFactory {
+    id: FactoryId,
+    sources: Vec<ArcSource>,
+}
+
+impl ArcFactory {
+    pub fn new(id: impl Into<String>, sources: Vec<ArcSource>) -> Self {
+        Self {
+            id: FactoryId(id.into()),
+            sources,
+        }
+    }
+
+    pub fn id(&self) -> &FactoryId {
+        &self.id
+    }
+
+    pub fn sources(&self) -> &[ArcSource] {
+        &self.sources
+    }
+
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = (now, created_at);
+        unimplemented!("I6 ArcFactory::mint")
+    }
+}
+
+/// Forecasting factory (spec 9.1, 9.4). Domain `other`. Market log score.
+pub struct ForecastFactory {
+    id: FactoryId,
+    sources: Vec<ForecastSource>,
+}
+
+impl ForecastFactory {
+    pub fn new(id: impl Into<String>, sources: Vec<ForecastSource>) -> Self {
+        Self {
+            id: FactoryId(id.into()),
+            sources,
+        }
+    }
+
+    pub fn id(&self) -> &FactoryId {
+        &self.id
+    }
+
+    pub fn sources(&self) -> &[ForecastSource] {
+        &self.sources
+    }
+
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = (now, created_at);
+        unimplemented!("I6 ForecastFactory::mint")
+    }
+}
+
+/// Open-ended factory (spec 9.1, 9.4, 9.5). Domain `other`. I3 rubric only.
+pub struct OpenEndedFactory {
+    id: FactoryId,
+    sources: Vec<OpenEndedSource>,
+}
+
+impl OpenEndedFactory {
+    pub fn new(id: impl Into<String>, sources: Vec<OpenEndedSource>) -> Self {
+        Self {
+            id: FactoryId(id.into()),
+            sources,
+        }
+    }
+
+    pub fn id(&self) -> &FactoryId {
+        &self.id
+    }
+
+    pub fn sources(&self) -> &[OpenEndedSource] {
+        &self.sources
+    }
+
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = (now, created_at);
+        unimplemented!("I6 OpenEndedFactory::mint")
+    }
+}
+
+impl Factory for ResearchFactory {
+    fn id(&self) -> &FactoryId {
+        ResearchFactory::id(self)
+    }
+
+    fn domain(&self) -> TaskDomain {
+        TaskDomain::Science
+    }
+
+    fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        ResearchFactory::mint(self, now, created_at)
+    }
+}
+
+impl Factory for LongHorizonFactory {
+    fn id(&self) -> &FactoryId {
+        LongHorizonFactory::id(self)
+    }
+
+    fn domain(&self) -> TaskDomain {
+        TaskDomain::Agent
+    }
+
+    fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        LongHorizonFactory::mint(self, now, created_at)
+    }
+}
+
+impl Factory for ArcFactory {
+    fn id(&self) -> &FactoryId {
+        ArcFactory::id(self)
+    }
+
+    fn domain(&self) -> TaskDomain {
+        TaskDomain::Arc
+    }
+
+    fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        ArcFactory::mint(self, now, created_at)
+    }
+}
+
+impl Factory for ForecastFactory {
+    fn id(&self) -> &FactoryId {
+        ForecastFactory::id(self)
+    }
+
+    fn domain(&self) -> TaskDomain {
+        TaskDomain::Other
+    }
+
+    fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        ForecastFactory::mint(self, now, created_at)
+    }
+}
+
+impl Factory for OpenEndedFactory {
+    fn id(&self) -> &FactoryId {
+        OpenEndedFactory::id(self)
+    }
+
+    fn domain(&self) -> TaskDomain {
+        TaskDomain::Other
+    }
+
+    fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        OpenEndedFactory::mint(self, now, created_at)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spec(
     factory_id: &str,
@@ -617,6 +940,11 @@ fn mint_math(factory_id: &str, source: &Source, created_at: &str) -> MintedTask 
         statement,
         code: None,
         math: Some(MathTask::new(expected)),
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
     }
 }
 
@@ -667,6 +995,11 @@ fn mint_sandboxed(
         statement,
         code: Some(code),
         math: None,
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
     }
 }
 

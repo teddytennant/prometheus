@@ -162,6 +162,11 @@ pub fn math_task(statement: &str, expected: &str) -> MintedTask {
         statement: statement.to_string(),
         code: None,
         math: Some(MathTask::new(expected)),
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
     }
 }
 
@@ -194,6 +199,11 @@ pub fn code_task(statement: &str, expected_stdout: &[u8]) -> MintedTask {
         statement: statement.to_string(),
         code: Some(CodeTask::new(image, run)),
         math: None,
+        grid: None,
+        market: None,
+        research: None,
+        long_horizon: None,
+        open_ended: None,
     }
 }
 
