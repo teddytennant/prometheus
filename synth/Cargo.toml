@@ -3,7 +3,7 @@ name = "prometheus-synth"
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-description = "Synthetic rewrites: generation orchestration, rephrasing, fact-check (spec 7.1, 15.5 E1)"
+description = "Synthetic data: rewrites (E1) and rejection sampling (E2) (spec 7.1, 15.5)"
 publish = false
 
 [dependencies]

@@ -1,11 +1,14 @@
-//! Synthetic rewrites: generation orchestration and fact-check (spec 7.1, 15.5 E1).
+//! Synthetic data: rewrites (E1) and rejection sampling (E2).
 //!
-//! High-quality documents are rephrased in several styles (Kimi K2-style) and
-//! fact-checked against the source. The checker is source-grounded and does not
-//! call the generator. The generator is F5's batch API behind [`Generator`].
-//! Token counts use F6 encode length when a [`TokenCounter`] is provided.
+//! E1: high-quality documents are rephrased in several styles (Kimi K2-style)
+//! and fact-checked against the source. Gate: supported-class precision of
+//! [`check_claim`] on a labeled sample.
 //!
-//! Gate: supported-class precision of [`check_claim`] on a labeled sample.
+//! E2: reasoning traces sampled from F5 and kept only when a D2 verifier
+//! sets `passed`. Gate: [`reject::verified_correct_rate`].
+//!
+//! The generator is F5's batch API behind [`Generator`]. Token counts use F6
+//! encode length when a [`TokenCounter`] is provided.
 
 use std::collections::HashSet;
 
@@ -17,10 +20,17 @@ pub const DEFAULT_MAX_TOKENS: u32 = 512;
 pub const DEFAULT_TEMPERATURE: f32 = 0.7;
 pub const DEFAULT_MAX_BATCH: u32 = 8;
 
+mod reject;
+pub use reject::*;
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum Error {
     #[error("empty source")]
     EmptySource,
+    #[error("empty prompt")]
+    EmptyPrompt,
+    #[error("n_samples must be > 0")]
+    ZeroSamples,
     #[error("empty batch")]
     EmptyBatch,
     #[error("batch larger than max_batch {0}")]
