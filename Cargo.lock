@@ -1142,6 +1142,7 @@ name = "prometheus-classifiers"
 version = "0.0.1"
 dependencies = [
  "prometheus-extract",
+ "prometheus-providers",
  "prometheus-serve",
  "serde",
  "serde_json",
