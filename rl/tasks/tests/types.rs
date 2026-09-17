@@ -4,10 +4,13 @@
 mod common;
 mod reference;
 
-use common::{src, CREATED, MATH_ID, NOW};
+use common::{
+    arc_row, forecast_row, lh_row, oe_row, research_kaggle_row, src, CREATED, MATH_ID, NOW,
+};
 use prometheus_tasks::{
-    CodeFactory, Error, Factory, Horizon, MathFactory, Provenance, ScriptedSolver, SolveRate,
-    Solver, Source, Split, SweFactory, TaskDomain, TaskSpec, RAISE_THRESHOLD, SCHEMA_TASK_SPEC,
+    ArcFactory, CodeFactory, Error, Factory, ForecastFactory, Horizon, LongHorizonFactory,
+    MathFactory, OpenEndedFactory, Provenance, ResearchFactory, ScriptedSolver, SolveRate, Solver,
+    Source, Split, SweFactory, TaskDomain, TaskSpec, RAISE_THRESHOLD, SCHEMA_TASK_SPEC,
     SCHEMA_VERSION, START_TOOL_CALLS,
 };
 
@@ -26,6 +29,21 @@ fn constants_match_spec() {
         reference::CODE_MAX_TOOL_CALLS * 2
     );
     assert_eq!(reference::MATH_MAX_TOOL_CALLS, START_TOOL_CALLS);
+    assert_eq!(reference::ARC_HORIZON_S, 30);
+    assert_eq!(reference::ARC_MAX_TOOL_CALLS, START_TOOL_CALLS);
+    assert_eq!(reference::FORECAST_HORIZON_S, 30);
+    assert_eq!(reference::FORECAST_MAX_TOOL_CALLS, START_TOOL_CALLS);
+    assert_eq!(reference::OPEN_ENDED_HORIZON_S, 30);
+    assert_eq!(reference::OPEN_ENDED_MAX_TOOL_CALLS, START_TOOL_CALLS);
+    assert_eq!(reference::RESEARCH_HORIZON_S, 600);
+    assert!(reference::RESEARCH_HORIZON_S > reference::MATH_HORIZON_S);
+    assert_eq!(reference::RESEARCH_MAX_TOOL_CALLS, START_TOOL_CALLS);
+    assert_eq!(reference::LONG_HORIZON_S, 3600);
+    assert!(reference::LONG_HORIZON_S >= 3600);
+    assert_eq!(reference::LONG_HORIZON_MAX_TOOL_CALLS, 2000);
+    assert_ne!(reference::ARC_HORIZON_S, reference::SWE_HORIZON_S);
+    assert_ne!(reference::FORECAST_HORIZON_S, reference::SWE_HORIZON_S);
+    assert_eq!(prometheus_tasks::GRID_PASS_K, 2);
 }
 
 #[test]
@@ -123,6 +141,27 @@ fn factory_constructors_and_getters() {
     assert_eq!(swe.id().0, "swe-1");
     assert_eq!(swe.domain(), TaskDomain::Code);
     assert_ne!(swe.domain(), TaskDomain::Agent);
+
+    let research = ResearchFactory::new("r", vec![research_kaggle_row()]);
+    assert_eq!(research.id().0, "r");
+    assert_eq!(research.sources().len(), 1);
+    assert_eq!(research.domain(), TaskDomain::Science);
+
+    let lh = LongHorizonFactory::new("l", vec![lh_row()]);
+    assert_eq!(lh.id().0, "l");
+    assert_eq!(lh.domain(), TaskDomain::Agent);
+
+    let arc = ArcFactory::new("a", vec![arc_row()]);
+    assert_eq!(arc.id().0, "a");
+    assert_eq!(arc.domain(), TaskDomain::Arc);
+
+    let forecast = ForecastFactory::new("f", vec![forecast_row()]);
+    assert_eq!(forecast.id().0, "f");
+    assert_eq!(forecast.domain(), TaskDomain::Other);
+
+    let open = OpenEndedFactory::new("o", vec![oe_row()]);
+    assert_eq!(open.id().0, "o");
+    assert_eq!(open.domain(), TaskDomain::Other);
 }
 
 #[test]

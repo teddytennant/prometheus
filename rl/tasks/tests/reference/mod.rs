@@ -42,6 +42,10 @@
 
 #![allow(dead_code)]
 
+mod wave2;
+#[allow(unused_imports)]
+pub use wave2::*;
+
 use std::collections::BTreeMap;
 
 use prometheus_envs::{Image, NowMs, GRADER_ROOT};
@@ -220,7 +224,7 @@ impl RefFactory {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spec(
+pub(super) fn spec(
     factory_id: &str,
     source: &Source,
     domain: TaskDomain,
@@ -366,13 +370,18 @@ fn mint_swe(factory_id: &str, source: &Source, created_at: &str) -> MintedTask {
 
 /// Math: attempt equals `MathTask.expected`.
 /// Code: attempt bytes equal `TestRun.expected_stdout`.
-/// Neither payload: [`Error::Unverifiable`]. Math wins if both are set.
+/// Wave-2 (I6): grid / market / research / long-horizon / open-ended encodings
+/// in [`wave2`]. Math still wins if both math and code are set. Neither D3 nor
+/// wave-2 payload: [`Error::Unverifiable`].
 pub fn score_attempt(task: &MintedTask, attempt: &str) -> Result<bool> {
     if let Some(math) = &task.math {
         return Ok(attempt == math.expected);
     }
     if let Some(code) = &task.code {
         return Ok(attempt.as_bytes() == code.run.expected_stdout.as_slice());
+    }
+    if let Some(passed) = wave2::score_wave2(task, attempt) {
+        return Ok(passed);
     }
     Err(Error::Unverifiable("no D2 payload".into()))
 }

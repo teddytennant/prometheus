@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 
 use prometheus_envs::NowMs;
 use prometheus_tasks::{
-    MintedTask, Provenance, Source, Split, TaskDomain, TaskSpec, VerifierId, SCHEMA_TASK_SPEC,
-    SCHEMA_VERSION,
+    ArcSource, Checkpoint, Criterion, ForecastSource, Grid, LongHorizonSource, MintedTask,
+    OpenEndedSource, Provenance, ResearchKind, ResearchSource, Rubric, Source, Split, TaskDomain,
+    TaskSpec, VerifierId, SCHEMA_TASK_SPEC, SCHEMA_VERSION,
 };
-use prometheus_verifiers::{CodeTask, MathTask, VerifierKind};
+use prometheus_verifiers::{CodeTask, GridTask, MarketTask, MathTask, VerifierKind};
 
 use crate::reference;
 
@@ -19,6 +20,12 @@ pub const CREATED: &str = "not-a-wall-clock";
 pub const MATH_ID: &str = "math-1";
 pub const CODE_ID: &str = "code-1";
 pub const SWE_ID: &str = "swe-1";
+pub const RESEARCH_ID: &str = "research-1";
+pub const LONG_HORIZON_ID: &str = "long-horizon-1";
+pub const ARC_ID: &str = "arc-1";
+pub const FORECAST_ID: &str = "forecast-1";
+pub const OPEN_ENDED_ID: &str = "open-ended-1";
+pub const GRADER_ID: &str = "alice";
 
 pub fn golden_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -114,6 +121,161 @@ pub fn code_row() -> Source {
 
 pub fn swe_row() -> Source {
     src("swebench-1", "repo@abc123")
+}
+
+pub fn sample_rubric() -> Rubric {
+    Rubric::new(
+        "rubric-1",
+        vec![
+            Criterion::new("clarity", "GRADER_ONLY: is it clear?", 1.0),
+            Criterion::new("accuracy", "GRADER_ONLY: is it accurate?", 1.0),
+        ],
+    )
+}
+
+pub fn weighted_rubric() -> Rubric {
+    Rubric::new(
+        "rubric-w",
+        vec![
+            Criterion::new("a", "GRADER_ONLY: criterion a", 1.0),
+            Criterion::new("b", "GRADER_ONLY: criterion b", 3.0),
+        ],
+    )
+}
+
+pub fn research_src(
+    id: &str,
+    body: &str,
+    kind: ResearchKind,
+    target: f64,
+    budget_gpu_minutes: Option<u32>,
+    rubric: Option<Rubric>,
+) -> ResearchSource {
+    ResearchSource {
+        source: src(id, body),
+        kind,
+        target,
+        budget_gpu_minutes,
+        rubric,
+    }
+}
+
+pub fn research_kaggle_row() -> ResearchSource {
+    research_src(
+        "k1",
+        "What is the holdout accuracy?",
+        ResearchKind::Kaggle,
+        0.85,
+        None,
+        None,
+    )
+}
+
+pub fn research_speedrun_row() -> ResearchSource {
+    research_src(
+        "sp1",
+        "Reproduce the GPU-minute budget run.",
+        ResearchKind::Speedrun,
+        42.0,
+        Some(8),
+        None,
+    )
+}
+
+pub fn research_paper_row() -> ResearchSource {
+    research_src(
+        "p1",
+        "Reproduce table 2 numeric match.",
+        ResearchKind::PaperRepro,
+        3.14,
+        None,
+        Some(sample_rubric()),
+    )
+}
+
+pub fn math_checkpoint(id: &str, statement: &str, expected: &str) -> Checkpoint {
+    Checkpoint {
+        id: id.into(),
+        statement: statement.into(),
+        math: Some(MathTask::new(expected)),
+        code: None,
+        grid: None,
+    }
+}
+
+pub fn grid_checkpoint(id: &str, statement: &str, cells: Vec<Vec<u8>>) -> Checkpoint {
+    Checkpoint {
+        id: id.into(),
+        statement: statement.into(),
+        math: None,
+        code: None,
+        grid: Some(GridTask::new(Grid::new(cells))),
+    }
+}
+
+pub fn lh_src(
+    id: &str,
+    body: &str,
+    checkpoints: Vec<Checkpoint>,
+    final_math: Option<MathTask>,
+    final_code: Option<CodeTask>,
+) -> LongHorizonSource {
+    LongHorizonSource {
+        source: src(id, body),
+        checkpoints,
+        final_math,
+        final_code,
+    }
+}
+
+pub fn lh_row() -> LongHorizonSource {
+    lh_src(
+        "h1",
+        "Complete the multi-step mission.",
+        vec![
+            math_checkpoint("cp-0", "do step 0", "alpha"),
+            math_checkpoint("cp-1", "do step 1", "beta"),
+        ],
+        Some(MathTask::new("omega")),
+        None,
+    )
+}
+
+pub fn arc_src(id: &str, body: &str, cells: Vec<Vec<u8>>) -> ArcSource {
+    ArcSource {
+        source: src(id, body),
+        expected: Grid::new(cells),
+    }
+}
+
+pub fn arc_row() -> ArcSource {
+    arc_src(
+        "g1",
+        "Complete the output grid.",
+        vec![vec![1, 2], vec![3, 4]],
+    )
+}
+
+pub fn forecast_src(id: &str, body: &str, market_p: f64, outcome: bool) -> ForecastSource {
+    ForecastSource {
+        source: src(id, body),
+        market: MarketTask::new(market_p, outcome),
+    }
+}
+
+pub fn forecast_row() -> ForecastSource {
+    forecast_src("m1", "Will it rain in Atlantis-XYZ?", 0.4, true)
+}
+
+pub fn oe_src(id: &str, body: &str, rubric: Rubric) -> OpenEndedSource {
+    OpenEndedSource {
+        source: src(id, body),
+        rubric,
+    }
+}
+
+pub fn oe_row() -> OpenEndedSource {
+    oe_src("o1", "Write a short proof.", sample_rubric())
 }
 
 #[allow(clippy::too_many_arguments)]
