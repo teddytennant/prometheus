@@ -21,6 +21,7 @@ members = [
     "harness/slurm",
     "obs",
     "rl/envs",
+    "rl/rewards",
     "serve",
     "verifiers",
     "verify/ncshare",
