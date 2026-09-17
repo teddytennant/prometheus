@@ -9,8 +9,10 @@
 //! document is missing from predictions. `NowMs` is injected.
 
 use prometheus_extract::ExtractedDocument;
-use prometheus_serve::Router;
+use prometheus_serve::{GenerateRequest, Router};
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 pub type NowMs = u64;
@@ -26,6 +28,12 @@ pub const DEFAULT_MIN_AGREEMENT: f32 = 1.0;
 pub const EVENT_INGEST: &str = "clf.ingest";
 pub const EVENT_SCORE: &str = "clf.score";
 pub const EVENT_GATE: &str = "clf.gate";
+
+const QUALITY_TAG: u64 = 0x51;
+const SAFETY_TAG: u64 = 0x53;
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+const JOURNAL_NAME: &str = "events.jsonl";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,8 +118,11 @@ pub struct LocalScorer {
 }
 
 impl Scorer for LocalScorer {
-    fn score(&mut self, _texts: &[String], _now: NowMs) -> Result<Vec<Scores>> {
-        unimplemented!("B3: LocalScorer::score")
+    fn score(&mut self, texts: &[String], _now: NowMs) -> Result<Vec<Scores>> {
+        if texts.is_empty() {
+            return Err(Error::Empty);
+        }
+        Ok(texts.iter().map(|t| scores_one(self.seed, t)).collect())
     }
 }
 
@@ -131,8 +142,31 @@ impl ServeScorer {
 }
 
 impl Scorer for ServeScorer {
-    fn score(&mut self, _texts: &[String], _now: NowMs) -> Result<Vec<Scores>> {
-        unimplemented!("B3: ServeScorer::score")
+    fn score(&mut self, texts: &[String], now: NowMs) -> Result<Vec<Scores>> {
+        if texts.is_empty() {
+            return Err(Error::Empty);
+        }
+        let req = GenerateRequest {
+            prompts: texts.to_vec(),
+            max_tokens: 1,
+            temperature: 0.0,
+        };
+        let resp = self
+            .router
+            .generate(req, now)
+            .map_err(|e| Error::Serve(e.to_string()))?;
+        if resp.completions.len() != texts.len() {
+            return Err(Error::Serve(format!(
+                "engine returned {} completions for {} texts",
+                resp.completions.len(),
+                texts.len()
+            )));
+        }
+        Ok(resp
+            .completions
+            .iter()
+            .map(|c| scores_from_completion(&c.text))
+            .collect())
     }
 }
 
@@ -140,15 +174,43 @@ impl Scorer for ServeScorer {
 pub struct Orchestrator {
     dir: PathBuf,
     config: ClassifierConfig,
+    docs: Vec<ExtractedDocument>,
+    preds: Vec<Prediction>,
 }
 
 impl Orchestrator {
-    pub fn create(_dir: impl AsRef<Path>, _config: ClassifierConfig) -> Result<Self> {
-        unimplemented!("B3: Orchestrator::create")
+    pub fn create(dir: impl AsRef<Path>, config: ClassifierConfig) -> Result<Self> {
+        if config.shard_size < 1 {
+            return Err(Error::BadShardSize);
+        }
+        let dir = dir.as_ref();
+        if dir.exists() {
+            return Err(Error::WrongState(format!("dir exists: {}", dir.display())));
+        }
+        std::fs::create_dir(dir).map_err(other)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            config,
+            docs: Vec::new(),
+            preds: Vec::new(),
+        })
     }
 
-    pub fn open(_dir: impl AsRef<Path>, _config: ClassifierConfig) -> Result<Self> {
-        unimplemented!("B3: Orchestrator::open")
+    pub fn open(dir: impl AsRef<Path>, config: ClassifierConfig) -> Result<Self> {
+        if config.shard_size < 1 {
+            return Err(Error::BadShardSize);
+        }
+        let dir = dir.as_ref();
+        if !dir.exists() {
+            return Err(Error::Other(format!("missing: {}", dir.display())));
+        }
+        let (docs, preds) = load_journal(dir)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            config,
+            docs,
+            preds,
+        })
     }
 
     pub fn dir(&self) -> &Path {
@@ -159,44 +221,209 @@ impl Orchestrator {
         &self.config
     }
 
-    pub fn ingest(&mut self, _doc: ExtractedDocument) -> Result<()> {
-        unimplemented!("B3: Orchestrator::ingest")
+    pub fn ingest(&mut self, doc: ExtractedDocument) -> Result<()> {
+        if self.docs.iter().any(|d| d.content_hash == doc.content_hash) {
+            return Err(Error::WrongState(format!(
+                "duplicate content_hash {}",
+                doc.content_hash
+            )));
+        }
+        append_event(&self.dir, &JournalEvent::Ingest { doc: doc.clone() })?;
+        self.docs.push(doc);
+        Ok(())
     }
 
     /// Documents in ingest order, split into shards of `config.shard_size`
     /// (last shard may be shorter). Empty ingest => empty vec, not an error.
     pub fn shards(&self) -> Vec<Vec<ExtractedDocument>> {
-        unimplemented!("B3: Orchestrator::shards")
+        if self.docs.is_empty() {
+            return Vec::new();
+        }
+        self.docs
+            .chunks(self.config.shard_size)
+            .map(|c| c.to_vec())
+            .collect()
     }
 
     /// Score every ingested document through `scorer` in shard batches.
     /// Empty ingest => Error::Empty.
-    pub fn run(&mut self, _scorer: &mut dyn Scorer, _now: NowMs) -> Result<Vec<Prediction>> {
-        unimplemented!("B3: Orchestrator::run")
+    pub fn run(&mut self, scorer: &mut dyn Scorer, now: NowMs) -> Result<Vec<Prediction>> {
+        if self.docs.is_empty() {
+            return Err(Error::Empty);
+        }
+        let mut out = Vec::with_capacity(self.docs.len());
+        for shard in self.shards() {
+            let texts: Vec<String> = shard.iter().map(|d| d.text.clone()).collect();
+            let scores = scorer.score(&texts, now)?;
+            if scores.len() != shard.len() {
+                return Err(Error::WrongState(format!(
+                    "scorer returned {} scores for shard of {}",
+                    scores.len(),
+                    shard.len()
+                )));
+            }
+            for (doc, sc) in shard.iter().zip(scores) {
+                out.push(Prediction {
+                    content_hash: doc.content_hash.clone(),
+                    scores: sc,
+                });
+            }
+        }
+        append_event(
+            &self.dir,
+            &JournalEvent::Score {
+                predictions: out.clone(),
+            },
+        )?;
+        self.preds = out.clone();
+        Ok(out)
     }
 
     pub fn predictions(&self) -> &[Prediction] {
-        unimplemented!("B3: Orchestrator::predictions")
+        &self.preds
     }
 
     /// Fraction of human labels whose keep/drop matches the prediction after
     /// thresholding. Fail closed on a labeled hash with no prediction.
-    pub fn agreement(&self, _labels: &[HumanLabel]) -> Result<f32> {
-        unimplemented!("B3: Orchestrator::agreement")
+    pub fn agreement(&self, labels: &[HumanLabel]) -> Result<f32> {
+        agreement(
+            &self.preds,
+            labels,
+            self.config.quality_threshold,
+            self.config.safety_threshold,
+        )
     }
 
     /// Error::GateFailed if agreement < min_agreement.
-    pub fn gate(&self, _labels: &[HumanLabel]) -> Result<()> {
-        unimplemented!("B3: Orchestrator::gate")
+    pub fn gate(&self, labels: &[HumanLabel]) -> Result<()> {
+        let got = self.agreement(labels)?;
+        if got < self.config.min_agreement {
+            Err(Error::GateFailed {
+                got,
+                min: self.config.min_agreement,
+            })
+        } else {
+            Ok(())
+        }
     }
 }
 
 /// Same as [`Orchestrator::agreement`] without an orchestrator.
 pub fn agreement(
-    _preds: &[Prediction],
-    _labels: &[HumanLabel],
-    _quality_threshold: f32,
-    _safety_threshold: f32,
+    preds: &[Prediction],
+    labels: &[HumanLabel],
+    quality_threshold: f32,
+    safety_threshold: f32,
 ) -> Result<f32> {
-    unimplemented!("B3: agreement")
+    if labels.is_empty() {
+        return Err(Error::Empty);
+    }
+    let mut hits = 0usize;
+    for lab in labels {
+        let pred = preds
+            .iter()
+            .find(|p| p.content_hash == lab.content_hash)
+            .ok_or_else(|| Error::MissingLabel(lab.content_hash.clone()))?;
+        let keep_q = pred.scores.quality >= quality_threshold;
+        let keep_s = pred.scores.safety >= safety_threshold;
+        if keep_q == lab.keep_quality && keep_s == lab.keep_safety {
+            hits += 1;
+        }
+    }
+    Ok(hits as f32 / labels.len() as f32)
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// SplitMix64 finalizer.
+fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E3779B97F4A7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x ^ (x >> 31)
+}
+
+/// High 24 bits -> `[0, 1)`.
+fn unit01(h: u64) -> f32 {
+    let top = (h >> 40) as u32;
+    (top as f32) / 16_777_216.0_f32
+}
+
+fn axis_score(seed: u64, text: &str, tag: u64) -> f32 {
+    let h = fnv1a64(text.as_bytes());
+    unit01(mix64(seed ^ mix64(h.wrapping_add(tag))))
+}
+
+fn scores_one(seed: u64, text: &str) -> Scores {
+    Scores {
+        quality: axis_score(seed, text, QUALITY_TAG),
+        safety: axis_score(seed, text, SAFETY_TAG),
+    }
+}
+
+fn scores_from_completion(text: &str) -> Scores {
+    let h = fnv1a64(text.as_bytes());
+    Scores {
+        quality: unit01(h),
+        safety: unit01(mix64(h)),
+    }
+}
+
+fn other(e: impl ToString) -> Error {
+    Error::Other(e.to_string())
+}
+
+fn journal_path(dir: &Path) -> PathBuf {
+    dir.join(JOURNAL_NAME)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event")]
+enum JournalEvent {
+    #[serde(rename = "clf.ingest")]
+    Ingest { doc: ExtractedDocument },
+    #[serde(rename = "clf.score")]
+    Score { predictions: Vec<Prediction> },
+}
+
+fn append_event(dir: &Path, event: &JournalEvent) -> Result<()> {
+    let path = journal_path(dir);
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(other)?;
+    serde_json::to_writer(&mut f, event).map_err(other)?;
+    f.write_all(b"\n").map_err(other)?;
+    f.flush().map_err(other)?;
+    Ok(())
+}
+
+fn load_journal(dir: &Path) -> Result<(Vec<ExtractedDocument>, Vec<Prediction>)> {
+    let path = journal_path(dir);
+    if !path.exists() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let f = File::open(&path).map_err(other)?;
+    let reader = BufReader::new(f);
+    let mut docs = Vec::new();
+    let mut preds = Vec::new();
+    for line in reader.lines() {
+        let line = line.map_err(other)?;
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<JournalEvent>(&line).map_err(other)? {
+            JournalEvent::Ingest { doc } => docs.push(doc),
+            JournalEvent::Score { predictions } => preds = predictions,
+        }
+    }
+    Ok((docs, preds))
 }
