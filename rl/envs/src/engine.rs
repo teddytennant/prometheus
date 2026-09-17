@@ -714,10 +714,8 @@ fn parse_open_read(inner: &str) -> Option<String> {
     let t = t.strip_prefix("open(")?.trim_start();
     let (q, rest) = if let Some(r) = t.strip_prefix('"') {
         ('"', r)
-    } else if let Some(r) = t.strip_prefix('\'') {
-        ('\'', r)
     } else {
-        return None;
+        ('\'', t.strip_prefix('\'')?)
     };
     let end = rest.find(q)?;
     let path = rest[..end].to_string();
