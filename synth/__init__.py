@@ -1,4 +1,4 @@
-"""Synthetic data: rewrites (E1) and rejection sampling (E2).
+"""Synthetic data: rewrites (E1), rejection sampling (E2), procedural ARC (E3).
 
 E1: high-quality documents are rephrased in several styles (Kimi K2-style)
 and fact-checked against the source. Gate: supported-class precision of
@@ -6,6 +6,9 @@ and fact-checked against the source. Gate: supported-class precision of
 
 E2: reasoning traces sampled from F5 and kept only when a D2 verifier
 sets ``passed``. Gate: :func:`verified_correct_rate`.
+
+E3: re-arc-style grid families, 2D tokenization via F6 ``encode_grid``,
+dihedral × color-perm augmentation. Gate: :func:`diversity_stats`.
 
 The generator is F5's batch API (prompts, max_tokens, temperature) behind
 :class:`Generator`. Token counts use F6 encode length when a
@@ -25,6 +28,11 @@ DEFAULT_MAX_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_BATCH = 8
 DEFAULT_N_SAMPLES = 8
+N_COLORS = 10
+MIN_GRID_SIZE = 1
+MAX_GRID_SIZE = 30
+N_DIHEDRAL = 8
+DEFAULT_N_TRAIN = 3
 
 
 class SynthError(ValueError):
@@ -517,4 +525,251 @@ class RejectionSampler:
         ``problems``. Default ``n`` is ``config.n_samples``.
         """
         raise NotImplementedError("E2 RejectionSampler.sample_many")
+
+
+class Dihedral(StrEnum):
+    """D4 action. Indices 0..8: identity, rot90 CW, rot180, rot270 CW,
+    flip left-right, flip up-down, transpose, anti-transpose."""
+
+    IDENTITY = "identity"
+    ROT90 = "rot90"
+    ROT180 = "rot180"
+    ROT270 = "rot270"
+    FLIP_H = "flip_h"
+    FLIP_V = "flip_v"
+    TRANSPOSE = "transpose"
+    ANTI_TRANSPOSE = "anti_transpose"
+
+    def index(self) -> int:
+        return DIHEDRALS.index(self)
+
+    @classmethod
+    def from_index(cls, k: int) -> Dihedral:
+        if k < 0 or k >= len(DIHEDRALS):
+            raise SynthError(f"dihedral index {k} out of range")
+        return DIHEDRALS[k]
+
+
+DIHEDRALS: tuple[Dihedral, ...] = (
+    Dihedral.IDENTITY,
+    Dihedral.ROT90,
+    Dihedral.ROT180,
+    Dihedral.ROT270,
+    Dihedral.FLIP_H,
+    Dihedral.FLIP_V,
+    Dihedral.TRANSPOSE,
+    Dihedral.ANTI_TRANSPOSE,
+)
+
+
+class FamilyKind(StrEnum):
+    """Primitive generator kind. Distinct ``(kind, params)`` pairs are
+    distinct families.
+
+    * translate: ``dx``, ``dy``, ``bg``
+    * recolor: ``src``, ``dst``
+    * crop: ``bg``
+    * tile: ``nx``, ``ny``
+    * gravity: ``dir`` (0 down, 1 up, 2 left, 3 right), ``bg``
+    * mirror: ``dihedral`` (0..8)
+    * scale: ``factor`` (2 or 3)
+    * border: ``color``, ``width`` (1 or 2)
+    """
+
+    TRANSLATE = "translate"
+    RECOLOR = "recolor"
+    CROP = "crop"
+    TILE = "tile"
+    GRAVITY = "gravity"
+    MIRROR = "mirror"
+    SCALE = "scale"
+    BORDER = "border"
+
+
+FAMILY_KINDS: tuple[FamilyKind, ...] = tuple(FamilyKind)
+
+
+def _validate_grid_cells(cells: list[list[int]]) -> None:
+    if not cells or not cells[0]:
+        raise SynthError("empty grid")
+    rows = len(cells)
+    cols = len(cells[0])
+    if (
+        rows < MIN_GRID_SIZE
+        or rows > MAX_GRID_SIZE
+        or cols < MIN_GRID_SIZE
+        or cols > MAX_GRID_SIZE
+    ):
+        raise SynthError(f"grid size {rows}x{cols} out of range")
+    for row in cells:
+        if len(row) != cols:
+            raise SynthError("jagged grid")
+        for c in row:
+            if c < 0 or c >= N_COLORS:
+                raise SynthError(f"ARC color {c} out of range")
+
+
+@dataclass
+class Grid:
+    """One ARC-style grid. Cell values are palette indices in ``0..N_COLORS``.
+    Rectangular, rows and cols in ``MIN_GRID_SIZE..=MAX_GRID_SIZE``.
+    Structurally the D2 grid (``list[list[int]]``)."""
+
+    cells: list[list[int]]
+
+    def __post_init__(self) -> None:
+        _validate_grid_cells(self.cells)
+
+    def rows(self) -> int:
+        return len(self.cells)
+
+    def cols(self) -> int:
+        return len(self.cells[0]) if self.cells else 0
+
+    def flatten(self) -> list[int]:
+        """Row-major flatten. This is the F6 ``encode_grid`` input."""
+        return [c for row in self.cells for c in row]
+
+
+@dataclass
+class Pair:
+    """One input/output pair."""
+
+    input: Grid
+    output: Grid
+
+
+@dataclass
+class Task:
+    """One generated task. ``train`` are demonstrations; ``test`` is held out."""
+
+    family_id: str
+    seed: int
+    train: list[Pair]
+    test: Pair
+
+
+@dataclass(frozen=True)
+class FamilySpec:
+    """Parameterized family. ``params`` keys are documented on
+    :class:`FamilyKind`. ``family_id`` is ``"{kind}:{k}={v},..."`` with keys
+    sorted."""
+
+    kind: FamilyKind
+    params: tuple[tuple[str, int], ...] = ()
+
+    @staticmethod
+    def make(kind: FamilyKind, params: dict[str, int] | None = None) -> FamilySpec:
+        items = tuple(sorted((params or {}).items()))
+        return FamilySpec(kind=kind, params=items)
+
+    def family_id(self) -> str:
+        if not self.params:
+            return self.kind.value
+        body = ",".join(f"{k}={v}" for k, v in self.params)
+        return f"{self.kind.value}:{body}"
+
+    def params_dict(self) -> dict[str, int]:
+        return dict(self.params)
+
+
+@runtime_checkable
+class Family(Protocol):
+    """Generator for one family. ``generate`` is deterministic in ``seed``."""
+
+    def id(self) -> str: ...
+
+    def kind(self) -> FamilyKind: ...
+
+    def generate(self, seed: int) -> Task: ...
+
+
+@runtime_checkable
+class GridTokenizer(Protocol):
+    """F6 ``encode_grid``. Implementors wrap ``tokenizer.Tokenizer.encode_grid``."""
+
+    def encode_grid(self, cells: Sequence[int]) -> list[int]: ...
+
+
+@dataclass(frozen=True)
+class DiversityStats:
+    """Gate numbers. ``collision_rate`` is ``1 - unique_tasks / n_tasks``,
+    or 0.0 when ``n_tasks == 0``. Hashes are in-process identity of the
+    grid cells, not a stable digest."""
+
+    n_tasks: int
+    n_families: int
+    unique_test_inputs: int
+    unique_test_outputs: int
+    unique_tasks: int
+    color_histogram: tuple[int, ...]
+    unique_shapes: int
+    collision_rate: float
+
+
+def apply_dihedral(grid: Grid, dihedral: Dihedral) -> Grid:
+    """Apply a D4 action. ``rot90`` is clockwise. Output size swaps on rot90,
+    rot270, transpose, anti-transpose."""
+    raise NotImplementedError("E3 apply_dihedral")
+
+
+def apply_color_perm(grid: Grid, perm: Sequence[int]) -> Grid:
+    """``perm[c]`` is the new color of ``c``. Must be a permutation of
+    ``0..N_COLORS``."""
+    raise NotImplementedError("E3 apply_color_perm")
+
+
+def augment_pair(pair: Pair, dihedral: Dihedral, perm: Sequence[int]) -> Pair:
+    """Same dihedral and color perm on every grid in the pair."""
+    raise NotImplementedError("E3 augment_pair")
+
+
+def augment_task(task: Task, dihedral: Dihedral, perm: Sequence[int]) -> Task:
+    """Same dihedral and color perm on every grid in the task. ``family_id``
+    and ``seed`` are unchanged. Augmentation is a training-time view, not a
+    new family."""
+    raise NotImplementedError("E3 augment_task")
+
+
+def tokenize_grid(tok: GridTokenizer, grid: Grid) -> list[int]:
+    """F6 encode of ``grid.flatten()``."""
+    raise NotImplementedError("E3 tokenize_grid")
+
+
+def family_from_spec(spec: FamilySpec) -> Family:
+    """Construct a family from a spec. Unknown or invalid params raise
+    :class:`SynthError`."""
+    raise NotImplementedError("E3 family_from_spec")
+
+
+def sample_family_specs(n: int, seed: int) -> list[FamilySpec]:
+    """``n`` distinct specs from the parameter grid, deterministic in
+    ``seed``."""
+    raise NotImplementedError("E3 sample_family_specs")
+
+
+def diversity_stats(tasks: Sequence[Task]) -> DiversityStats:
+    """Gate: uniqueness and color/shape coverage over ``tasks``. Empty is
+    zeros and ``collision_rate == 0.0``."""
+    raise NotImplementedError("E3 diversity_stats")
+
+
+class ProceduralCorpus:
+    """A bag of families to sample from."""
+
+    def __init__(
+        self,
+        specs: Sequence[FamilySpec],
+        seed: int,
+        n_train: int = DEFAULT_N_TRAIN,
+    ) -> None:
+        self.specs = list(specs)
+        self.seed = seed
+        self.n_train = n_train
+
+    def sample(self, n: int) -> list[Task]:
+        """``n`` tasks, cycling specs, seeds ``seed + i``. Empty ``specs``
+        raises :class:`SynthError`. ``n == 0`` raises :class:`SynthError`.
+        """
+        raise NotImplementedError("E3 ProceduralCorpus.sample")
 

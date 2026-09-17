@@ -3,7 +3,7 @@ name = "prometheus-synth"
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-description = "Synthetic data: rewrites (E1) and rejection sampling (E2) (spec 7.1, 15.5)"
+description = "Synthetic data: rewrites (E1), rejection sampling (E2), procedural ARC (E3) (spec 7.1, 10, 15.5)"
 publish = false
 
 [dependencies]

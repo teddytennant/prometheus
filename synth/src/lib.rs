@@ -1,4 +1,4 @@
-//! Synthetic data: rewrites (E1) and rejection sampling (E2).
+//! Synthetic data: rewrites (E1), rejection sampling (E2), procedural ARC (E3).
 //!
 //! E1: high-quality documents are rephrased in several styles (Kimi K2-style)
 //! and fact-checked against the source. Gate: supported-class precision of
@@ -6,6 +6,9 @@
 //!
 //! E2: reasoning traces sampled from F5 and kept only when a D2 verifier
 //! sets `passed`. Gate: [`reject::verified_correct_rate`].
+//!
+//! E3: re-arc-style grid families, 2D tokenization via F6 `encode_grid`,
+//! dihedral × color-perm augmentation. Gate: [`arc::diversity_stats`].
 //!
 //! The generator is F5's batch API behind [`Generator`]. Token counts use F6
 //! encode length when a [`TokenCounter`] is provided.
@@ -22,6 +25,8 @@ pub const DEFAULT_MAX_BATCH: u32 = 8;
 
 mod reject;
 pub use reject::*;
+mod arc;
+pub use arc::*;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -37,6 +42,24 @@ pub enum Error {
     BatchTooLarge(u32),
     #[error("generator returned {got} completions for {want} prompts")]
     LengthMismatch { want: usize, got: usize },
+    #[error("empty grid")]
+    EmptyGrid,
+    #[error("jagged grid")]
+    JaggedGrid,
+    #[error("ARC color {0} out of range")]
+    BadColor(u8),
+    #[error("grid size {rows}x{cols} out of range")]
+    GridSize { rows: usize, cols: usize },
+    #[error("dihedral index {0} out of range")]
+    BadDihedral(u8),
+    #[error("color permutation is not a permutation of 0..10")]
+    BadPermutation,
+    #[error("empty train")]
+    EmptyTrain,
+    #[error("empty tasks")]
+    EmptyTasks,
+    #[error("unknown family")]
+    UnknownFamily,
     #[error("{0}")]
     Message(String),
 }
