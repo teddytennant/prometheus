@@ -14,7 +14,10 @@
 
 use std::collections::BTreeMap;
 
+use prometheus_envs::GRADER_ROOT;
+use prometheus_verifiers::{Mutant, TestRun};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub use prometheus_envs::{Image, NowMs};
@@ -30,6 +33,86 @@ pub const START_TOOL_CALLS: u32 = 10;
 /// Raise the horizon when the policy's success rate at the current cap
 /// exceeds this.
 pub const RAISE_THRESHOLD: f64 = 0.5;
+
+const CODE_HORIZON_S: u32 = 30;
+const SWE_HORIZON_S: u32 = 60;
+const MATH_HORIZON_S: u32 = 30;
+const CODE_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
+const SWE_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS * 2;
+const MATH_MAX_TOOL_CALLS: u32 = START_TOOL_CALLS;
+const CODE_TIMEOUT_S: u32 = 5;
+const SWE_TIMEOUT_S: u32 = 10;
+
+const MATH_VERIFIER_ID: &str = "symbolic-math";
+const CODE_VERIFIER_ID: &str = "sandboxed-tests";
+
+const HIDDEN_TEST_NAME: &str = "hidden.py";
+const HIDDEN_TEST_BODY: &[u8] = b"# hidden\nprint(open('/workspace/out.txt').read())\n";
+const PYTHON_CODE: &str = "print(open('/workspace/out.txt').read())";
+const CODE_MUTANT_ID: &str = "wrong-stdout";
+const SWE_MUTANT_ID: &str = "wrong-patch";
+const MUTANT_PATH: &str = "/workspace/out.txt";
+const CODE_MUTANT_BODY: &[u8] = b"WRONG\n";
+const SWE_MUTANT_BODY: &[u8] = b"WRONG_SWE\n";
+const SWE_REPO_PATH: &str = "/workspace/repo";
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex_lower(&Sha256::digest(bytes))
+}
+
+fn statement_hash(statement: &str) -> String {
+    sha256_hex(statement.as_bytes())
+}
+
+/// D1 hidden-tests hash: sorted `(path, NUL, bytes)` concatenation.
+fn hidden_files_hash(hidden: &BTreeMap<String, Vec<u8>>) -> String {
+    let mut h = Sha256::new();
+    for (path, bytes) in hidden {
+        h.update(path.as_bytes());
+        h.update([0u8]);
+        h.update(bytes);
+    }
+    hex_lower(&h.finalize())
+}
+
+fn math_expected(body: &str) -> String {
+    sha256_hex(format!("math-expected:{body}").as_bytes())
+}
+
+fn code_expected_stdout(body: &str) -> Vec<u8> {
+    sha256_hex(format!("code-stdout:{body}").as_bytes()).into_bytes()
+}
+
+fn swe_expected_stdout(body: &str) -> Vec<u8> {
+    sha256_hex(format!("swe-stdout:{body}").as_bytes()).into_bytes()
+}
+
+fn task_id(factory_id: &str, source_id: &str) -> String {
+    format!("{factory_id}:{source_id}")
+}
+
+fn image_id(factory_id: &str, source_id: &str) -> String {
+    format!("img:{factory_id}:{source_id}")
+}
+
+fn hidden_test_path() -> String {
+    format!("{GRADER_ROOT}/{HIDDEN_TEST_NAME}")
+}
+
+fn python_payload() -> serde_json::Value {
+    serde_json::json!({ "code": PYTHON_CODE })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FactoryId(pub String);
@@ -234,20 +317,52 @@ impl SolveRateFilter {
     /// reply still counts as `n` samples; the implementer scores each
     /// attempt with the attached D2 verifier.
     pub fn probe<S: Solver>(
-        _solver: &mut S,
-        _task: &MintedTask,
-        _n: u32,
-        _now: NowMs,
+        solver: &mut S,
+        task: &MintedTask,
+        n: u32,
+        now: NowMs,
     ) -> Result<SolveRate> {
-        unimplemented!("D3: SolveRateFilter::probe")
+        if n == 0 {
+            return Err(Error::BadN);
+        }
+        let mut passed = 0u32;
+        for _ in 0..n {
+            let attempt = solver.attempt(task.statement(), now)?;
+            if score_attempt(task, &attempt)? {
+                passed = passed.saturating_add(1);
+            }
+        }
+        Ok(SolveRate { passed, n })
     }
 
     /// Keep only when [`SolveRate::in_open_interval`]. 0% is
     /// [`Error::Impossible`]. 100% is [`Error::Trivial`]. `n == 0` is
     /// [`Error::BadN`].
-    pub fn keep(_rate: SolveRate) -> Result<SolveRate> {
-        unimplemented!("D3: SolveRateFilter::keep")
+    pub fn keep(rate: SolveRate) -> Result<SolveRate> {
+        if rate.n == 0 {
+            return Err(Error::BadN);
+        }
+        if rate.passed == 0 {
+            return Err(Error::Impossible);
+        }
+        if rate.passed >= rate.n {
+            return Err(Error::Trivial);
+        }
+        Ok(rate)
     }
+}
+
+/// Math: attempt equals `MathTask.expected`.
+/// Code: attempt bytes equal `TestRun.expected_stdout`.
+/// Neither payload: [`Error::Unverifiable`]. Math wins if both are set.
+fn score_attempt(task: &MintedTask, attempt: &str) -> Result<bool> {
+    if let Some(math) = &task.math {
+        return Ok(attempt == math.expected);
+    }
+    if let Some(code) = &task.code {
+        return Ok(attempt.as_bytes() == code.run.expected_stdout.as_slice());
+    }
+    Err(Error::Unverifiable("no D2 payload".into()))
 }
 
 /// Tool-call curriculum (spec 9.4). Starts at [`START_TOOL_CALLS`].
@@ -268,8 +383,10 @@ impl Horizon {
     }
 
     /// Raise when `success_rate > RAISE_THRESHOLD`. No-op otherwise.
-    pub fn raise_if(&mut self, _success_rate: f64) {
-        unimplemented!("D3: Horizon::raise_if")
+    pub fn raise_if(&mut self, success_rate: f64) {
+        if success_rate > RAISE_THRESHOLD {
+            self.tool_calls = self.tool_calls.saturating_mul(2);
+        }
     }
 }
 
@@ -283,6 +400,7 @@ impl Default for Horizon {
 pub struct CodeFactory {
     id: FactoryId,
     sources: Vec<Source>,
+    cursor: usize,
 }
 
 impl CodeFactory {
@@ -290,6 +408,7 @@ impl CodeFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -301,8 +420,19 @@ impl CodeFactory {
         &self.sources
     }
 
-    pub fn mint(&mut self, _now: NowMs, _created_at: &str) -> Result<MintedTask> {
-        unimplemented!("D3: CodeFactory::mint")
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_code(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -311,6 +441,7 @@ impl CodeFactory {
 pub struct SweFactory {
     id: FactoryId,
     sources: Vec<Source>,
+    cursor: usize,
 }
 
 impl SweFactory {
@@ -318,6 +449,7 @@ impl SweFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -329,8 +461,19 @@ impl SweFactory {
         &self.sources
     }
 
-    pub fn mint(&mut self, _now: NowMs, _created_at: &str) -> Result<MintedTask> {
-        unimplemented!("D3: SweFactory::mint")
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_swe(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -338,6 +481,7 @@ impl SweFactory {
 pub struct MathFactory {
     id: FactoryId,
     sources: Vec<Source>,
+    cursor: usize,
 }
 
 impl MathFactory {
@@ -345,6 +489,7 @@ impl MathFactory {
         Self {
             id: FactoryId(id.into()),
             sources,
+            cursor: 0,
         }
     }
 
@@ -356,8 +501,19 @@ impl MathFactory {
         &self.sources
     }
 
-    pub fn mint(&mut self, _now: NowMs, _created_at: &str) -> Result<MintedTask> {
-        unimplemented!("D3: MathFactory::mint")
+    pub fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
+        let _ = now;
+        if self.sources.is_empty() {
+            return Err(Error::EmptyCatalog);
+        }
+        let i = self.cursor;
+        let source = &self.sources[i];
+        if source.body.is_empty() {
+            return Err(Error::EmptyStatement);
+        }
+        let minted = mint_math(&self.id.0, source, created_at);
+        self.cursor = (i + 1) % self.sources.len();
+        Ok(minted)
     }
 }
 
@@ -407,6 +563,141 @@ impl Factory for MathFactory {
     fn mint(&mut self, now: NowMs, created_at: &str) -> Result<MintedTask> {
         MathFactory::mint(self, now, created_at)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spec(
+    factory_id: &str,
+    source: &Source,
+    domain: TaskDomain,
+    statement: &str,
+    hidden_tests_hash: String,
+    verifier_id: &str,
+    env_image: Option<String>,
+    horizon_s: u32,
+    max_tool_calls: u32,
+    created_at: &str,
+) -> TaskSpec {
+    TaskSpec {
+        schema_id: SCHEMA_TASK_SPEC.to_string(),
+        schema_version: SCHEMA_VERSION,
+        task_id: task_id(factory_id, &source.id),
+        domain,
+        split: Split::Train,
+        statement_hash: statement_hash(statement),
+        hidden_tests_hash,
+        verifier_id: verifier_id.to_string(),
+        env_image,
+        horizon_s,
+        max_tool_calls,
+        provenance: source.provenance.clone(),
+        created_at: created_at.to_string(),
+    }
+}
+
+fn mint_math(factory_id: &str, source: &Source, created_at: &str) -> MintedTask {
+    let statement = source.body.clone();
+    let expected = math_expected(&source.body);
+    let hidden = sha256_hex(expected.as_bytes());
+    MintedTask {
+        spec: spec(
+            factory_id,
+            source,
+            TaskDomain::Math,
+            &statement,
+            hidden,
+            MATH_VERIFIER_ID,
+            None,
+            MATH_HORIZON_S,
+            MATH_MAX_TOOL_CALLS,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::SymbolicMath,
+        verifier_id: VerifierId(MATH_VERIFIER_ID.to_string()),
+        statement,
+        code: None,
+        math: Some(MathTask::new(expected)),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mint_sandboxed(
+    factory_id: &str,
+    source: &Source,
+    created_at: &str,
+    horizon_s: u32,
+    max_tool_calls: u32,
+    timeout_s: u32,
+    expected_stdout: Vec<u8>,
+    mutant_id: &str,
+    mutant_body: &[u8],
+    extra_agent: Option<(&str, Vec<u8>)>,
+) -> MintedTask {
+    let statement = source.body.clone();
+    let mut image = Image::new(image_id(factory_id, &source.id));
+    image
+        .hidden_tests
+        .insert(hidden_test_path(), HIDDEN_TEST_BODY.to_vec());
+    if let Some((path, bytes)) = extra_agent {
+        image.agent_files.insert(path.to_string(), bytes);
+    }
+    image.hidden_tests_hash = hidden_files_hash(&image.hidden_tests);
+    let hidden_hash = image.hidden_tests_hash.clone();
+    let env_image = Some(image.id.0.clone());
+    let run = TestRun::python(python_payload(), timeout_s, expected_stdout);
+    let mut code = CodeTask::new(image, run);
+    let mut files = BTreeMap::new();
+    files.insert(MUTANT_PATH.to_string(), mutant_body.to_vec());
+    code.mutants.push(Mutant::new(mutant_id, files));
+    MintedTask {
+        spec: spec(
+            factory_id,
+            source,
+            TaskDomain::Code,
+            &statement,
+            hidden_hash,
+            CODE_VERIFIER_ID,
+            env_image,
+            horizon_s,
+            max_tool_calls,
+            created_at,
+        ),
+        verifier_kind: VerifierKind::SandboxedTests,
+        verifier_id: VerifierId(CODE_VERIFIER_ID.to_string()),
+        statement,
+        code: Some(code),
+        math: None,
+    }
+}
+
+fn mint_code(factory_id: &str, source: &Source, created_at: &str) -> MintedTask {
+    mint_sandboxed(
+        factory_id,
+        source,
+        created_at,
+        CODE_HORIZON_S,
+        CODE_MAX_TOOL_CALLS,
+        CODE_TIMEOUT_S,
+        code_expected_stdout(&source.body),
+        CODE_MUTANT_ID,
+        CODE_MUTANT_BODY,
+        None,
+    )
+}
+
+fn mint_swe(factory_id: &str, source: &Source, created_at: &str) -> MintedTask {
+    mint_sandboxed(
+        factory_id,
+        source,
+        created_at,
+        SWE_HORIZON_S,
+        SWE_MAX_TOOL_CALLS,
+        SWE_TIMEOUT_S,
+        swe_expected_stdout(&source.body),
+        SWE_MUTANT_ID,
+        SWE_MUTANT_BODY,
+        Some((SWE_REPO_PATH, source.body.as_bytes().to_vec())),
+    )
 }
 
 #[derive(Debug, Error, PartialEq)]
