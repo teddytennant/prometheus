@@ -1,0 +1,20 @@
+[package]
+name = "prometheus-chaos"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Chaos suite: kill, partition, outage, disk, clock; D0-D5 and 72h soak"
+publish = false
+
+[dependencies]
+prometheus-log = { path = "../log" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+gpu = []

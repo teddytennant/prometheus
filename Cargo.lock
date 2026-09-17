@@ -1127,6 +1127,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-chaos"
+version = "0.0.1"
+dependencies = [
+ "prometheus-log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-contracts"
 version = "0.0.1"
 dependencies = [
