@@ -66,23 +66,7 @@ impl Engine {
     }
 
     pub(crate) fn register_image(&mut self, mut image: Image) -> Result<ImageId> {
-        for name in image.env.keys() {
-            if credential_like_key(name) {
-                return Err(Error::CredentialInSandbox {
-                    name: name.clone(),
-                });
-            }
-        }
-        for path in image.hidden_tests.keys() {
-            if !is_grader_path(path) {
-                return Err(Error::HiddenTestsVisible);
-            }
-        }
-        for path in image.agent_files.keys() {
-            if is_grader_path(path) {
-                return Err(Error::HiddenTestsVisible);
-            }
-        }
+        check_image_isolation(&image)?;
         image.hidden_tests_hash = hidden_tests_hash(&image.hidden_tests);
         let id = image.id.clone();
         self.images.insert(id.0.clone(), image);
@@ -104,6 +88,7 @@ impl Engine {
     }
 
     pub(crate) fn boot(&mut self, image: &Image, _now: NowMs) -> Result<SandboxId> {
+        check_image_isolation(image)?;
         if self.live_count() + 1 > self.cfg.capacity {
             return Err(Error::PoolExhausted {
                 capacity: self.cfg.capacity,
@@ -132,6 +117,11 @@ impl Engine {
             .ok_or(Error::SnapshotNotFound)?;
         let files = snap.files.clone();
         let env = snap.env.clone();
+        if self.live_count() + 1 > self.cfg.capacity {
+            return Err(Error::PoolExhausted {
+                capacity: self.cfg.capacity,
+            });
+        }
         let id = SandboxId(self.alloc("sb"));
         self.sandboxes.insert(
             id.0.clone(),
@@ -588,6 +578,27 @@ impl Engine {
         stdout.push('\n');
         Ok(self.ok_resp(req, stdout.as_bytes(), Some(child.0)))
     }
+}
+
+fn check_image_isolation(image: &Image) -> Result<()> {
+    for name in image.env.keys() {
+        if credential_like_key(name) {
+            return Err(Error::CredentialInSandbox {
+                name: name.clone(),
+            });
+        }
+    }
+    for path in image.hidden_tests.keys() {
+        if !is_grader_path(path) {
+            return Err(Error::HiddenTestsVisible);
+        }
+    }
+    for path in image.agent_files.keys() {
+        if is_grader_path(path) {
+            return Err(Error::HiddenTestsVisible);
+        }
+    }
+    Ok(())
 }
 
 fn credential_like_key(name: &str) -> bool {
