@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod store;
+
 pub type NowMs = u64;
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -87,26 +89,29 @@ pub fn is_held_out_suite(slug: &str) -> bool {
 }
 
 pub struct EvalGate {
-    _private: (),
+    store: store::Store,
 }
 
 impl EvalGate {
-    pub fn open(_cfg: GateConfig) -> Result<Self> {
-        unimplemented!("L2 EvalGate::open")
+    pub fn open(cfg: GateConfig) -> Result<Self> {
+        Ok(Self {
+            store: store::Store::open(cfg)?,
+        })
     }
 
     /// Run `suite` on `subject` at fixed compute. Returns [`Scores`] only.
-    pub fn request(&self, _subject: Subject, _suite: &str, _now: NowMs) -> Result<Scores> {
-        unimplemented!("L2 EvalGate::request")
+    pub fn request(&self, subject: Subject, suite: &str, now: NowMs) -> Result<Scores> {
+        let _ = now;
+        self.store.request(subject, suite)
     }
 
     /// Install a new held-out suite written after `cutoff_ms`. Previous
     /// suite hashes stay queryable; item bodies do not.
-    pub fn rotate(&mut self, _suite: &str, _cutoff_ms: NowMs, _now: NowMs) -> Result<String> {
-        unimplemented!("L2 EvalGate::rotate")
+    pub fn rotate(&mut self, suite: &str, cutoff_ms: NowMs, now: NowMs) -> Result<String> {
+        self.store.rotate(suite, cutoff_ms, now)
     }
 
-    pub fn suite_hash(&self, _suite: &str) -> Result<String> {
-        unimplemented!("L2 EvalGate::suite_hash")
+    pub fn suite_hash(&self, suite: &str) -> Result<String> {
+        self.store.suite_hash(suite)
     }
 }
