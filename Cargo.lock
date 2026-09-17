@@ -1378,6 +1378,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-tokenizer"
+version = "0.0.1"
+dependencies = [
+ "prometheus-contracts",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-verifiers"
 version = "0.0.1"
 dependencies = [
