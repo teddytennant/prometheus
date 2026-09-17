@@ -1207,6 +1207,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-kernel"
+version = "0.0.1"
+dependencies = [
+ "prometheus-ledger",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-leases"
 version = "0.0.1"
 dependencies = [

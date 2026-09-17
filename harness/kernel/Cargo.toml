@@ -1,0 +1,12 @@
+[package]
+name = "prometheus-kernel"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Lab capability API, budgets, fetch mirror, promote (spec 15.5 L1)"
+publish = false
+
+[dependencies]
+prometheus-ledger = { path = "../ledger" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
