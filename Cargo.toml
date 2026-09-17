@@ -7,6 +7,7 @@ members = [
     "data/extract",
     "data/loader",
     "data/mixture",
+    "harness/cas",
     "harness/ledger",
     "harness/leases",
     "harness/log",
