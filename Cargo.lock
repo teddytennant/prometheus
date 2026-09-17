@@ -1248,6 +1248,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-providers"
+version = "0.0.1"
+dependencies = [
+ "prometheus-raft",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-raft"
 version = "0.0.1"
 dependencies = [
