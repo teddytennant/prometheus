@@ -10,8 +10,8 @@ use std::path::Path;
 
 use prometheus_contracts::validate;
 use prometheus_tokenizer::{
-    baseline_byte_tokens_per_word, ALGORITHM, ARC_N_COLORS, PRODUCTION_VOCAB_SIZE, SCHEMA_ID,
-    SCHEMA_VERSION, VOCAB_SCHEMA_ID, Error, Tokenizer, TrainConfig,
+    baseline_byte_tokens_per_word, Error, Tokenizer, TrainConfig, ALGORITHM, ARC_N_COLORS,
+    PRODUCTION_VOCAB_SIZE, SCHEMA_ID, SCHEMA_VERSION, VOCAB_SCHEMA_ID,
 };
 use serde_json::{json, Map, Value};
 
@@ -117,11 +117,14 @@ fn vocab_contract(pointer: &prometheus_tokenizer::VocabPointer) -> Value {
 
 #[test]
 fn train_rejects_vocab_too_small_to_fit_specials_bytes_and_arc() {
-    let err = Tokenizer::train(["hello"], &TrainConfig {
-        tokenizer_id: "tiny-bpe-test".into(),
-        vocab_size: 10,
-        byte_fallback: true,
-    })
+    let err = Tokenizer::train(
+        ["hello"],
+        &TrainConfig {
+            tokenizer_id: "tiny-bpe-test".into(),
+            vocab_size: 10,
+            byte_fallback: true,
+        },
+    )
     .unwrap_err();
     assert!(matches!(err, Error::VocabTooSmall(10)));
 }
@@ -129,22 +132,28 @@ fn train_rejects_vocab_too_small_to_fit_specials_bytes_and_arc() {
 #[test]
 fn train_rejects_vocab_without_a_merge_slot() {
     assert_eq!(MIN_VOCAB_SIZE, 4u32 + N_BYTES + ARC_N_COLORS + 1);
-    let err = Tokenizer::train(["hello"], &TrainConfig {
-        tokenizer_id: "tiny-bpe-test".into(),
-        vocab_size: FIRST_MERGE,
-        byte_fallback: true,
-    })
+    let err = Tokenizer::train(
+        ["hello"],
+        &TrainConfig {
+            tokenizer_id: "tiny-bpe-test".into(),
+            vocab_size: FIRST_MERGE,
+            byte_fallback: true,
+        },
+    )
     .unwrap_err();
     assert!(matches!(err, Error::VocabTooSmall(_)));
 }
 
 #[test]
 fn train_rejects_byte_fallback_false() {
-    let err = Tokenizer::train(["hello"], &TrainConfig {
-        tokenizer_id: "tiny-bpe-test".into(),
-        vocab_size: 320,
-        byte_fallback: false,
-    });
+    let err = Tokenizer::train(
+        ["hello"],
+        &TrainConfig {
+            tokenizer_id: "tiny-bpe-test".into(),
+            vocab_size: 320,
+            byte_fallback: false,
+        },
+    );
     assert!(err.is_err());
 }
 
@@ -225,7 +234,10 @@ fn golden_sequences_match_independent_reference() {
     let reference = ReferenceTokenizer::train(&docs, &cfg).unwrap();
     assert_eq!(reference.encode("hello").unwrap(), GOLDEN_HELLO);
     let tok = Tokenizer::train(&docs, &cfg).unwrap();
-    assert_eq!(tok.encode("hello").unwrap(), reference.encode("hello").unwrap());
+    assert_eq!(
+        tok.encode("hello").unwrap(),
+        reference.encode("hello").unwrap()
+    );
     assert_eq!(
         tok.encode("hello hello world").unwrap(),
         reference.encode("hello hello world").unwrap()
@@ -470,11 +482,7 @@ fn save_load_roundtrip_and_artifact_hash() {
     assert_eq!(saved["schema_version"], json!(SCHEMA_VERSION));
     validate(&saved).expect("saved tokenizer.json");
 
-    let vocab_name = pointer
-        .artifact
-        .path
-        .as_deref()
-        .unwrap_or(VOCAB_FILENAME);
+    let vocab_name = pointer.artifact.path.as_deref().unwrap_or(VOCAB_FILENAME);
     let vocab_file = dir.path().join(vocab_name);
     assert!(vocab_file.is_file());
     let blob = std::fs::read(&vocab_file).unwrap();
@@ -494,7 +502,9 @@ fn save_load_roundtrip_and_artifact_hash() {
     assert_eq!(loaded.meta.frozen_at.as_deref(), Some(FROZEN_AT));
     assert_eq!(loaded.encode("hello hello world").unwrap(), before);
     assert_eq!(
-        loaded.decode(&loaded.encode("café naïve").unwrap()).unwrap(),
+        loaded
+            .decode(&loaded.encode("café naïve").unwrap())
+            .unwrap(),
         "café naïve"
     );
     assert_eq!(

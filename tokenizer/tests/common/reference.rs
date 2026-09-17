@@ -10,8 +10,8 @@ use std::fs;
 use std::path::Path;
 
 use prometheus_tokenizer::{
-    ALGORITHM, ARC_N_COLORS, SCHEMA_ID, SCHEMA_VERSION, VOCAB_SCHEMA_ID, ArcGridTokenRange,
-    Artifact, Error, SpecialTokens, TokenizerMeta, TrainConfig, VocabPointer,
+    ArcGridTokenRange, Artifact, Error, SpecialTokens, TokenizerMeta, TrainConfig, VocabPointer,
+    ALGORITHM, ARC_N_COLORS, SCHEMA_ID, SCHEMA_VERSION, VOCAB_SCHEMA_ID,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -165,7 +165,9 @@ fn artifact_bytes(
     let mut lines = Vec::new();
     let ids = [specials.bos, specials.eos, specials.pad, specials.unk];
     for (name, id) in REQUIRED_SPECIALS.iter().zip(ids) {
-        lines.push(canonical_json(&json!({"id": id, "kind": "special", "name": name})));
+        lines.push(canonical_json(
+            &json!({"id": id, "kind": "special", "name": name}),
+        ));
     }
     for byte in 0..=255u8 {
         lines.push(canonical_json(&json!({
