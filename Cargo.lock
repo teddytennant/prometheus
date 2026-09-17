@@ -1183,6 +1183,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-envs"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-extract"
 version = "0.0.1"
 dependencies = [

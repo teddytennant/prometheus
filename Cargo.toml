@@ -20,6 +20,7 @@ members = [
     "harness/raft",
     "harness/slurm",
     "obs",
+    "rl/envs",
     "serve",
     "verify/ncshare",
 ]
