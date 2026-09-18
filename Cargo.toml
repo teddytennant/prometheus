@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/contracts",
     "ckpt",
+    "control",
     "data/classifiers",
     "data/dedup",
     "data/decontam",

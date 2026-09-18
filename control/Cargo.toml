@@ -1,0 +1,11 @@
+[package]
+name = "prometheus-control"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Elastic DP, health, stragglers, SDC, spike rollback (spec 15.5 A6)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

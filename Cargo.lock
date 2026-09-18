@@ -1172,6 +1172,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-control"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-decontam"
 version = "0.0.1"
 dependencies = [
