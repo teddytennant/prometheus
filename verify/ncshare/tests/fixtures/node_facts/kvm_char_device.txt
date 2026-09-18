@@ -1,0 +1,3 @@
+# node facts from a compute node (ls -l /dev/kvm)
+crw-rw---- 1 root kvm 10, 232 Jan  1 00:00 /dev/kvm
+nvme0n1: present

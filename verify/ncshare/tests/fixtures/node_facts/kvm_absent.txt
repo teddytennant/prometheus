@@ -1,0 +1,2 @@
+ls: cannot access '/dev/kvm': No such file or directory
+stat: cannot stat '/dev/kvm': No such file or directory

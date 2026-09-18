@@ -1,0 +1,3 @@
+hostname: node0
+kvm: no
+nvme: /dev/nvme0n1

@@ -1,0 +1,5 @@
+#                                                       out-of-place                       in-place          
+#       size         count      type   redop    root     time   algbw   busbw #wrong     time   algbw   busbw #wrong
+#        (B)    (elements)                               (us)  (GB/s)  (GB/s)            (us)  (GB/s)  (GB/s)       
+# Out of bounds values : 0 OK
+# Avg bus bandwidth    : 0.000000
