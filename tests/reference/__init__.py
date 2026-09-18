@@ -5,4 +5,5 @@ I5 (latent).
 I9 (audit).
 V1 (v1_parity).
 V2 (v2_parallel).
+V3 (v3_precision).
 """
