@@ -8,14 +8,16 @@
 //! 8-GPU windows (V2, V5) are real: the caller stops gpu-opportunist
 //! around them. Allowed day-to-day counts stay 1, 2, or 4 (H7).
 //!
-//! V-stage exit checks are written by the oracle, not by this interface.
-//! Every checker here is `unimplemented!`.
-//!
 //! Job-name prefix is `fv-`, matching H7.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+mod check;
+mod kvm;
+mod parse;
+mod render;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -195,24 +197,20 @@ pub fn template_path(stage: Stage) -> PathBuf {
 
 /// Rendered job script. Substitutes run-id, walltime, gpus into the template.
 pub fn render_job(stage: Stage, run_id: &str, walltime: &str, gpus: u32) -> Result<String> {
-    let _ = (stage, run_id, walltime, gpus);
-    unimplemented!("F4 render_job")
+    render::render_job(stage, run_id, walltime, gpus)
 }
 
 /// Read the job output dir and decide pass/fail from the files, never a summary.
 pub fn check_exit(stage: Stage, output_dir: &Path) -> Result<()> {
-    let _ = (stage, output_dir);
-    unimplemented!("F4 check_exit")
+    check::check_exit(stage, output_dir)
 }
 
 /// Parse a measured bus-bandwidth number from nccl-tests stdout. V0.
 pub fn parse_busbw_gbps(nccl_stdout: &str) -> Result<f64> {
-    let _ = nccl_stdout;
-    unimplemented!("F4 parse_busbw_gbps")
+    parse::parse_busbw_gbps(nccl_stdout)
 }
 
 /// True if `/dev/kvm` is present in the recorded node facts. V0 Firecracker gate.
 pub fn kvm_available(node_facts: &str) -> Result<bool> {
-    let _ = node_facts;
-    unimplemented!("F4 kvm_available")
+    kvm::kvm_available(node_facts)
 }
