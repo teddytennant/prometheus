@@ -23,6 +23,7 @@
 //!   experts. This crate does not replay them.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Optimizer / policy version. Monotonic. Starts at 0.
 pub type PolicyVersion = u64;
@@ -156,59 +157,180 @@ pub enum CoordError {
 pub type Result<T> = std::result::Result<T, CoordError>;
 
 /// `trainer_version - batch_version`. Errors if the batch is from the future.
-pub fn staleness(_trainer_version: PolicyVersion, _batch_version: PolicyVersion) -> Result<u64> {
-    unimplemented!("I2: staleness")
+pub fn staleness(trainer_version: PolicyVersion, batch_version: PolicyVersion) -> Result<u64> {
+    if batch_version > trainer_version {
+        return Err(CoordError::FromTheFuture);
+    }
+    Ok(trainer_version - batch_version)
+}
+
+fn target_rollout_gpus(total_gpus: u64, numer: u64, denom: u64) -> u64 {
+    ((total_gpus as u128) * (numer as u128) / (denom as u128)) as u64
+}
+
+struct Rack {
+    gpus: u64,
+    role: RackRole,
+    /// `Some` iff `role == Rollout`.
+    version: Option<PolicyVersion>,
 }
 
 /// Async RL coordinator. CPU tests drive a handful of simulated racks.
 pub struct Coordinator {
-    _private: (),
+    config: CoordinatorConfig,
+    /// Lexicographically sorted rack ids.
+    order: Vec<RackId>,
+    racks: HashMap<RackId, Rack>,
+    trainer_version: PolicyVersion,
+    halted: bool,
+    queue: VecDeque<RolloutBatch>,
+    total_gpus: u64,
 }
 
 impl Coordinator {
     /// Assigns racks toward the 65/35 GPU split. Requires at least
     /// `min_rollout_racks + min_trainer_racks` racks, each with `gpus > 0`.
-    pub fn new(_config: CoordinatorConfig, _racks: Vec<RackSpec>) -> Result<Self> {
-        unimplemented!("I2: Coordinator::new")
+    pub fn new(config: CoordinatorConfig, racks: Vec<RackSpec>) -> Result<Self> {
+        if racks.is_empty() {
+            return Err(CoordError::EmptyFleet);
+        }
+        let mut seen: HashSet<RackId> = HashSet::new();
+        for r in &racks {
+            if !seen.insert(r.id.clone()) {
+                return Err(CoordError::DuplicateRack(r.id.clone()));
+            }
+        }
+        for r in &racks {
+            if r.gpus == 0 {
+                return Err(CoordError::Message(format!(
+                    "rack {:?} has 0 gpus; each rack must have gpus > 0",
+                    r.id
+                )));
+            }
+        }
+        if config.rollout_denom == 0 || config.rollout_numer > config.rollout_denom {
+            return Err(CoordError::BadSplit);
+        }
+        if racks.len()
+            < config
+                .min_rollout_racks
+                .saturating_add(config.min_trainer_racks)
+        {
+            return Err(CoordError::NotEnoughRacks);
+        }
+
+        let mut sorted = racks;
+        sorted.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        let n = sorted.len();
+        let mut total_gpus: u64 = 0;
+        for r in &sorted {
+            total_gpus = total_gpus.saturating_add(r.gpus);
+        }
+        let target = target_rollout_gpus(total_gpus, config.rollout_numer, config.rollout_denom);
+
+        // Longest lex prefix with sum <= target and leftover racks for min_trainer.
+        let mut n_rollout = 0usize;
+        let mut running: u128 = 0;
+        for (i, r) in sorted.iter().enumerate() {
+            let remaining_after = n - i - 1;
+            let next = running + r.gpus as u128;
+            if next <= target as u128 && remaining_after >= config.min_trainer_racks {
+                running = next;
+                n_rollout += 1;
+            } else {
+                break;
+            }
+        }
+        // Honor min_rollout even if it overshoots the GPU target.
+        while n_rollout < config.min_rollout_racks {
+            let n_trainer = n - n_rollout;
+            if n_trainer <= config.min_trainer_racks {
+                break;
+            }
+            n_rollout += 1;
+        }
+
+        let mut map = HashMap::new();
+        let mut order = Vec::with_capacity(n);
+        for (i, spec) in sorted.into_iter().enumerate() {
+            let role = if i < n_rollout {
+                RackRole::Rollout
+            } else {
+                RackRole::Trainer
+            };
+            let version = match role {
+                RackRole::Rollout => Some(0),
+                RackRole::Trainer => None,
+            };
+            order.push(spec.id.clone());
+            map.insert(
+                spec.id,
+                Rack {
+                    gpus: spec.gpus,
+                    role,
+                    version,
+                },
+            );
+        }
+
+        Ok(Self {
+            config,
+            order,
+            racks: map,
+            trainer_version: 0,
+            halted: false,
+            queue: VecDeque::new(),
+            total_gpus,
+        })
     }
 
     pub fn state(&self) -> Result<CoordinatorState> {
-        unimplemented!("I2: Coordinator::state")
+        if self.halted {
+            Ok(CoordinatorState::Halted)
+        } else {
+            Ok(CoordinatorState::Running)
+        }
     }
 
     pub fn halted(&self) -> Result<bool> {
-        unimplemented!("I2: Coordinator::halted")
+        Ok(self.halted)
     }
 
     pub fn trainer_version(&self) -> Result<PolicyVersion> {
-        unimplemented!("I2: Coordinator::trainer_version")
+        Ok(self.trainer_version)
     }
 
     /// Last version pushed onto this rollout rack. Trainer racks error
     /// [`CoordError::NotRollout`].
-    pub fn rack_version(&self, _id: &RackId) -> Result<PolicyVersion> {
-        unimplemented!("I2: Coordinator::rack_version")
+    pub fn rack_version(&self, id: &RackId) -> Result<PolicyVersion> {
+        let r = self.lookup(id)?;
+        match r.version {
+            Some(v) => Ok(v),
+            None => Err(CoordError::NotRollout(id.clone())),
+        }
     }
 
-    pub fn rack_role(&self, _id: &RackId) -> Result<RackRole> {
-        unimplemented!("I2: Coordinator::rack_role")
+    pub fn rack_role(&self, id: &RackId) -> Result<RackRole> {
+        Ok(self.lookup(id)?.role)
     }
 
     /// `(rollout_gpus, trainer_gpus)`.
     pub fn split_gpus(&self) -> Result<(u64, u64)> {
-        unimplemented!("I2: Coordinator::split_gpus")
+        let ro = self.gpu_sum(RackRole::Rollout);
+        let tr = self.gpu_sum(RackRole::Trainer);
+        Ok((ro, tr))
     }
 
     pub fn n_rollout_racks(&self) -> Result<usize> {
-        unimplemented!("I2: Coordinator::n_rollout_racks")
+        Ok(self.n_role(RackRole::Rollout))
     }
 
     pub fn n_trainer_racks(&self) -> Result<usize> {
-        unimplemented!("I2: Coordinator::n_trainer_racks")
+        Ok(self.n_role(RackRole::Trainer))
     }
 
     pub fn queue_depth(&self) -> Result<usize> {
-        unimplemented!("I2: Coordinator::queue_depth")
+        Ok(self.queue.len())
     }
 
     /// Move at most one rack. Queue empty prefers more rollout. Depth at or
@@ -216,29 +338,102 @@ impl Coordinator {
     /// Otherwise move toward `rollout_numer / rollout_denom`. Never breaks
     /// the min-rack floors. `None` if already at target or a floor blocks.
     pub fn rebalance(&mut self) -> Result<Option<(RackId, RackRole)>> {
-        unimplemented!("I2: Coordinator::rebalance")
+        self.halt_guard()?;
+        let depth = self.queue.len();
+        // Rule 1: empty queue prefers rollout (GPU target ignored).
+        if depth == 0 {
+            if let Some(id) = self.move_trainer_to_rollout() {
+                return Ok(Some((id, RackRole::Rollout)));
+            }
+        }
+        // Rule 2: queue_high pressure prefers trainer. queue_high == 0 never
+        // uses this rule.
+        if self.config.queue_high > 0 && depth >= self.config.queue_high {
+            if let Some(id) = self.move_rollout_to_trainer() {
+                return Ok(Some((id, RackRole::Trainer)));
+            }
+        }
+        let ro = self.gpu_sum(RackRole::Rollout);
+        let target = self.target();
+        // Rule 3.
+        if ro < target {
+            if let Some(id) = self.move_trainer_to_rollout() {
+                return Ok(Some((id, RackRole::Rollout)));
+            }
+        } else if ro > target {
+            // Rule 4.
+            if let Some(id) = self.move_rollout_to_trainer() {
+                return Ok(Some((id, RackRole::Trainer)));
+            }
+        }
+        Ok(None)
     }
 
     /// Rollout engines produce a group. Duplicate ids error. Halted errors.
-    pub fn enqueue_batch(&mut self, _batch: RolloutBatch) -> Result<()> {
-        unimplemented!("I2: Coordinator::enqueue_batch")
+    pub fn enqueue_batch(&mut self, batch: RolloutBatch) -> Result<()> {
+        self.halt_guard()?;
+        if batch.n_samples == 0 {
+            return Err(CoordError::EmptyGroup);
+        }
+        if batch.id.0.is_empty() {
+            return Err(CoordError::Message("batch id must be non-empty".into()));
+        }
+        if batch.prompt_id.0.is_empty() {
+            return Err(CoordError::Message("prompt id must be non-empty".into()));
+        }
+        if self.queue.iter().any(|b| b.id == batch.id) {
+            return Err(CoordError::DuplicateBatch(batch.id));
+        }
+        self.queue.push_back(batch);
+        Ok(())
     }
 
     /// Drop batches with staleness `> max_staleness`, then pop the oldest
     /// remaining. `Ok(None)` if the queue is empty after drops.
     pub fn consume_batch(&mut self) -> Result<Option<RolloutBatch>> {
-        unimplemented!("I2: Coordinator::consume_batch")
+        self.halt_guard()?;
+        // Scan first so FromTheFuture leaves the queue unchanged.
+        let mut drop_count = 0usize;
+        for batch in &self.queue {
+            match staleness(self.trainer_version, batch.policy_version) {
+                Err(CoordError::FromTheFuture) => return Err(CoordError::FromTheFuture),
+                Err(e) => return Err(e),
+                Ok(s) if s > self.config.max_staleness => {
+                    drop_count += 1;
+                }
+                Ok(_) => break,
+            }
+        }
+        for _ in 0..drop_count {
+            let _ = self.queue.pop_front();
+        }
+        Ok(self.queue.pop_front())
     }
 
     /// Trainer finished an update. `version` must be `trainer_version + 1`.
-    pub fn publish_weights(&mut self, _version: PolicyVersion) -> Result<()> {
-        unimplemented!("I2: Coordinator::publish_weights")
+    pub fn publish_weights(&mut self, version: PolicyVersion) -> Result<()> {
+        self.halt_guard()?;
+        if version != self.trainer_version.saturating_add(1) {
+            return Err(CoordError::NotNextVersion);
+        }
+        self.trainer_version = version;
+        Ok(())
     }
 
     /// Instant CPU stand-in for the RDMA weight push. `version` must equal
     /// the published trainer version. Rollout racks only.
-    pub fn sync_rack(&mut self, _id: &RackId, _version: PolicyVersion) -> Result<()> {
-        unimplemented!("I2: Coordinator::sync_rack")
+    pub fn sync_rack(&mut self, id: &RackId, version: PolicyVersion) -> Result<()> {
+        self.halt_guard()?;
+        let trainer = self.trainer_version;
+        let r = self.lookup_mut(id)?;
+        if r.role != RackRole::Rollout {
+            return Err(CoordError::NotRollout(id.clone()));
+        }
+        if version != trainer {
+            return Err(CoordError::Unpublished(version));
+        }
+        r.version = Some(version);
+        Ok(())
     }
 
     /// Parity job after a weight update. Drift past `parity_threshold` HALTS.
@@ -246,9 +441,117 @@ impl Coordinator {
     /// `samples` is a pass (`max_abs_err = 0.0`).
     pub fn run_parity(
         &mut self,
-        _version: PolicyVersion,
-        _samples: &[ParitySample],
+        version: PolicyVersion,
+        samples: &[ParitySample],
     ) -> Result<ParityReport> {
-        unimplemented!("I2: Coordinator::run_parity")
+        self.halt_guard()?;
+        if version != self.trainer_version {
+            return Err(CoordError::Unpublished(version));
+        }
+        for s in samples {
+            if !s.trainer_logp.is_finite() || !s.engine_logp.is_finite() {
+                return Err(CoordError::InvalidLogprob);
+            }
+        }
+        if samples.is_empty() {
+            return Ok(ParityReport {
+                policy_version: version,
+                max_abs_err: 0.0,
+                n_samples: 0,
+            });
+        }
+        let mut max_abs_err = 0.0_f64;
+        for s in samples {
+            let err = (s.trainer_logp - s.engine_logp).abs();
+            if err > max_abs_err {
+                max_abs_err = err;
+            }
+        }
+        if max_abs_err > self.config.parity_threshold {
+            self.halted = true;
+            return Err(CoordError::ParityHalt {
+                version,
+                max_abs_err,
+                threshold: self.config.parity_threshold,
+            });
+        }
+        Ok(ParityReport {
+            policy_version: version,
+            max_abs_err,
+            n_samples: samples.len(),
+        })
+    }
+}
+
+impl Coordinator {
+    fn halt_guard(&self) -> Result<()> {
+        if self.halted {
+            Err(CoordError::Halted)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn lookup(&self, id: &RackId) -> Result<&Rack> {
+        self.racks
+            .get(id)
+            .ok_or_else(|| CoordError::RackNotFound(id.clone()))
+    }
+
+    fn lookup_mut(&mut self, id: &RackId) -> Result<&mut Rack> {
+        self.racks
+            .get_mut(id)
+            .ok_or_else(|| CoordError::RackNotFound(id.clone()))
+    }
+
+    fn n_role(&self, role: RackRole) -> usize {
+        self.racks.values().filter(|r| r.role == role).count()
+    }
+
+    fn gpu_sum(&self, role: RackRole) -> u64 {
+        self.racks
+            .values()
+            .filter(|r| r.role == role)
+            .map(|r| r.gpus)
+            .fold(0u64, |a, b| a.saturating_add(b))
+    }
+
+    fn target(&self) -> u64 {
+        target_rollout_gpus(
+            self.total_gpus,
+            self.config.rollout_numer,
+            self.config.rollout_denom,
+        )
+    }
+
+    fn lex_smallest(&self, role: RackRole) -> Option<RackId> {
+        self.order
+            .iter()
+            .find(|id| self.racks.get(id).map(|r| r.role) == Some(role))
+            .cloned()
+    }
+
+    fn move_trainer_to_rollout(&mut self) -> Option<RackId> {
+        if self.n_role(RackRole::Trainer) <= self.config.min_trainer_racks {
+            return None;
+        }
+        let id = self.lex_smallest(RackRole::Trainer)?;
+        if let Some(r) = self.racks.get_mut(&id) {
+            r.role = RackRole::Rollout;
+            r.version = Some(0);
+        }
+        Some(id)
+    }
+
+    fn move_rollout_to_trainer(&mut self) -> Option<RackId> {
+        if self.n_role(RackRole::Rollout) <= self.config.min_rollout_racks {
+            return None;
+        }
+        let id = self.lex_smallest(RackRole::Rollout)?;
+        if let Some(r) = self.racks.get_mut(&id) {
+            r.role = RackRole::Trainer;
+            r.version = None;
+        }
+        Some(id)
     }
 }
