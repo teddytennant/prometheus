@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-
 # Spec 16.2 / F4 ``check_exit(V3)``: FP8 loss within 0.5% of BF16.
 FP8_REL_MAX = 0.005
 # Spec 16.2: 2k to 5k steps. Template ``v3.sh`` only passes ``gpus``.
