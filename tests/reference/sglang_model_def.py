@@ -1,11 +1,13 @@
-"""SGLang model definition matching A1 (spec 3.1, 13.1, 15.5 C2).
+"""Independent C2 reference: SGLang discrete model definition (spec 3.1).
 
-Hybrid 3:1 linear vs MLA, sigmoid-gated MoE, MTP (2 extra heads), 8-layer
-core iterated r times. This is the architecture SGLang loads. Weight
-conversion is C1; this module does not convert or load tensors.
+Plain Python, slow and obvious. Does not import ``sglang_fork.model_def``
+or production ``model``. Enums and the 3:1 / dense-then-MoE / last-core
+rules match A1 names and counts; they are re-implemented here.
 
-Enums and counts match A1 ``model.ModelConfig``. C2 does not import
-``model`` so the fork stays standalone.
+Index 0 is linear attention. Period is LINEAR_TO_MLA + 1 (four unique
+layers: three linear, then one MLA). First ``n_dense`` unique layers are
+dense FFN; the rest are MoE. The core block is the last
+``core_block_layers`` unique layers. MTP heads must be 2.
 """
 
 from __future__ import annotations
@@ -35,8 +37,6 @@ _MTP_HEADS = 2
 
 @dataclass(frozen=True)
 class SglangLayer:
-    """One unique layer. Index 0 is linear attention (spec 3.1)."""
-
     index: int
     attention: AttentionKind
     ffn: FfnKind
@@ -45,13 +45,6 @@ class SglangLayer:
 
 @dataclass(frozen=True)
 class SglangModelDef:
-    """Discrete architecture SGLang instantiates.
-
-    ``n_layers`` is unique layers, not unrolled recurrence. The core
-    block is the last ``core_block_layers`` unique layers and is
-    iterated ``recurrence_max`` times at most.
-    """
-
     d_model: int
     n_layers: int
     n_dense: int
@@ -82,13 +75,13 @@ def _in_range(layer_index: int, n_layers: int) -> bool:
 
 
 def attention_kind(layer_index: int, n_layers: int) -> AttentionKind:
-    """3:1 linear:MLA repeating. Index 0 is linear. Raises ModelDefError
-    if ``layer_index`` is outside ``[0, n_layers)``.
-    """
+    """3:1 linear:MLA repeating. Index 0 is linear."""
     _require(
         _in_range(layer_index, n_layers),
         f"layer_index {layer_index} outside [0, {n_layers})",
     )
+    # Position LINEAR_TO_MLA in each period of 4 is MLA; the other three
+    # (including index 0) are linear.
     if layer_index % _PERIOD == LINEAR_TO_MLA:
         return AttentionKind.MLA
     return AttentionKind.LINEAR
@@ -106,7 +99,7 @@ def ffn_kind(layer_index: int, n_dense: int, n_layers: int) -> FfnKind:
 
 
 def in_core_block(layer_index: int, n_layers: int, core_block_layers: int) -> bool:
-    """True if the unique layer is in the iterated core block."""
+    """True if the unique layer is in the last ``core_block_layers`` layers."""
     _require(
         _in_range(layer_index, n_layers),
         f"layer_index {layer_index} outside [0, {n_layers})",
@@ -133,9 +126,7 @@ def from_counts(
     max_context: int,
     max_racks: int = 4,
 ) -> SglangModelDef:
-    """Build a definition and fill ``layers``. Raises ModelDefError on
-    count mismatch (n_dense+n_moe, 3:1 attention, mtp_heads != 2, …).
-    """
+    """Build a definition and fill ``layers``. Raises ModelDefError on mismatch."""
     _require(n_layers >= 1, f"n_layers must be >= 1, got {n_layers}")
     _require(n_dense >= 0, f"n_dense must be >= 0, got {n_dense}")
     _require(n_moe >= 0, f"n_moe must be >= 0, got {n_moe}")
