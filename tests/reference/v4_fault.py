@@ -402,7 +402,9 @@ def run_resume_experiment(
                 restored = ckpt.restore_latest_memory()
                 if restore_corrupt:
                     raw = restored.weights.tobytes()
-                    flipped = flip_bit(raw, bit_index=0)
+                    # Bit 0 is the float32 LSB; later SGD rounds it away.
+                    # Bit 30 is an exponent bit, so the twin actually diverges.
+                    flipped = flip_bit(raw, bit_index=30)
                     restored.weights = (
                         np.frombuffer(flipped, dtype=restored.weights.dtype)
                         .reshape(restored.weights.shape)
