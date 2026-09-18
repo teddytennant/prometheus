@@ -127,13 +127,42 @@ pub enum RungError {
 }
 
 /// Ladder row for `id`. Numbers are the spec 6 table, not V5's 8 GPUs.
-pub fn rung_spec(_id: RungId) -> RungSpec {
-    unimplemented!("A7: rung_spec")
+pub fn rung_spec(id: RungId) -> RungSpec {
+    match id {
+        RungId::Zero => RungSpec {
+            id: RungId::Zero,
+            active_params: RUNG_0_ACTIVE_PARAMS,
+            total_params: RUNG_0_TOTAL_PARAMS,
+            tokens: RUNG_0_TOKENS,
+            gpus: RUNG_0_GPUS,
+        },
+        RungId::One => RungSpec {
+            id: RungId::One,
+            active_params: RUNG_1_ACTIVE_PARAMS,
+            total_params: RUNG_1_TOTAL_PARAMS,
+            tokens: RUNG_1_TOKENS,
+            gpus: RUNG_1_GPUS,
+        },
+        RungId::Two => RungSpec {
+            id: RungId::Two,
+            active_params: RUNG_2_ACTIVE_PARAMS,
+            total_params: RUNG_2_TOTAL_PARAMS,
+            tokens: RUNG_2_TOKENS,
+            gpus: RUNG_2_GPUS,
+        },
+        RungId::Three => RungSpec {
+            id: RungId::Three,
+            active_params: RUNG_3_ACTIVE_PARAMS,
+            total_params: RUNG_3_TOTAL_PARAMS,
+            tokens: RUNG_3_TOKENS,
+            gpus: RUNG_3_GPUS,
+        },
+    }
 }
 
 /// Spec 6 rung 0 row.
 pub fn rung_0_spec() -> RungSpec {
-    unimplemented!("A7: rung_0_spec")
+    rung_spec(RungId::Zero)
 }
 
 /// Check order (must match tests):
@@ -142,34 +171,77 @@ pub fn rung_0_spec() -> RungSpec {
 /// 3. `tokens_per_step == 0` → [`RungError::InvalidTokensPerStep`]
 /// 4. empty `tokenizer_hash` → [`RungError::EmptyTokenizerHash`]
 pub fn validate_rung_config(config: &RungConfig) -> Result<(), RungError> {
-    let _ = config;
-    unimplemented!("A7: validate_rung_config")
+    if config.spec.id != RungId::Zero {
+        return Err(RungError::NotRung0);
+    }
+    if config.token_budget == 0 || config.token_budget > config.spec.tokens {
+        return Err(RungError::InvalidBudget);
+    }
+    if config.tokens_per_step == 0 {
+        return Err(RungError::InvalidTokensPerStep);
+    }
+    if config.tokenizer_hash.is_empty() {
+        return Err(RungError::EmptyTokenizerHash);
+    }
+    Ok(())
 }
 
 /// Rung 0 run. CPU analog: the caller injects each step's loss.
 #[derive(Debug, Clone)]
 pub struct RungRun {
-    _priv: (),
+    config: RungConfig,
+    step: u64,
+    tokens_seen: u64,
+    loss_curve: Vec<f64>,
 }
 
 impl RungRun {
     /// New run at step 0, zero tokens, empty curve. Validates config.
     pub fn new(config: RungConfig) -> Result<Self, RungError> {
-        let _ = config;
-        unimplemented!("A7: RungRun::new")
+        validate_rung_config(&config)?;
+        Ok(Self {
+            config,
+            step: 0,
+            tokens_seen: 0,
+            loss_curve: Vec::new(),
+        })
     }
 
     /// Consume up to `tokens_per_step` tokens (last step may be short)
     /// and append `loss`. Non-finite loss → [`RungError::NonFiniteLoss`].
     /// Already done → [`RungError::AlreadyDone`].
     pub fn step(&mut self, loss: f64) -> Result<RungStepReport, RungError> {
-        let _ = loss;
-        unimplemented!("A7: RungRun::step")
+        if !loss.is_finite() {
+            return Err(RungError::NonFiniteLoss);
+        }
+        if self.done() {
+            return Err(RungError::AlreadyDone);
+        }
+        let remaining = self.config.token_budget - self.tokens_seen;
+        let added = self.config.tokens_per_step.min(remaining);
+        self.tokens_seen += added;
+        self.step += 1;
+        self.loss_curve.push(loss);
+        Ok(RungStepReport {
+            step: self.step,
+            tokens_seen: self.tokens_seen,
+            loss,
+            done: self.done(),
+        })
     }
 
     /// Snapshot for a job boundary. Does not consume tokens.
     pub fn checkpoint(&self) -> RungCheckpoint {
-        unimplemented!("A7: RungRun::checkpoint")
+        RungCheckpoint {
+            step: self.step,
+            tokens_seen: self.tokens_seen,
+            loss_curve: self.loss_curve.clone(),
+            tokenizer_hash: self.config.tokenizer_hash.clone(),
+            seed: self.config.seed,
+            token_budget: self.config.token_budget,
+            tokens_per_step: self.config.tokens_per_step,
+            rung: self.config.spec.id,
+        }
     }
 
     /// Resume across a job boundary. Validates `config` first, then
@@ -178,31 +250,49 @@ impl RungRun {
     /// A finished run may be resumed; the next [`Self::step`] is
     /// [`RungError::AlreadyDone`].
     pub fn resume(config: RungConfig, ckpt: &RungCheckpoint) -> Result<Self, RungError> {
-        let _ = (config, ckpt);
-        unimplemented!("A7: RungRun::resume")
+        validate_rung_config(&config)?;
+        if ckpt.tokenizer_hash != config.tokenizer_hash {
+            return Err(RungError::TokenizerChanged);
+        }
+        if ckpt.seed != config.seed
+            || ckpt.token_budget != config.token_budget
+            || ckpt.tokens_per_step != config.tokens_per_step
+            || ckpt.rung != config.spec.id
+        {
+            return Err(RungError::CheckpointMismatch);
+        }
+        if ckpt.tokens_seen > config.token_budget {
+            return Err(RungError::ResumePastBudget);
+        }
+        Ok(Self {
+            config,
+            step: ckpt.step,
+            tokens_seen: ckpt.tokens_seen,
+            loss_curve: ckpt.loss_curve.clone(),
+        })
     }
 
     pub fn done(&self) -> bool {
-        unimplemented!("A7: RungRun::done")
+        self.tokens_seen >= self.config.token_budget
     }
 
     pub fn step_index(&self) -> u64 {
-        unimplemented!("A7: RungRun::step_index")
+        self.step
     }
 
     pub fn tokens_seen(&self) -> u64 {
-        unimplemented!("A7: RungRun::tokens_seen")
+        self.tokens_seen
     }
 
     pub fn remaining_tokens(&self) -> u64 {
-        unimplemented!("A7: RungRun::remaining_tokens")
+        self.config.token_budget.saturating_sub(self.tokens_seen)
     }
 
     pub fn loss_curve(&self) -> &[f64] {
-        unimplemented!("A7: RungRun::loss_curve")
+        &self.loss_curve
     }
 
     pub fn config(&self) -> &RungConfig {
-        unimplemented!("A7: RungRun::config")
+        &self.config
     }
 }
