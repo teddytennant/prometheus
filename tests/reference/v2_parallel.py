@@ -100,7 +100,7 @@ class MeshSpec:
 # Spec 16.2 8-GPU named meshes (production V2). Toy protocol uses TINY_MESH.
 SPEC_MESH_8GPU_EP = MeshSpec(dp=1, fsdp=8, ep=8, pp=1, cp=1)
 SPEC_MESH_8GPU_PP_CP = MeshSpec(dp=1, fsdp=2, ep=2, pp=2, cp=2)
-SPEC_MESH_2X4_DP = MeshSpec(dp=2, fsdp=2, ep=2, pp=1, cp=1)
+SPEC_MESH_2X4_DP = MeshSpec(dp=2, fsdp=4, ep=4, pp=1, cp=1)
 TINY_MESH = MeshSpec(dp=1, fsdp=2, ep=2, pp=2, cp=2)
 
 

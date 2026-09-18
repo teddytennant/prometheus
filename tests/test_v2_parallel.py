@@ -138,9 +138,10 @@ def test_production_vs_reference_v2_gates() -> None:
     assert proto["grad_ok"] is True
 
     # Golden scale: a 2e-6 relative bump sits just above the 1e-6 FP32 gate.
+    # float32 cannot realize 2e-6 exactly on losses ~O(1), so allow 5% rel.
     bumped = proto["single_losses"] * np.float32(1.0 + ref.GOLDEN_REL_ABOVE_GATE)
     golden = ref.loss_rel_diff(proto["single_losses"], bumped)
-    assert golden == pytest.approx(ref.GOLDEN_REL_ABOVE_GATE, rel=1e-3, abs=1e-12)
+    assert golden == pytest.approx(ref.GOLDEN_REL_ABOVE_GATE, rel=0.05, abs=1e-7)
     assert golden > v2.LOSS_REL_MAX
     assert not ref.meets_v2_gates(golden, True)
 
