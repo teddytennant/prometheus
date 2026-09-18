@@ -15,7 +15,7 @@
 mod engine;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -325,18 +325,26 @@ impl Backend for InProcess {
 }
 
 /// Firecracker backend. Constructed only on a node with `/dev/kvm`.
+///
+/// CPU analog: dummy kernel/rootfs files are enough. Isolation matches
+/// [`InProcess`]. Real microVMs are a later GPU/V stage.
 pub struct Firecracker {
     socket: PathBuf,
     kernel: PathBuf,
     rootfs: PathBuf,
+    inner: Engine,
 }
 
 impl Firecracker {
     pub fn new(socket: PathBuf, kernel: PathBuf, rootfs: PathBuf) -> Result<Self> {
+        if !Path::new("/dev/kvm").exists() {
+            return Err(Error::Backend("kvm device missing: /dev/kvm".into()));
+        }
         Ok(Self {
             socket,
             kernel,
             rootfs,
+            inner: Engine::new(PoolConfig::default()),
         })
     }
 
@@ -351,36 +359,48 @@ impl Firecracker {
     pub fn rootfs(&self) -> &PathBuf {
         &self.rootfs
     }
+
+    fn require_boot_images(&self) -> Result<()> {
+        if !self.kernel.is_file() {
+            return Err(Error::Backend(format!(
+                "kernel image missing: {}",
+                self.kernel.display()
+            )));
+        }
+        if !self.rootfs.is_file() {
+            return Err(Error::Backend(format!(
+                "rootfs image missing: {}",
+                self.rootfs.display()
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl Backend for Firecracker {
-    fn boot(&mut self, _image: &Image, _now: NowMs) -> Result<SandboxId> {
-        unimplemented!("D1: Firecracker::boot")
+    fn boot(&mut self, image: &Image, now: NowMs) -> Result<SandboxId> {
+        self.require_boot_images()?;
+        self.inner.boot(image, now)
     }
 
-    fn snapshot(&mut self, _sandbox: &SandboxId, _now: NowMs) -> Result<SnapshotId> {
-        unimplemented!("D1: Firecracker::snapshot")
+    fn snapshot(&mut self, sandbox: &SandboxId, now: NowMs) -> Result<SnapshotId> {
+        self.inner.snapshot(sandbox, now)
     }
 
-    fn fork(&mut self, _snapshot: &SnapshotId, _now: NowMs) -> Result<(SandboxId, u64)> {
-        unimplemented!("D1: Firecracker::fork")
+    fn fork(&mut self, snapshot: &SnapshotId, now: NowMs) -> Result<(SandboxId, u64)> {
+        self.inner.fork(snapshot, now)
     }
 
-    fn call(
-        &mut self,
-        _sandbox: &SandboxId,
-        _req: &ToolRequest,
-        _now: NowMs,
-    ) -> Result<ToolResponse> {
-        unimplemented!("D1: Firecracker::call")
+    fn call(&mut self, sandbox: &SandboxId, req: &ToolRequest, now: NowMs) -> Result<ToolResponse> {
+        self.inner.call(sandbox, req.clone(), now)
     }
 
-    fn kill(&mut self, _sandbox: &SandboxId, _now: NowMs) -> Result<()> {
-        unimplemented!("D1: Firecracker::kill")
+    fn kill(&mut self, sandbox: &SandboxId, now: NowMs) -> Result<()> {
+        self.inner.kill(sandbox, now)
     }
 
-    fn list(&self, _sandbox: &SandboxId, _view: View) -> Result<BTreeMap<String, Vec<u8>>> {
-        unimplemented!("D1: Firecracker::list")
+    fn list(&self, sandbox: &SandboxId, view: View) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.inner.list(sandbox, view)
     }
 }
 
