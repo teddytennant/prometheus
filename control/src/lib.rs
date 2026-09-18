@@ -24,6 +24,7 @@
 //! Membership here is the DP replica set, not H4 Raft voters.
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Injected clock. Milliseconds since an arbitrary origin. Never wall time.
 pub type NowMs = u64;
@@ -141,131 +142,451 @@ pub enum ControlError {
 
 pub type Result<T> = std::result::Result<T, ControlError>;
 
+struct ReplicaRec {
+    rack: RackId,
+    state: ReplicaState,
+}
+
+struct OpenCollective {
+    name: String,
+    replica: ReplicaId,
+    begin_ms: NowMs,
+}
+
 /// Elastic DP controller. CPU tests drive a handful of simulated replicas.
 pub struct Controller {
-    _private: (),
+    config: ElasticConfig,
+    order: Vec<ReplicaId>,
+    replicas: HashMap<ReplicaId, ReplicaRec>,
+    hashes: BTreeMap<(Step, String, String), String>,
+    open: Vec<OpenCollective>,
+    skipped: Vec<ShardId>,
+    pages: u64,
+    last_spike_step: Option<Step>,
+}
+
+fn min_grad_accumulation(n_live: u64, microbatch_tokens: u64, tokens_per_step: u64) -> u64 {
+    if tokens_per_step == 0 {
+        return 0;
+    }
+    if n_live == 0 || microbatch_tokens == 0 {
+        return 0;
+    }
+    let per = n_live.saturating_mul(microbatch_tokens);
+    if per == 0 {
+        return 0;
+    }
+    let q = tokens_per_step / per;
+    let r = tokens_per_step % per;
+    if r == 0 {
+        q
+    } else {
+        q + 1
+    }
 }
 
 impl Controller {
-    pub fn new(_config: ElasticConfig, _replicas: Vec<ReplicaSpec>) -> Result<Self> {
-        unimplemented!("A6: Controller::new")
+    pub fn new(config: ElasticConfig, replicas: Vec<ReplicaSpec>) -> Result<Self> {
+        if config.microbatch_tokens == 0 {
+            return Err(ControlError::Message(
+                "microbatch_tokens must be greater than 0".into(),
+            ));
+        }
+        let mut order = Vec::new();
+        let mut map = HashMap::new();
+        let mut n_live = 0usize;
+        for spec in replicas {
+            if map.contains_key(&spec.id) {
+                return Err(ControlError::Message(format!(
+                    "duplicate replica id: {:?}",
+                    spec.id
+                )));
+            }
+            let state = if spec.spare {
+                ReplicaState::Spare
+            } else {
+                ReplicaState::Live
+            };
+            if state == ReplicaState::Live {
+                n_live += 1;
+            }
+            order.push(spec.id.clone());
+            map.insert(
+                spec.id,
+                ReplicaRec {
+                    rack: spec.rack,
+                    state,
+                },
+            );
+        }
+        if n_live == 0 {
+            return Err(ControlError::NoLiveReplicas);
+        }
+        Ok(Self {
+            config,
+            order,
+            replicas: map,
+            hashes: BTreeMap::new(),
+            open: Vec::new(),
+            skipped: Vec::new(),
+            pages: 0,
+            last_spike_step: None,
+        })
     }
 
     pub fn live_replicas(&self) -> Result<Vec<ReplicaId>> {
-        unimplemented!("A6: Controller::live_replicas")
+        Ok(self.live_ids())
     }
 
-    pub fn replica_state(&self, _id: &ReplicaId) -> Result<ReplicaState> {
-        unimplemented!("A6: Controller::replica_state")
+    pub fn replica_state(&self, id: &ReplicaId) -> Result<ReplicaState> {
+        Ok(self.lookup(id)?.state)
     }
 
     pub fn n_live(&self) -> Result<usize> {
-        unimplemented!("A6: Controller::n_live")
+        Ok(self.n_live_count())
     }
 
     /// Microbatches per optimizer step. Rises when a replica drops so
     /// `n_live * microbatch_tokens * grad_accumulation >= tokens_per_step`.
     pub fn grad_accumulation(&self) -> Result<u64> {
-        unimplemented!("A6: Controller::grad_accumulation")
+        Ok(self.accum())
     }
 
     /// `n_live * microbatch_tokens * grad_accumulation`.
     pub fn effective_tokens_per_step(&self) -> Result<u64> {
-        unimplemented!("A6: Controller::effective_tokens_per_step")
+        let n = self.n_live_count() as u64;
+        let a = self.accum();
+        match n
+            .checked_mul(self.config.microbatch_tokens)
+            .and_then(|x| x.checked_mul(a))
+        {
+            Some(v) => Ok(v),
+            None => Err(ControlError::Message(
+                "effective_tokens_per_step overflow".into(),
+            )),
+        }
     }
 
     /// Drop a live replica immediately. Raises grad accumulation. Errors if
     /// this would leave zero live replicas.
-    pub fn fail_replica(&mut self, _id: &ReplicaId) -> Result<()> {
-        unimplemented!("A6: Controller::fail_replica")
+    pub fn fail_replica(&mut self, id: &ReplicaId) -> Result<()> {
+        self.require_live(id)?;
+        self.drop_live(id)
     }
 
     /// Record one rank's step duration. Above `straggler_timeout_ms` drains
     /// the replica the same way as [`Self::fail_replica`].
     pub fn observe_step_time(
         &mut self,
-        _id: &ReplicaId,
+        id: &ReplicaId,
         _step: Step,
-        _duration_ms: u64,
+        duration_ms: u64,
     ) -> Result<()> {
-        unimplemented!("A6: Controller::observe_step_time")
+        self.require_live(id)?;
+        if duration_ms > self.config.straggler_timeout_ms {
+            self.drop_live(id)
+        } else {
+            Ok(())
+        }
     }
 
     /// Start copying weights onto a spare from a live source. Completes at
     /// [`Self::rejoin`].
-    pub fn heal_spare(&mut self, _spare: &ReplicaId, _source: &ReplicaId) -> Result<()> {
-        unimplemented!("A6: Controller::heal_spare")
+    pub fn heal_spare(&mut self, spare: &ReplicaId, source: &ReplicaId) -> Result<()> {
+        let spare_state = self.lookup(spare)?.state;
+        if spare_state != ReplicaState::Spare {
+            return Err(ControlError::NotSpare(spare.clone()));
+        }
+        self.require_live(source)?;
+        match self.replicas.get_mut(spare) {
+            Some(rec) => rec.state = ReplicaState::Healing,
+            None => return Err(ControlError::ReplicaNotFound(spare.clone())),
+        }
+        Ok(())
     }
 
     /// Finish a heal at a step boundary. The spare becomes live and
     /// accumulation falls to hold `tokens_per_step` without dropping below it.
-    pub fn rejoin(&mut self, _id: &ReplicaId, _step: Step) -> Result<()> {
-        unimplemented!("A6: Controller::rejoin")
+    pub fn rejoin(&mut self, id: &ReplicaId, _step: Step) -> Result<()> {
+        let state = self.lookup(id)?.state;
+        if state != ReplicaState::Healing {
+            return Err(ControlError::NotSpare(id.clone()));
+        }
+        match self.replicas.get_mut(id) {
+            Some(rec) => rec.state = ReplicaState::Live,
+            None => return Err(ControlError::ReplicaNotFound(id.clone())),
+        }
+        Ok(())
     }
 
     /// Report a weight-shard content hash from one replica at `step`.
     pub fn report_shard_hash(
         &mut self,
-        _replica: &ReplicaId,
-        _shard: &str,
-        _hex: &str,
-        _step: Step,
+        replica: &ReplicaId,
+        shard: &str,
+        hex: &str,
+        step: Step,
     ) -> Result<()> {
-        unimplemented!("A6: Controller::report_shard_hash")
+        self.require_live(replica)?;
+        self.hashes.insert(
+            (step, replica.0.clone(), shard.to_string()),
+            hex.to_string(),
+        );
+        Ok(())
     }
 
     /// Compare hashes reported at `step`. A mismatch quarantines the offending
     /// replica's rack (treated as a drop). No-op when `step` is not a multiple
     /// of `sdc_period_steps` (including period 0 meaning "never").
-    pub fn check_sdc(&mut self, _step: Step) -> Result<()> {
-        unimplemented!("A6: Controller::check_sdc")
+    pub fn check_sdc(&mut self, step: Step) -> Result<()> {
+        let period = self.config.sdc_period_steps;
+        if period == 0 {
+            return Ok(());
+        }
+        if !step.is_multiple_of(period) {
+            return Ok(());
+        }
+        let live = self.live_ids();
+        if live.is_empty() {
+            return Ok(());
+        }
+        let mut shards: BTreeSet<String> = BTreeSet::new();
+        for id in &live {
+            for (s, rid, shard) in self.hashes.keys() {
+                if *s == step && *rid == id.0 {
+                    shards.insert(shard.clone());
+                }
+            }
+        }
+        if shards.is_empty() {
+            return Err(ControlError::MissingHash {
+                replica: live[0].clone(),
+                shard: String::new(),
+            });
+        }
+        for shard in shards {
+            let mut reports: Vec<(ReplicaId, String)> = Vec::new();
+            for id in &live {
+                match self.hashes.get(&(step, id.0.clone(), shard.clone())) {
+                    Some(hex) => reports.push((id.clone(), hex.clone())),
+                    None => {
+                        return Err(ControlError::MissingHash {
+                            replica: id.clone(),
+                            shard,
+                        });
+                    }
+                }
+            }
+            let n = reports.len();
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+            for (_, hex) in &reports {
+                *counts.entry(hex.clone()).or_insert(0) += 1;
+            }
+            let majority = counts
+                .iter()
+                .find(|(_, c)| **c > n / 2)
+                .map(|(h, _)| h.clone());
+            let expected = match majority {
+                Some(h) => h,
+                None => match reports.first() {
+                    Some((_, hex)) => hex.clone(),
+                    None => {
+                        return Err(ControlError::MissingHash {
+                            replica: live[0].clone(),
+                            shard,
+                        });
+                    }
+                },
+            };
+            for (id, hex) in &reports {
+                if hex != &expected {
+                    return self.quarantine_rack_of(id, shard, expected, hex.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Feed a device/fabric/thermal/watchdog event. Fatal kinds drain the replica.
-    pub fn report_health(&mut self, _event: HealthEvent) -> Result<()> {
-        unimplemented!("A6: Controller::report_health")
+    pub fn report_health(&mut self, event: HealthEvent) -> Result<()> {
+        self.require_live(&event.replica)?;
+        self.drop_live(&event.replica)
     }
 
     pub fn begin_collective(
         &mut self,
-        _name: &str,
-        _replica: &ReplicaId,
-        _now_ms: NowMs,
+        name: &str,
+        replica: &ReplicaId,
+        now_ms: NowMs,
     ) -> Result<()> {
-        unimplemented!("A6: Controller::begin_collective")
+        self.require_live(replica)?;
+        if self
+            .open
+            .iter()
+            .any(|c| c.name == name && c.replica == *replica)
+        {
+            return Err(ControlError::Message(format!(
+                "collective already open: {name}"
+            )));
+        }
+        self.open.push(OpenCollective {
+            name: name.to_string(),
+            replica: replica.clone(),
+            begin_ms: now_ms,
+        });
+        Ok(())
     }
 
     pub fn end_collective(
         &mut self,
-        _name: &str,
-        _replica: &ReplicaId,
+        name: &str,
+        replica: &ReplicaId,
         _now_ms: NowMs,
     ) -> Result<()> {
-        unimplemented!("A6: Controller::end_collective")
+        self.require_live(replica)?;
+        self.open
+            .retain(|c| !(c.name == name && c.replica == *replica));
+        Ok(())
     }
 
     /// Advance the injected clock. Collectives past `collective_watchdog_ms`
     /// drain their replica with [`HealthKind::WatchdogTimeout`].
-    pub fn tick(&mut self, _now_ms: NowMs) -> Result<()> {
-        unimplemented!("A6: Controller::tick")
+    pub fn tick(&mut self, now_ms: NowMs) -> Result<()> {
+        let watchdog = self.config.collective_watchdog_ms;
+        let ids = self.order.clone();
+        for id in ids {
+            if self.replicas.get(&id).map(|r| r.state) != Some(ReplicaState::Live) {
+                continue;
+            }
+            let overdue = self
+                .open
+                .iter()
+                .any(|c| c.replica == id && now_ms.saturating_sub(c.begin_ms) > watchdog);
+            if overdue {
+                self.drop_live(&id)?;
+            }
+        }
+        Ok(())
     }
 
     /// Execute the spec 5.5 spike policy. Does not talk to ckpt.
     pub fn on_loss_spike(
         &mut self,
-        _step: Step,
-        _shard: ShardId,
-        _last_memory_checkpoint_id: String,
+        step: Step,
+        shard: ShardId,
+        last_memory_checkpoint_id: String,
     ) -> Result<SpikeReport> {
-        unimplemented!("A6: Controller::on_loss_spike")
+        let page = match self.last_spike_step {
+            Some(prev) => step.saturating_sub(prev) < self.config.page_window_steps,
+            None => false,
+        };
+        if page {
+            self.pages = self.pages.saturating_add(1);
+        }
+        self.last_spike_step = Some(step);
+        self.skipped.push(shard.clone());
+        Ok(SpikeReport {
+            rollback_checkpoint_id: last_memory_checkpoint_id,
+            skipped_shard: shard,
+            page,
+        })
     }
 
     pub fn skipped_shards(&self) -> Result<Vec<ShardId>> {
-        unimplemented!("A6: Controller::skipped_shards")
+        Ok(self.skipped.clone())
     }
 
     /// How many times [`SpikeReport::page`] was true.
     pub fn pages(&self) -> Result<u64> {
-        unimplemented!("A6: Controller::pages")
+        Ok(self.pages)
+    }
+
+    fn live_ids(&self) -> Vec<ReplicaId> {
+        self.order
+            .iter()
+            .filter(|id| self.replicas.get(id).map(|r| r.state) == Some(ReplicaState::Live))
+            .cloned()
+            .collect()
+    }
+
+    fn n_live_count(&self) -> usize {
+        self.order
+            .iter()
+            .filter(|id| self.replicas.get(id).map(|r| r.state) == Some(ReplicaState::Live))
+            .count()
+    }
+
+    fn accum(&self) -> u64 {
+        min_grad_accumulation(
+            self.n_live_count() as u64,
+            self.config.microbatch_tokens,
+            self.config.tokens_per_step,
+        )
+    }
+
+    fn lookup(&self, id: &ReplicaId) -> Result<&ReplicaRec> {
+        self.replicas
+            .get(id)
+            .ok_or_else(|| ControlError::ReplicaNotFound(id.clone()))
+    }
+
+    fn require_live(&self, id: &ReplicaId) -> Result<()> {
+        match self.lookup(id)?.state {
+            ReplicaState::Live => Ok(()),
+            ReplicaState::Quarantined => Err(ControlError::Quarantined(id.clone())),
+            _ => Err(ControlError::NotLive(id.clone())),
+        }
+    }
+
+    fn drop_live(&mut self, id: &ReplicaId) -> Result<()> {
+        if self.n_live_count() <= 1 {
+            return Err(ControlError::NoLiveReplicas);
+        }
+        match self.replicas.get_mut(id) {
+            Some(rec) => rec.state = ReplicaState::Dead,
+            None => return Err(ControlError::ReplicaNotFound(id.clone())),
+        }
+        self.open.retain(|c| c.replica != *id);
+        Ok(())
+    }
+
+    fn quarantine_rack_of(
+        &mut self,
+        offender: &ReplicaId,
+        shard: String,
+        expected: String,
+        got: String,
+    ) -> Result<()> {
+        let rack = self.lookup(offender)?.rack.clone();
+        let on_rack: Vec<ReplicaId> = self
+            .order
+            .iter()
+            .filter(|id| self.replicas.get(id).map(|r| &r.rack) == Some(&rack))
+            .cloned()
+            .collect();
+        let live_on_rack = on_rack
+            .iter()
+            .filter(|id| self.replicas.get(id).map(|r| r.state) == Some(ReplicaState::Live))
+            .count();
+        if self.n_live_count().saturating_sub(live_on_rack) == 0 {
+            return Err(ControlError::HashMismatch {
+                replica: offender.clone(),
+                shard,
+                expected,
+                got,
+            });
+        }
+        for id in &on_rack {
+            if let Some(r) = self.replicas.get_mut(id) {
+                r.state = ReplicaState::Quarantined;
+            }
+            self.open.retain(|c| c.replica != *id);
+        }
+        Err(ControlError::HashMismatch {
+            replica: offender.clone(),
+            shard,
+            expected,
+            got,
+        })
     }
 }
