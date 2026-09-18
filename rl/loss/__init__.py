@@ -14,6 +14,7 @@ Efficiency reward (9.3) stays in the rewards crate.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -122,7 +123,34 @@ def make_config(
     1 through ``MAX_STALENESS``, ``tis_clip`` is not finite and ``>= 1``, or
     ``kl_coeff`` is not 0.0 (reference KL is out of this module).
     """
-    raise NotImplementedError("I2 make_config")
+    if clip_eps_low < 0.0 or clip_eps_high < 0.0:
+        raise LossError("epsilon must not be negative")
+    if latent_clip_eps_low < 0.0 or latent_clip_eps_high < 0.0:
+        raise LossError("epsilon must not be negative")
+    if not math.isfinite(loss_normalizer) or loss_normalizer <= 0.0:
+        raise LossError("loss_normalizer must be finite and positive")
+    if overlong_cache < 0:
+        raise LossError("overlong_cache must not be negative")
+    if overlong_penalty < 0.0:
+        raise LossError("overlong_penalty must not be negative")
+    if max_staleness < 1 or max_staleness > MAX_STALENESS:
+        raise LossError("max_staleness must be in 1 through MAX_STALENESS")
+    if not math.isfinite(tis_clip) or tis_clip < 1.0:
+        raise LossError("tis_clip must be finite and >= 1")
+    if kl_coeff != 0.0:
+        raise LossError("kl_coeff must be 0.0")
+    return LossConfig(
+        clip_eps_low=clip_eps_low,
+        clip_eps_high=clip_eps_high,
+        latent_clip_eps_low=latent_clip_eps_low,
+        latent_clip_eps_high=latent_clip_eps_high,
+        loss_normalizer=loss_normalizer,
+        overlong_cache=overlong_cache,
+        overlong_penalty=overlong_penalty,
+        max_staleness=max_staleness,
+        tis_clip=tis_clip,
+        kl_coeff=kl_coeff,
+    )
 
 
 def mean_center(rewards: tuple[float, ...]) -> tuple[float, ...]:
@@ -130,7 +158,15 @@ def mean_center(rewards: tuple[float, ...]) -> tuple[float, ...]:
 
     Empty or a non-finite reward raises LossError.
     """
-    raise NotImplementedError("I2 mean_center")
+    if len(rewards) == 0:
+        raise LossError("empty rewards")
+    total = 0.0
+    for reward in rewards:
+        if not math.isfinite(reward):
+            raise LossError("non-finite reward")
+        total += reward
+    mean = total / len(rewards)
+    return tuple(reward - mean for reward in rewards)
 
 
 def all_equal_reward(rewards: tuple[float, ...]) -> bool:
@@ -138,7 +174,13 @@ def all_equal_reward(rewards: tuple[float, ...]) -> bool:
 
     Dynamic sampling drops those groups (9.1).
     """
-    raise NotImplementedError("I2 all_equal_reward")
+    if len(rewards) == 0:
+        raise LossError("empty rewards")
+    first = rewards[0]
+    for reward in rewards:
+        if reward != first:
+            return False
+    return True
 
 
 def drop_zero_advantage_groups(groups: tuple[Group, ...]) -> tuple[Group, ...]:
@@ -146,7 +188,14 @@ def drop_zero_advantage_groups(groups: tuple[Group, ...]) -> tuple[Group, ...]:
 
     A group with no samples raises LossError.
     """
-    raise NotImplementedError("I2 drop_zero_advantage_groups")
+    kept: list[Group] = []
+    for group in groups:
+        if len(group.samples) == 0:
+            raise LossError("group with no samples")
+        rewards = tuple(sample.reward for sample in group.samples)
+        if not all_equal_reward(rewards):
+            kept.append(group)
+    return tuple(kept)
 
 
 def sequence_ratio(
@@ -158,7 +207,16 @@ def sequence_ratio(
     No divide by length (Dr. GRPO). Length mismatch, empty sequences, or
     a non-finite log-prob raises LossError.
     """
-    raise NotImplementedError("I2 sequence_ratio")
+    if len(logp_new) == 0 or len(logp_old) == 0:
+        raise LossError("empty log-probs")
+    if len(logp_new) != len(logp_old):
+        raise LossError("length mismatch")
+    total = 0.0
+    for new, old in zip(logp_new, logp_old):
+        if not math.isfinite(new) or not math.isfinite(old):
+            raise LossError("non-finite log-prob")
+        total += new - old
+    return math.exp(total)
 
 
 def clip_higher(ratio: float, eps_low: float, eps_high: float) -> float:
@@ -166,12 +224,25 @@ def clip_higher(ratio: float, eps_low: float, eps_high: float) -> float:
 
     Non-finite ratio or negative epsilons raise LossError.
     """
-    raise NotImplementedError("I2 clip_higher")
+    if not math.isfinite(ratio):
+        raise LossError("non-finite ratio")
+    if eps_low < 0.0 or eps_high < 0.0:
+        raise LossError("epsilon must not be negative")
+    lo = 1.0 - eps_low
+    hi = 1.0 + eps_high
+    if ratio < lo:
+        return lo
+    if ratio > hi:
+        return hi
+    return ratio
 
 
 def staleness(trainer_version: int, policy_version: int) -> int:
     """``trainer_version - policy_version``. Negative raises LossError."""
-    raise NotImplementedError("I2 staleness")
+    gap = trainer_version - policy_version
+    if gap < 0:
+        raise LossError("negative staleness")
+    return gap
 
 
 def truncated_is(
@@ -186,7 +257,16 @@ def truncated_is(
     ``k > 0`` returns ``min(sequence_ratio(trainer, rollout), tis_clip)``.
     Negative ``k`` or ``tis_clip < 1`` raises LossError.
     """
-    raise NotImplementedError("I2 truncated_is")
+    if k < 0:
+        raise LossError("negative staleness k")
+    if tis_clip < 1.0:
+        raise LossError("tis_clip must be >= 1")
+    if k == 0:
+        return 1.0
+    ratio = sequence_ratio(logp_trainer, logp_rollout)
+    if ratio < tis_clip:
+        return ratio
+    return tis_clip
 
 
 def overlong_soft_penalty(n_tokens: int, cache: int, penalty: float) -> float:
@@ -194,7 +274,11 @@ def overlong_soft_penalty(n_tokens: int, cache: int, penalty: float) -> float:
 
     Negative ``n_tokens``, ``cache``, or ``penalty`` raises LossError.
     """
-    raise NotImplementedError("I2 overlong_soft_penalty")
+    if n_tokens < 0 or cache < 0 or penalty < 0.0:
+        raise LossError("negative overlong argument")
+    if n_tokens <= cache:
+        return 0.0
+    return penalty * (n_tokens - cache)
 
 
 def gaussian_log_density(
@@ -207,7 +291,19 @@ def gaussian_log_density(
     ``log N(z; μ, σ) = -0.5 * Σ[((z-μ)/σ)^2 + 2 log σ + log(2π)]``.
     Length mismatch, empty, non-finite, or non-positive sigma raises LossError.
     """
-    raise NotImplementedError("I2 gaussian_log_density")
+    if len(z) == 0 or len(mu) == 0 or len(sigma) == 0:
+        raise LossError("empty gaussian inputs")
+    if len(z) != len(mu) or len(z) != len(sigma):
+        raise LossError("length mismatch")
+    log_two_pi = math.log(2.0 * math.pi)
+    total = 0.0
+    for zi, mui, si in zip(z, mu, sigma):
+        if not math.isfinite(zi) or not math.isfinite(mui) or not math.isfinite(si):
+            raise LossError("non-finite gaussian input")
+        if si <= 0.0:
+            raise LossError("sigma must be positive")
+        total += ((zi - mui) / si) ** 2 + 2.0 * math.log(si) + log_two_pi
+    return -0.5 * total
 
 
 def latent_ratio(
@@ -219,7 +315,11 @@ def latent_ratio(
     Empty on both sides is 1.0 (discrete-only). One empty and one not,
     length mismatch, or a non-finite log-prob raises LossError.
     """
-    raise NotImplementedError("I2 latent_ratio")
+    if len(logp_new) == 0 and len(logp_old) == 0:
+        return 1.0
+    if len(logp_new) == 0 or len(logp_old) == 0:
+        raise LossError("one latent side empty")
+    return sequence_ratio(logp_new, logp_old)
 
 
 def routing_table(
@@ -235,7 +335,33 @@ def routing_table(
     ids are non-negative. ``n_tokens``, ``n_layers``, or ``top_k`` not
     positive raises LossError.
     """
-    raise NotImplementedError("I2 routing_table")
+    if n_tokens <= 0 or n_layers <= 0 or top_k <= 0:
+        raise LossError("n_tokens, n_layers, and top_k must be positive")
+    cells: dict[tuple[int, int], tuple[int, ...]] = {}
+    for trace in traces:
+        key = (trace.token_index, trace.layer_index)
+        if key in cells:
+            raise LossError("duplicate (token, layer)")
+        if trace.token_index < 0 or trace.token_index >= n_tokens:
+            raise LossError("token_index out of range")
+        if trace.layer_index < 0 or trace.layer_index >= n_layers:
+            raise LossError("layer_index out of range")
+        if len(trace.expert_ids) != top_k:
+            raise LossError("expert_ids length must equal top_k")
+        for expert_id in trace.expert_ids:
+            if expert_id < 0:
+                raise LossError("expert id must be non-negative")
+        cells[key] = tuple(trace.expert_ids)
+    table: list[tuple[tuple[int, ...], ...]] = []
+    for token_index in range(n_tokens):
+        row: list[tuple[int, ...]] = []
+        for layer_index in range(n_layers):
+            key = (token_index, layer_index)
+            if key not in cells:
+                raise LossError("missing (token, layer)")
+            row.append(cells[key])
+        table.append(tuple(row))
+    return tuple(table)
 
 
 def gspo_dapo_loss(
@@ -255,4 +381,59 @@ def gspo_dapo_loss(
     or a group with no samples raises LossError. Does not apply a
     reference KL.
     """
-    raise NotImplementedError("I2 gspo_dapo_loss")
+    if len(group.samples) == 0:
+        raise LossError("empty group")
+    if group.prompt_id == "":
+        raise LossError("empty prompt_id")
+    gaps: list[int] = []
+    for sample in group.samples:
+        if len(sample.token_logp_trainer) == 0 or len(sample.token_logp_rollout) == 0:
+            raise LossError("empty token log-probs")
+        if len(sample.token_logp_trainer) != len(sample.token_logp_rollout):
+            raise LossError("mismatched trainer/rollout lengths")
+        if len(sample.latent_logp_trainer) != len(sample.latent_logp_rollout):
+            raise LossError("mismatched trainer/rollout lengths")
+        gap = staleness(trainer_version, sample.policy_version)
+        if gap > config.max_staleness:
+            raise LossError("staleness exceeds max_staleness")
+        gaps.append(gap)
+    rewards = tuple(sample.reward for sample in group.samples)
+    if all_equal_reward(rewards):
+        return LossBreakdown(pg=0.0, tis=0.0, overlong=0.0, latent=0.0, n_kept=0, total=0.0)
+    advantages = mean_center(rewards)
+    pg_sum = 0.0
+    latent_sum = 0.0
+    overlong_sum = 0.0
+    tis_sum = 0.0
+    for sample, advantage, gap in zip(group.samples, advantages, gaps):
+        r_disc = sequence_ratio(sample.token_logp_trainer, sample.token_logp_rollout)
+        c_disc = clip_higher(r_disc, config.clip_eps_low, config.clip_eps_high)
+        if sample.latent_logp_trainer or sample.latent_logp_rollout:
+            r_lat = latent_ratio(sample.latent_logp_trainer, sample.latent_logp_rollout)
+            c_lat = clip_higher(
+                r_lat, config.latent_clip_eps_low, config.latent_clip_eps_high
+            )
+            lat_term = c_lat * advantage
+        else:
+            lat_term = 0.0
+        tis_w = truncated_is(
+            sample.token_logp_trainer, sample.token_logp_rollout, gap, config.tis_clip
+        )
+        ol = overlong_soft_penalty(
+            sample.n_tokens, config.overlong_cache, config.overlong_penalty
+        )
+        disc_term = c_disc * advantage
+        pg_sum += disc_term * tis_w
+        latent_sum += lat_term * tis_w
+        overlong_sum += ol
+        tis_sum += tis_w
+    n_kept = len(group.samples)
+    z = config.loss_normalizer
+    pg = pg_sum / z
+    latent = latent_sum / z
+    overlong = overlong_sum / z
+    tis = tis_sum / n_kept
+    total = (pg_sum + latent_sum + overlong_sum) / z
+    return LossBreakdown(
+        pg=pg, tis=tis, overlong=overlong, latent=latent, n_kept=n_kept, total=total
+    )
