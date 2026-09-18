@@ -426,3 +426,4 @@ impl RefController {
 }
 
 pub mod rung;
+pub mod scale;
