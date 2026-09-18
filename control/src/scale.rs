@@ -211,10 +211,7 @@ impl ScalingFit {
 }
 
 /// Fit on `train`, predict `held_out`. `held_out.id` must not appear in `train`.
-pub fn predict_held_out(
-    train: &[RungObservation],
-    held_out: &RungSpec,
-) -> Result<f64, ScaleError> {
+pub fn predict_held_out(train: &[RungObservation], held_out: &RungSpec) -> Result<f64, ScaleError> {
     for obs in train {
         if obs.spec.id == held_out.id {
             return Err(ScaleError::HeldOutInTrain);
