@@ -12,9 +12,12 @@ not I9).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+import numpy as np
 
 Array = Any  # numpy.ndarray; FP32 logits
 
@@ -106,7 +109,9 @@ def force_discrete(checkpoint_id: str) -> CheckpointMode:
     Empty ``checkpoint_id`` raises ``AuditError``. The returned mode is
     always ``Mode.DISCRETE``.
     """
-    raise NotImplementedError("I9: force_discrete")
+    if not isinstance(checkpoint_id, str) or checkpoint_id.strip() == "":
+        raise AuditError("empty or whitespace-only checkpoint_id")
+    return CheckpointMode(checkpoint_id=checkpoint_id, mode=Mode.DISCRETE)
 
 
 def compare_answers(pair: AnswerPair) -> Divergence:
@@ -116,7 +121,24 @@ def compare_answers(pair: AnswerPair) -> Divergence:
     strings (that is a real, wrong answer). Divergence does not require
     gold.
     """
-    raise NotImplementedError("I9: compare_answers")
+    if not isinstance(pair.problem_id, str) or pair.problem_id == "":
+        raise AuditError("empty problem_id")
+    diverge = pair.discrete_answer != pair.latent_answer
+    if pair.gold is None:
+        discrete_correct: bool | None = None
+        latent_correct: bool | None = None
+    else:
+        discrete_correct = pair.discrete_answer == pair.gold
+        latent_correct = pair.latent_answer == pair.gold
+    return Divergence(
+        problem_id=pair.problem_id,
+        discrete_answer=pair.discrete_answer,
+        latent_answer=pair.latent_answer,
+        gold=pair.gold,
+        discrete_correct=discrete_correct,
+        latent_correct=latent_correct,
+        diverge=diverge,
+    )
 
 
 def compare_suite(pairs: tuple[AnswerPair, ...]) -> tuple[Divergence, ...]:
@@ -125,7 +147,9 @@ def compare_suite(pairs: tuple[AnswerPair, ...]) -> tuple[Divergence, ...]:
     Empty suite raises ``AuditError``. A pair that does not diverge is
     still returned (``diverge=False``); callers filter.
     """
-    raise NotImplementedError("I9: compare_suite")
+    if not isinstance(pairs, tuple) or len(pairs) < 1:
+        raise AuditError("empty pairs")
+    return tuple(compare_answers(pair) for pair in pairs)
 
 
 def decode_thoughts(logits: Array) -> tuple[ThoughtStep, ...]:
@@ -139,7 +163,25 @@ def decode_thoughts(logits: Array) -> tuple[ThoughtStep, ...]:
     Empty, wrong rank, wrong window, or non-finite logits raise
     ``AuditError``.
     """
-    raise NotImplementedError("I9: decode_thoughts")
+    if not isinstance(logits, np.ndarray):
+        raise AuditError("logits must be a numpy array")
+    if logits.ndim != 3:
+        raise AuditError(f"logits rank must be 3, got {logits.ndim}")
+    n_thoughts, window, vocab = (int(dim) for dim in logits.shape)
+    if n_thoughts < 1:
+        raise AuditError("n_thoughts must be >= 1")
+    if window != TOKENS_PER_THOUGHT:
+        raise AuditError(f"thought window must be {TOKENS_PER_THOUGHT}, got {window}")
+    if vocab < 1:
+        raise AuditError("vocab must be >= 1")
+    if not np.all(np.isfinite(logits)):
+        raise AuditError("logits must be finite")
+    # np.argmax picks the first max, which is the smallest id on a tie.
+    token_ids = np.argmax(logits, axis=-1)
+    return tuple(
+        ThoughtStep(index=i, token_ids=tuple(int(t) for t in token_ids[i]))
+        for i in range(n_thoughts)
+    )
 
 
 def find_planted_bug(
@@ -166,4 +208,44 @@ def find_planted_bug(
     Does not import ``model.latent``. The halt check is the pin
     invariant, not a second PonderNet.
     """
-    raise NotImplementedError("I9: find_planted_bug")
+    if kind == BugKind.ANSWER_SWAP:
+        if pair is None:
+            raise AuditError("pair required for ANSWER_SWAP")
+        div = compare_answers(pair)
+        found = bool(div.diverge)
+        if found:
+            evidence = f"answers diverge on {div.problem_id}"
+        else:
+            evidence = f"no answer_swap on {div.problem_id}"
+        return PlantedBug(kind=BugKind.ANSWER_SWAP, found=found, evidence=evidence)
+
+    if kind == BugKind.DECODE_FLIP:
+        if logits is None:
+            raise AuditError("logits required for DECODE_FLIP")
+        pos = decode_thoughts(logits)
+        neg = decode_thoughts(-np.asarray(logits))
+        found = any(a.token_ids != b.token_ids for a, b in zip(pos, neg, strict=True))
+        if found:
+            evidence = "greedy decode of logits disagrees with greedy decode of -logits"
+        else:
+            evidence = "greedy decode of logits matches greedy decode of -logits"
+        return PlantedBug(kind=BugKind.DECODE_FLIP, found=found, evidence=evidence)
+
+    if kind == BugKind.HALT_UNPINNED:
+        if halt_lambdas is None:
+            raise AuditError("halt_lambdas required for HALT_UNPINNED")
+        if not isinstance(halt_lambdas, np.ndarray):
+            raise AuditError("halt_lambdas must be a numpy array")
+        if halt_lambdas.ndim != 1:
+            raise AuditError("halt_lambdas must be 1-D")
+        if halt_lambdas.size < 1:
+            raise AuditError("halt_lambdas empty")
+        last_f = float(halt_lambdas[-1])
+        found = (not math.isfinite(last_f)) or (last_f != 1.0)
+        if found:
+            evidence = f"last halt lambda is {last_f!r}, not pinned to 1.0"
+        else:
+            evidence = "last halt lambda is pinned to 1.0"
+        return PlantedBug(kind=BugKind.HALT_UNPINNED, found=found, evidence=evidence)
+
+    raise AuditError(f"unknown bug kind: {kind!r}")
