@@ -25,6 +25,7 @@ members = [
     "harness/raft",
     "harness/slurm",
     "obs",
+    "rl/coordinator",
     "rl/envs",
     "rl/rewards",
     "rl/tasks",

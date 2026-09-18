@@ -1,0 +1,11 @@
+[package]
+name = "prometheus-coordinator"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Async RL rollout/trainer orchestration, weight sync, parity halt (spec 15.5 I2)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
