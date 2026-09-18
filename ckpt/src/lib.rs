@@ -6,8 +6,9 @@
 //! racks). Only one DP replica's shards are written.
 //!
 //! A checkpoint holds sharded weights, optimizer state, loader state, and RNG
-//! (spec 15.4). The JSON envelope is F1 `prometheus.checkpoint` v1. Blob bytes
-//! live next to the manifest, addressed by `content_hash`.
+//! (spec 15.4). The JSON envelope is F1 `prometheus.checkpoint` v1 (`schema_id`,
+//! not `schema`). Blob bytes live next to the manifest, addressed by
+//! `content_hash`. Combined hashes are not in F1; integrity is per-shard.
 //!
 //! `created_at` is supplied by the caller. Nothing here reads the wall clock.
 //!
@@ -45,7 +46,7 @@ pub enum CkptError {
     Message(String),
 }
 
-/// Lowercase hex SHA-256 of raw bytes. F1 `content_hash` / combined hashes.
+/// Lowercase hex SHA-256 of raw bytes. F1 `content_hash`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -55,11 +56,13 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dtype {
-    F32,
+    Fp32,
     Bf16,
+    Fp16,
     Fp8,
-    Fp4,
     Nvfp4,
+    Int8,
+    Int32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +85,7 @@ pub struct Mesh {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Precision {
     pub param_dtype: Dtype,
-    pub remat: bool,
+    pub remat: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,30 +111,30 @@ pub struct OptimizerMeta {
 pub struct RngState {
     pub scope: String,
     pub rank: u32,
-    pub state: String,
+    pub state_hash: String,
 }
 
 /// F1 `prometheus.checkpoint` v1 envelope payload (hashes, not blob bytes).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub checkpoint_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
+    #[serde(default)]
+    pub parent_checkpoint_id: Option<String>,
     pub step: u64,
     pub rung: u32,
-    pub weights_hash: String,
-    pub optimizer_hash: String,
-    pub loader_hash: String,
-    pub rng_hash: String,
+    pub model_config_hash: String,
+    pub data_mix_hash: String,
     pub tokenizer_id: String,
-    pub precision: Precision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precision: Option<Precision>,
     pub mesh: Mesh,
     pub weights: Vec<WeightMeta>,
     pub optimizer: Vec<OptimizerMeta>,
     pub loader_state: Value,
     pub rng: Vec<RngState>,
     pub created_at: String,
-    pub git_commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
 }
 
 impl Manifest {
@@ -142,7 +145,7 @@ impl Manifest {
             .as_object_mut()
             .ok_or_else(|| CkptError::Schema("manifest is not an object".into()))?;
         let mut envelope = Map::new();
-        envelope.insert("schema".into(), json!(SCHEMA_ID));
+        envelope.insert("schema_id".into(), json!(SCHEMA_ID));
         envelope.insert("schema_version".into(), json!(SCHEMA_VERSION));
         envelope.append(obj);
         Ok(Value::Object(envelope))
@@ -153,9 +156,9 @@ impl Manifest {
             .as_object()
             .ok_or_else(|| CkptError::Schema("checkpoint is not an object".into()))?;
         let schema = obj
-            .get("schema")
+            .get("schema_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| CkptError::Schema("missing schema".into()))?;
+            .ok_or_else(|| CkptError::Schema("missing schema_id".into()))?;
         if schema != SCHEMA_ID {
             return Err(CkptError::Schema(format!(
                 "expected {SCHEMA_ID}, got {schema}"
@@ -171,7 +174,7 @@ impl Manifest {
             )));
         }
         let mut payload = obj.clone();
-        payload.remove("schema");
+        payload.remove("schema_id");
         payload.remove("schema_version");
         serde_json::from_value(Value::Object(payload))
             .map_err(|err| CkptError::Schema(err.to_string()))
