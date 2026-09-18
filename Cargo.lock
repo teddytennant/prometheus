@@ -1295,6 +1295,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-monitors"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-obs"
 version = "0.0.1"
 dependencies = [

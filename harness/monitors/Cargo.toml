@@ -1,0 +1,15 @@
+[package]
+name = "prometheus-monitors"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Lab monitors and kill switch (spec 14.10, 15.5 L3)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
