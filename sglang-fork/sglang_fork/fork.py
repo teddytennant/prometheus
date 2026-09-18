@@ -100,31 +100,52 @@ def bucket_recurrence(r: int, budget: int) -> RecurrencePlan:
     ``min(budget, RECURRENCE_MAX)``. ``kv_shared`` is always True.
     Raises ForkError on non-positive ``r`` or ``budget``.
     """
-    raise NotImplementedError("I4 bucket_recurrence")
+    if r <= 0 or budget <= 0:
+        raise ForkError("r and budget must be positive")
+    cap = min(budget, RECURRENCE_MAX)
+    bucketed = RECURRENCE_MAX
+    for bucket in RECURRENCE_BUCKETS:
+        if bucket >= r:
+            bucketed = bucket
+            break
+    return RecurrencePlan(r=min(bucketed, cap), budget=budget, kv_shared=True)
 
 
 def validate_latent_chunk(n_thoughts: int) -> LatentChunk:
     """Accept ``n_thoughts`` in ``[LATENT_CHUNK_MIN, LATENT_CHUNK_MAX]``.
     Raises ForkError outside that range.
     """
-    raise NotImplementedError("I4 validate_latent_chunk")
+    if n_thoughts < LATENT_CHUNK_MIN or n_thoughts > LATENT_CHUNK_MAX:
+        raise ForkError(
+            f"n_thoughts {n_thoughts} outside [{LATENT_CHUNK_MIN}, {LATENT_CHUNK_MAX}]"
+        )
+    return LatentChunk(n_thoughts=n_thoughts, mode=DecodeMode.LATENT)
 
 
 def decode_mode(in_think: bool, halt: bool) -> DecodeMode:
     """LATENT while inside ``<think>`` and not halted; VERBAL otherwise.
     Latent steps must not emit a token (13.2).
     """
-    raise NotImplementedError("I4 decode_mode")
+    if in_think and not halt:
+        return DecodeMode.LATENT
+    return DecodeMode.VERBAL
 
 
 def next_kv_tier(tier: KvTier) -> KvTier | None:
     """The next colder tier, or None at DISTRIBUTED."""
-    raise NotImplementedError("I4 next_kv_tier")
+    for index, current in enumerate(KV_TIER_ORDER):
+        if current == tier:
+            if index + 1 < len(KV_TIER_ORDER):
+                return KV_TIER_ORDER[index + 1]
+            return None
+    raise ForkError(f"unknown kv tier {tier!r}")
 
 
 def swap_waiting_session(decoding: bool) -> KvTier:
     """Decoding stays on HBM. Waiting sessions move to GRACE (13.4, 13.7)."""
-    raise NotImplementedError("I4 swap_waiting_session")
+    if decoding:
+        return KvTier.HBM
+    return KvTier.GRACE
 
 
 def capture_routing(
@@ -137,7 +158,23 @@ def capture_routing(
     Length of ``expert_ids`` must equal ``top_k``; ids unique and
     non-negative. Raises ForkError otherwise.
     """
-    raise NotImplementedError("I4 capture_routing")
+    ids = tuple(expert_ids)
+    if top_k <= 0:
+        raise ForkError("top_k must be positive")
+    if len(ids) != top_k:
+        raise ForkError(f"expert_ids length {len(ids)} != top_k {top_k}")
+    seen: set[int] = set()
+    for expert_id in ids:
+        if expert_id < 0:
+            raise ForkError(f"negative expert id {expert_id}")
+        if expert_id in seen:
+            raise ForkError(f"duplicate expert id {expert_id}")
+        seen.add(expert_id)
+    return RoutingRecord(
+        token_index=token_index,
+        layer_index=layer_index,
+        expert_ids=ids,
+    )
 
 
 def schedule_prefix_group(
@@ -150,11 +187,26 @@ def schedule_prefix_group(
     overlap with the parent, depth in ``[1, SUBAGENT_DEPTH_MAX]``.
     Raises ForkError otherwise.
     """
-    raise NotImplementedError("I4 schedule_prefix_group")
+    if not parent_session:
+        raise ForkError("parent_session must be non-empty")
+    children = tuple(child_sessions)
+    if not children:
+        raise ForkError("child_sessions must be non-empty")
+    if parent_session in children:
+        raise ForkError("parent_session must not appear in child_sessions")
+    if depth < 1 or depth > SUBAGENT_DEPTH_MAX:
+        raise ForkError(f"depth {depth} outside [1, {SUBAGENT_DEPTH_MAX}]")
+    return PrefixGroup(
+        parent_session=parent_session,
+        child_sessions=children,
+        depth=depth,
+    )
 
 
 def register_ttt(task_id: str, lora_id: str) -> TttHook:
     """Register a sidecar LoRA for hot-load. Both ids non-empty.
     Raises ForkError otherwise. Does not train the LoRA (I8).
     """
-    raise NotImplementedError("I4 register_ttt")
+    if not task_id or not lora_id:
+        raise ForkError("task_id and lora_id must be non-empty")
+    return TttHook(task_id=task_id, lora_id=lora_id)
