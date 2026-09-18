@@ -7,4 +7,5 @@ V1 (v1_parity).
 V2 (v2_parallel).
 V3 (v3_precision).
 V4 (v4_fault).
+V7 (v7_rl).
 """
