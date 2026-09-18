@@ -24,11 +24,13 @@
 //! Membership here is the DP replica set, not H4 Raft voters.
 //!
 //! Rung 0 end-to-end bookkeeping is [`rung`] (spec 15.5 A7, CPU analog of V5).
+//! Scaling-law fit on rungs 1 to 3 is [`scale`] (spec 15.5 I1).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub mod rung;
+pub mod scale;
 
 /// Injected clock. Milliseconds since an arbitrary origin. Never wall time.
 pub type NowMs = u64;
