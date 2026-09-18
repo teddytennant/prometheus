@@ -98,7 +98,9 @@ fn uses_config_page_window_not_only_the_constant() {
     let _ = refer.on_loss_spike(0, shard("a"), "c".into()).unwrap();
     // delta 2 < 3 => page. Would not page if someone used PAGE_WINDOW_STEPS=10000.
     let r = prod.on_loss_spike(2, shard("b"), "c".into()).unwrap();
+    let rr = refer.on_loss_spike(2, shard("b"), "c".into()).unwrap();
     assert!(r.page);
+    assert_eq!(r, rr);
     assert_ne!(PAGE_WINDOW_STEPS, 3);
     assert_eq!(prod.pages().unwrap(), 1);
     assert_prod_matches_ref(&prod, &refer);
