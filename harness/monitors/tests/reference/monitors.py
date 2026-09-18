@@ -65,7 +65,7 @@ class RefMonitors:
         self.snapshot = empty_snapshot()
 
     @classmethod
-    def open(cls, freeze_path: str, grader_hashes: dict[str, str]) -> "RefMonitors":
+    def open(cls, freeze_path: str, grader_hashes: dict[str, str]) -> RefMonitors:
         m = cls(freeze_path, grader_hashes)
         m.snapshot = load_freeze(freeze_path)
         return m
