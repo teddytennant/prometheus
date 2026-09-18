@@ -1,6 +1,9 @@
 //! Independent in-memory Pool/Backend model for D1 oracle tests.
 //!
-//! Slow and obvious. No Firecracker, no sockets, no live network, no wall clock.
+//! Slow and obvious. No sockets, no live network, no wall clock.
+//! [`firecracker`] simulates the Firecracker Backend in memory (kernel/rootfs
+//! file checks plus InProcess isolation). It never calls production
+//! `Firecracker` or `Engine`.
 //! Production (`rl/envs/src`) must never import this module.
 //!
 //! Tool payload shapes the implementer must accept (tiny interpreters):
@@ -14,6 +17,8 @@
 
 #![allow(dead_code)]
 #![allow(clippy::needless_pass_by_value)]
+
+pub mod firecracker;
 
 use std::collections::BTreeMap;
 
