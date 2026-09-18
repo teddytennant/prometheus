@@ -25,7 +25,8 @@ FD vs reverse-mode, and that a deliberately wrong forward exceeds 1e-5.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -191,7 +192,6 @@ def toy_reverse_mode_grads(
     batch, seq = int(tok.shape[0]), int(tok.shape[1])
     hidden = embed[tok]  # (B, S, D)
     logits = hidden @ unembed.T  # (B, S, V)
-    vocab = int(logits.shape[-1])
     n_tok = float(batch * (seq - 1))
 
     dlogits = np.zeros_like(logits, dtype=np.float64)
