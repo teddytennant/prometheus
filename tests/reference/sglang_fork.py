@@ -1,10 +1,22 @@
-"""SGLang fork deltas (spec 13.2-13.8, 4.1-4.2, 9.2, 10, 15.5 I4).
+"""Independent I4 reference: SGLang fork deltas (spec 13.2-13.8, 4.1-4.2, 9.2, 10).
 
-Discrete serving contract for latent decode, recurrence buckets, KV
-tiering, routing capture, sub-agent prefix groups, and the TTT LoRA
-hook. This module does not talk to a live SGLang engine and does not
-import ``model``. Weight conversion stays C1; architecture counts stay
-C2. JAX TTT training stays I8.
+Plain Python, slow and obvious. Does not import production ``sglang_fork``
+or ``sglang_fork.fork``. Enums, dataclasses, and constants are a local
+mirror so tests can compare field-by-field without sharing code.
+
+Rules
+-----
+bucket_recurrence: ceil r to the next value in RECURRENCE_BUCKETS, then
+    cap by min(budget, RECURRENCE_MAX). kv_shared is always True.
+    Non-positive r or budget -> ForkError.
+validate_latent_chunk: n_thoughts in [LATENT_CHUNK_MIN, LATENT_CHUNK_MAX].
+decode_mode: LATENT iff in_think and not halt; VERBAL otherwise.
+next_kv_tier: HBM -> GRACE -> NVME -> DISTRIBUTED -> None.
+swap_waiting_session: decoding True -> HBM; False -> GRACE.
+capture_routing: len(expert_ids) == top_k, unique non-negative ids.
+schedule_prefix_group: non-empty parent and children, parent not in
+    children, depth in [1, SUBAGENT_DEPTH_MAX].
+register_ttt: both ids non-empty.
 """
 
 from __future__ import annotations
@@ -18,30 +30,23 @@ class ForkError(ValueError):
 
 
 class DecodeMode(StrEnum):
-    """13.2 / 4.1: verbal samples a token; latent feeds the adapter."""
-
     VERBAL = "verbal"
     LATENT = "latent"
 
 
 class KvTier(StrEnum):
-    """13.4: HBM then Grace LPDDR5X then local NVMe then distributed."""
-
     HBM = "hbm"
     GRACE = "grace"
     NVME = "nvme"
     DISTRIBUTED = "distributed"
 
 
-# 13.3: r is quantized so batches stay regular.
 RECURRENCE_BUCKETS: tuple[int, ...] = (1, 2, 4, 8, 16)
 RECURRENCE_MAX = 16
 
-# 4.2: latent chunks sit between discrete anchors.
 LATENT_CHUNK_MIN = 4
 LATENT_CHUNK_MAX = 64
 
-# 14.4: sub-agents may spawn to depth 3.
 SUBAGENT_DEPTH_MAX = 3
 
 KV_TIER_ORDER: tuple[KvTier, ...] = (
@@ -54,8 +59,6 @@ KV_TIER_ORDER: tuple[KvTier, ...] = (
 
 @dataclass(frozen=True)
 class RecurrencePlan:
-    """Per-request depth. ``r`` is the bucketed iteration count."""
-
     r: int
     budget: int
     kv_shared: bool = True
@@ -63,16 +66,12 @@ class RecurrencePlan:
 
 @dataclass(frozen=True)
 class LatentChunk:
-    """One continuous-thought span inside ``<think>``. No tokens emitted."""
-
     n_thoughts: int
     mode: DecodeMode = DecodeMode.LATENT
 
 
 @dataclass(frozen=True)
 class RoutingRecord:
-    """Expert ids chosen for one token at one MoE layer (9.2 routing replay)."""
-
     token_index: int
     layer_index: int
     expert_ids: tuple[int, ...]
@@ -80,8 +79,6 @@ class RoutingRecord:
 
 @dataclass(frozen=True)
 class PrefixGroup:
-    """13.7: spawned sub-agents share the parent's prefix KV."""
-
     parent_session: str
     child_sessions: tuple[str, ...]
     depth: int
@@ -89,32 +86,29 @@ class PrefixGroup:
 
 @dataclass(frozen=True)
 class TttHook:
-    """13.8 / 10: SGLang hot-loads a LoRA the JAX sidecar produced."""
-
     task_id: str
     lora_id: str
 
 
+def _ceil_to_bucket(r: int) -> int:
+    """Smallest bucket >= r, or RECURRENCE_MAX if r exceeds every bucket."""
+    for bucket in RECURRENCE_BUCKETS:
+        if bucket >= r:
+            return bucket
+    return RECURRENCE_MAX
+
+
 def bucket_recurrence(r: int, budget: int) -> RecurrencePlan:
-    """Ceil ``r`` to the next value in ``RECURRENCE_BUCKETS``, cap by
-    ``min(budget, RECURRENCE_MAX)``. ``kv_shared`` is always True.
-    Raises ForkError on non-positive ``r`` or ``budget``.
-    """
+    """Ceil r to the next bucket, then cap by min(budget, RECURRENCE_MAX)."""
     if r <= 0 or budget <= 0:
         raise ForkError("r and budget must be positive")
     cap = min(budget, RECURRENCE_MAX)
-    bucketed = RECURRENCE_MAX
-    for bucket in RECURRENCE_BUCKETS:
-        if bucket >= r:
-            bucketed = bucket
-            break
+    bucketed = _ceil_to_bucket(r)
     return RecurrencePlan(r=min(bucketed, cap), budget=budget, kv_shared=True)
 
 
 def validate_latent_chunk(n_thoughts: int) -> LatentChunk:
-    """Accept ``n_thoughts`` in ``[LATENT_CHUNK_MIN, LATENT_CHUNK_MAX]``.
-    Raises ForkError outside that range.
-    """
+    """Accept n_thoughts in [LATENT_CHUNK_MIN, LATENT_CHUNK_MAX]."""
     if n_thoughts < LATENT_CHUNK_MIN or n_thoughts > LATENT_CHUNK_MAX:
         raise ForkError(
             f"n_thoughts {n_thoughts} outside [{LATENT_CHUNK_MIN}, {LATENT_CHUNK_MAX}]"
@@ -123,9 +117,7 @@ def validate_latent_chunk(n_thoughts: int) -> LatentChunk:
 
 
 def decode_mode(in_think: bool, halt: bool) -> DecodeMode:
-    """LATENT while inside ``<think>`` and not halted; VERBAL otherwise.
-    Latent steps must not emit a token (13.2).
-    """
+    """LATENT while inside <think> and not halted; VERBAL otherwise."""
     if in_think and not halt:
         return DecodeMode.LATENT
     return DecodeMode.VERBAL
@@ -142,7 +134,7 @@ def next_kv_tier(tier: KvTier) -> KvTier | None:
 
 
 def swap_waiting_session(decoding: bool) -> KvTier:
-    """Decoding stays on HBM. Waiting sessions move to GRACE (13.4, 13.7)."""
+    """Decoding stays on HBM. Waiting sessions move to GRACE."""
     if decoding:
         return KvTier.HBM
     return KvTier.GRACE
@@ -154,10 +146,7 @@ def capture_routing(
     expert_ids: tuple[int, ...],
     top_k: int,
 ) -> RoutingRecord:
-    """Record expert ids for the trainer's routing replay (9.2).
-    Length of ``expert_ids`` must equal ``top_k``; ids unique and
-    non-negative. Raises ForkError otherwise.
-    """
+    """Record expert ids. Length == top_k; ids unique and non-negative."""
     ids = tuple(expert_ids)
     if top_k <= 0:
         raise ForkError("top_k must be positive")
@@ -182,11 +171,7 @@ def schedule_prefix_group(
     child_sessions: tuple[str, ...],
     depth: int,
 ) -> PrefixGroup:
-    """Schedule children as one group sharing the parent's prefix KV.
-    ``parent_session`` non-empty, ``child_sessions`` non-empty, no
-    overlap with the parent, depth in ``[1, SUBAGENT_DEPTH_MAX]``.
-    Raises ForkError otherwise.
-    """
+    """Children share the parent's prefix KV. Depth in [1, SUBAGENT_DEPTH_MAX]."""
     if not parent_session:
         raise ForkError("parent_session must be non-empty")
     children = tuple(child_sessions)
@@ -204,9 +189,7 @@ def schedule_prefix_group(
 
 
 def register_ttt(task_id: str, lora_id: str) -> TttHook:
-    """Register a sidecar LoRA for hot-load. Both ids non-empty.
-    Raises ForkError otherwise. Does not train the LoRA (I8).
-    """
+    """Register a sidecar LoRA for hot-load. Both ids non-empty."""
     if not task_id or not lora_id:
         raise ForkError("task_id and lora_id must be non-empty")
     return TttHook(task_id=task_id, lora_id=lora_id)
