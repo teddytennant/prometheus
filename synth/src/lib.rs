@@ -1,4 +1,5 @@
-//! Synthetic data: rewrites (E1), rejection sampling (E2), procedural ARC (E3).
+//! Synthetic data: rewrites (E1), rejection sampling (E2), procedural ARC (E3),
+//! agentic trajectories (E4).
 //!
 //! E1: high-quality documents are rephrased in several styles (Kimi K2-style)
 //! and fact-checked against the source. Gate: supported-class precision of
@@ -9,6 +10,9 @@
 //!
 //! E3: re-arc-style grid families, 2D tokenization via F6 `encode_grid`,
 //! dihedral × color-perm augmentation. Gate: [`arc::diversity_stats`].
+//!
+//! E4: agentic traces in a D1 sandbox, kept when [`agentic::Outcome::Verified`].
+//! Gate: [`agentic::outcome_verified_rate`].
 //!
 //! The generator is F5's batch API behind [`Generator`]. Token counts use F6
 //! encode length when a [`TokenCounter`] is provided.
@@ -27,6 +31,8 @@ mod reject;
 pub use reject::*;
 mod arc;
 pub use arc::*;
+mod agentic;
+pub use agentic::*;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum Error {
