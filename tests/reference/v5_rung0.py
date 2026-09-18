@@ -1,6 +1,6 @@
 """Independent host V5 rung-0 protocol (spec 16.2 / 15.5 A7 + I1).
 
-Slow and obvious. Does **not** import ``prometheus.verify.v5_rung0``, JAX,
+Slow and obvious. Does **not** import the production V5 runner, JAX,
 torch, or the Rust crates. Production ``run_v5`` must not import this module;
 tests import both.
 
