@@ -165,29 +165,43 @@ fn queue_below_high_uses_gpu_target_rule_three() {
 
 #[test]
 fn rule_four_when_over_target_and_queue_nonempty_below_high() {
-    // Start 100% with min_trainer=1 → 3 rollout (24) vs target 32, still under.
-    // Use numer=25/100, 4×8=32, target=8. Initial: 8<=8, 16>8 → 1 rollout
-    // (8 GPUs) == target. Empty queue would rule-1 add more. So enqueue one
-    // (below high) to skip rule 1, equal target → None. Then force overshoot
-    // via min_rollout.
+    // Construction overshoot always lands on n_rollout == min_rollout, so
+    // rule 4 (same as (2), honors min_rollout_racks) can never fire
+    // immediately after `new`. Overshoot via rule 1 instead (empty queue
+    // ignores GPU target), then enqueue one below queue_high so rules 1/2
+    // do not fire, then expect rule 4.
+    // 4×8, numer=50/100, target=16, min_rollout=1, min_trainer=1, queue_high=8.
     let mut cfg = default_config();
-    cfg.rollout_numer = 25;
+    cfg.rollout_numer = 50;
     cfg.rollout_denom = 100;
-    cfg.min_rollout_racks = 2; // first pass k=1, floor forces 2 → 16 GPUs > 8
+    cfg.min_rollout_racks = 1;
     cfg.min_trainer_racks = 1;
     cfg.queue_high = 8;
     let racks = default_racks();
     let (mut prod, mut refer) = pair(cfg, racks.clone());
+    // Initial: 2+2 at target 16.
     assert_eq!(prod.n_rollout_racks().unwrap(), 2);
-    assert_eq!(prod.split_gpus().unwrap(), (16, 16)); // 16 > target 8
+    assert_eq!(prod.split_gpus().unwrap(), (16, 16));
+    // First rebalance on empty queue: rule 1 moves lex-smallest trainer r02 → Rollout
+    // (now 3+1, 24 GPUs > 16).
+    let moved = reb(&mut prod, &mut refer)
+        .unwrap()
+        .expect("rule 1 overshoot");
+    assert_eq!(moved.0, rid("r02"));
+    assert_eq!(moved.1, RackRole::Rollout);
+    assert_eq!(prod.n_rollout_racks().unwrap(), 3);
+    assert_eq!(prod.n_trainer_racks().unwrap(), 1);
+    assert_eq!(prod.split_gpus().unwrap(), (24, 8));
+    // Enqueue one batch (depth 1 < 8): rule 1/2 do not fire.
     assert_both_ok(
         prod.enqueue_batch(batch("q", "p", 0, 1, false)),
         refer.enqueue_batch(batch("q", "p", 0, 1, false)),
     );
+    // Next rebalance: rule 4 moves lex-smallest rollout r00 → Trainer.
     let moved = reb(&mut prod, &mut refer).unwrap().expect("rule 4");
     assert_eq!(moved.1, RackRole::Trainer);
-    assert_eq!(moved.0, rid("r00")); // lex-smallest rollout
-    assert_eq!(prod.n_rollout_racks().unwrap(), 1);
+    assert_eq!(moved.0, rid("r00"));
+    assert_eq!(prod.n_rollout_racks().unwrap(), 2);
     assert_prod_matches_ref(&prod, &refer, &racks);
 }
 

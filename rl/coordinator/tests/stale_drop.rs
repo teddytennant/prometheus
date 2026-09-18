@@ -95,13 +95,14 @@ fn mixed_queue_drops_only_stale_prefix_then_returns_fresh() {
     assert_eq!(got.id, bid("fresh"));
     assert_eq!(got.policy_version, 1);
     assert!(got.routing_present);
-    // Last stale remains.
+    // Prefix-only drop: the last stale remains after the first consume.
     assert_eq!(prod.queue_depth().unwrap(), 1);
-    let tail = consume_both(&mut prod, &mut refer)
-        .unwrap()
-        .expect("tail still there");
-    assert_eq!(tail.id, bid("stale-tail"));
-    assert_eq!(tail.policy_version, 0);
+    // Second consume sees an all-stale remainder (k=2 > 1): drop it, return None.
+    match consume_both(&mut prod, &mut refer) {
+        Ok(None) => {}
+        other => panic!("stale tail must be dropped, got {other:?}"),
+    }
+    assert_eq!(prod.queue_depth().unwrap(), 0);
     assert_prod_matches_ref(&prod, &refer, &racks);
 }
 
