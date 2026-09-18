@@ -1,61 +1,24 @@
-//! Agentic trajectories in D1 (spec 8, 15.5 E4).
+//! Slow, obvious E4 agentic-trajectory reference.
 //!
-//! A generator proposes tool calls. A [`Sandbox`] executes them. Traces
-//! are kept only when [`Outcome::Verified`]. The sandbox is a trait so
-//! this crate does not import `prometheus-envs`.
+//! Production `prometheus-synth` must match this module. Production must never
+//! import `tests/`. This file must not call production `generate_one`,
+//! `generate_batch`, `outcome_verified_rate`, or `keep_verified`.
+#![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
-
-use crate::{Error, Generator, Result};
+use prometheus_synth::{AgenticTask, Error, Generator, Outcome, Result, Sandbox, Step, Trajectory};
 
 /// Terminal tool name. Case-sensitive. Any other tool is non-terminal.
-const SUBMIT_TOOL: &str = "submit";
+pub const SUBMIT_TOOL: &str = "submit";
 
 /// Sandbox result that, together with [`SUBMIT_TOOL`], marks [`Outcome::Verified`].
 /// Compared exactly; no trim.
-const VERIFIED_RESULT: &str = "verified";
-
-/// One tool invocation inside a D1 sandbox.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Step {
-    pub tool: String,
-    pub args: String,
-    pub result: String,
-}
-
-/// End state of a trajectory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Outcome {
-    Verified,
-    Failed,
-    Truncated,
-}
-
-/// One agent run on one task.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Trajectory {
-    pub task_id: String,
-    pub steps: Vec<Step>,
-    pub outcome: Outcome,
-}
-
-/// A task the agent should solve in the sandbox.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgenticTask {
-    pub task_id: String,
-    pub prompt: String,
-}
-
-/// D1 sandbox. One call is one tool invocation.
-pub trait Sandbox {
-    fn call(&mut self, tool: &str, args: &str) -> Result<String>;
-}
+pub const VERIFIED_RESULT: &str = "verified";
 
 /// Prompt sent to the generator at a given step.
 ///
 /// The first call is exactly `task.prompt`. After each executed step the
 /// prompt grows by `\n{tool}\n{args}\n{result}` in step order.
-fn step_prompt(task: &AgenticTask, steps: &[Step]) -> String {
+pub fn step_prompt(task: &AgenticTask, steps: &[Step]) -> String {
     let mut out = task.prompt.clone();
     for step in steps {
         out.push('\n');
@@ -74,7 +37,7 @@ fn step_prompt(task: &AgenticTask, steps: &[Step]) -> String {
 /// 2. Empty remainder is not a tool call (`None`).
 /// 3. The tool is the first Unicode-whitespace-separated token.
 /// 4. `args` is the remainder with leading whitespace stripped.
-fn parse_tool_call(text: &str) -> Option<(String, String)> {
+pub fn parse_tool_call(text: &str) -> Option<(String, String)> {
     let text = text.trim();
     if text.is_empty() {
         return None;
@@ -89,6 +52,17 @@ fn parse_tool_call(text: &str) -> Option<(String, String)> {
 }
 
 /// One trajectory. Sequential generator calls of a single prompt each.
+///
+/// Loop `max_steps` times (zero means no calls, [`Outcome::Truncated`]):
+/// - `generate(&[step_prompt], max_tokens, temperature)`
+/// - wrong completion count is [`Error::LengthMismatch`] with `want == 1`
+/// - unparseable completion: [`Outcome::Failed`], keep steps so far, stop
+/// - `sandbox.call(tool, args)`: `Err` surfaces unchanged
+/// - record the [`Step`], then:
+///   - tool `submit` and result exactly `verified`: [`Outcome::Verified`], stop
+///   - tool `submit` otherwise: [`Outcome::Failed`], stop
+///   - any other tool: continue
+/// - loop exhausted without a terminal submit: [`Outcome::Truncated`]
 fn run_one<G: Generator, S: Sandbox>(
     gen: &mut G,
     sandbox: &mut S,
@@ -133,7 +107,10 @@ fn run_one<G: Generator, S: Sandbox>(
 }
 
 /// Empty `task.prompt` is [`Error::EmptyPrompt`]. `n == 0` is
-/// [`Error::ZeroSamples`].
+/// [`Error::ZeroSamples`] and wins over an empty prompt.
+///
+/// Returns exactly `n` trajectories, in order. Each trajectory starts with
+/// empty history. The same generator and sandbox are reused (no reset).
 pub fn generate_one<G: Generator, S: Sandbox>(
     gen: &mut G,
     sandbox: &mut S,
@@ -163,7 +140,11 @@ pub fn generate_one<G: Generator, S: Sandbox>(
     Ok(out)
 }
 
-/// Batch. Empty `tasks` is [`Error::EmptyBatch`].
+/// Empty `tasks` is [`Error::EmptyBatch`] and wins over `n == 0`.
+/// Then `n == 0` is [`Error::ZeroSamples`]. Then any empty prompt is
+/// [`Error::EmptyPrompt`] (first in order). Checks run before any generate.
+///
+/// One inner vec per task, same order, each of length `n`.
 pub fn generate_batch<G: Generator, S: Sandbox>(
     gen: &mut G,
     sandbox: &mut S,
@@ -211,7 +192,7 @@ pub fn outcome_verified_rate(trajs: &[Trajectory]) -> f64 {
     n_ok as f64 / trajs.len() as f64
 }
 
-/// Keep only [`Outcome::Verified`].
+/// Keep only [`Outcome::Verified`], original order. Drops Failed and Truncated.
 pub fn keep_verified(trajs: Vec<Trajectory>) -> Vec<Trajectory> {
     trajs
         .into_iter()
