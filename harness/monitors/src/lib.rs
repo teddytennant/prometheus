@@ -7,7 +7,8 @@
 //! [`NowMs`] is injected. Nothing here reads the wall clock.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -95,16 +96,16 @@ pub struct Monitors {
 impl Monitors {
     /// Open, loading a previous freeze from ``cfg.freeze_path`` if present.
     pub fn open(cfg: MonitorConfig) -> Result<Self> {
-        let _ = cfg;
-        unimplemented!("L3 Monitors::open")
+        let snapshot = load_freeze(&cfg.freeze_path)?;
+        Ok(Self { cfg, snapshot })
     }
 
     pub fn frozen(&self) -> bool {
-        unimplemented!("L3 Monitors::frozen")
+        self.snapshot.frozen
     }
 
     pub fn snapshot(&self) -> KillSnapshot {
-        unimplemented!("L3 Monitors::snapshot")
+        self.snapshot.clone()
     }
 
     /// Record a grader-source hash. Mismatch against the config trips kill.
@@ -114,37 +115,114 @@ impl Monitors {
         sha256_hex: &str,
         now: NowMs,
     ) -> Result<()> {
-        let _ = (grader_id, sha256_hex, now);
-        unimplemented!("L3 Monitors::note_grader_hash")
+        match self.cfg.grader_hashes.get(grader_id) {
+            Some(expected) if expected == sha256_hex => Ok(()),
+            _ => self.trip(Boundary::Graders, grader_id, now),
+        }
     }
 
     /// Record an attempt to read held-out task text. Any attempt trips kill.
     pub fn note_held_out_access(&mut self, who: &str, now: NowMs) -> Result<()> {
-        let _ = (who, now);
-        unimplemented!("L3 Monitors::note_held_out_access")
+        self.trip(Boundary::HeldOut, who, now)
     }
 
     /// Record a kernel capability the genome should not have.
     pub fn note_kernel_escape(&mut self, capability: &str, now: NowMs) -> Result<()> {
-        let _ = (capability, now);
-        unimplemented!("L3 Monitors::note_kernel_escape")
+        self.trip(Boundary::Kernel, capability, now)
     }
 
     /// Record a monitor self-check failure (tamper with this crate).
     pub fn note_self_check(&mut self, detail: &str, now: NowMs) -> Result<()> {
-        let _ = (detail, now);
-        unimplemented!("L3 Monitors::note_self_check")
+        self.trip(Boundary::Monitors, detail, now)
     }
 
     /// Plant a violation for the L3 gate. Same path as a real trip.
     pub fn plant(&mut self, boundary: Boundary, detail: &str, now: NowMs) -> Result<()> {
-        let _ = (boundary, detail, now);
-        unimplemented!("L3 Monitors::plant")
+        self.trip(boundary, detail, now)
     }
 
     /// Freeze kernel, graders, eval-gate, and monitors. Idempotent.
     pub fn kill(&mut self, reason: &str, now: NowMs) -> Result<KillSnapshot> {
-        let _ = (reason, now);
-        unimplemented!("L3 Monitors::kill")
+        if self.snapshot.frozen {
+            return Err(Error::AlreadyFrozen);
+        }
+        self.apply_kill(reason, now)?;
+        Ok(self.snapshot.clone())
     }
+
+    fn trip(&mut self, boundary: Boundary, detail: &str, now: NowMs) -> Result<()> {
+        self.snapshot.violations.push(Violation {
+            boundary,
+            at_ms: now,
+            detail: detail.to_string(),
+        });
+        if !self.snapshot.frozen {
+            self.apply_kill(freeze_reason(boundary), now)?;
+        } else {
+            self.persist()?;
+        }
+        Err(trip_err(boundary))
+    }
+
+    fn apply_kill(&mut self, reason: &str, now: NowMs) -> Result<()> {
+        self.snapshot.frozen = true;
+        self.snapshot.frozen_at = Some(now);
+        self.snapshot.reason = Some(reason.to_string());
+        self.persist()
+    }
+
+    fn persist(&self) -> Result<()> {
+        write_freeze(&self.cfg.freeze_path, &self.snapshot)
+    }
+}
+
+fn freeze_reason(boundary: Boundary) -> &'static str {
+    match boundary {
+        Boundary::Kernel => "kernel escape",
+        Boundary::Graders => "grader hash mismatch",
+        Boundary::HeldOut => "held-out access blocked",
+        Boundary::Monitors => "monitor self-check failed",
+    }
+}
+
+fn trip_err(boundary: Boundary) -> Error {
+    match boundary {
+        Boundary::Kernel => Error::Message("kernel escape".into()),
+        Boundary::Graders => Error::GraderHashMismatch,
+        Boundary::HeldOut => Error::HeldOutAccess,
+        Boundary::Monitors => Error::MonitorSelfCheck,
+    }
+}
+
+fn empty_snapshot() -> KillSnapshot {
+    KillSnapshot {
+        frozen: false,
+        frozen_at: None,
+        reason: None,
+        violations: Vec::new(),
+    }
+}
+
+fn load_freeze(path: &Path) -> Result<KillSnapshot> {
+    if !path.exists() {
+        return Ok(empty_snapshot());
+    }
+    if path.is_dir() {
+        return Err(Error::Message(format!(
+            "freeze path is a directory: {}",
+            path.display()
+        )));
+    }
+    let bytes = fs::read(path).map_err(|e| Error::Message(e.to_string()))?;
+    serde_json::from_slice(&bytes).map_err(|e| Error::Message(e.to_string()))
+}
+
+fn write_freeze(path: &Path, snapshot: &KillSnapshot) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| Error::Message(e.to_string()))?;
+        }
+    }
+    let bytes = serde_json::to_vec(snapshot).map_err(|e| Error::Message(e.to_string()))?;
+    fs::write(path, bytes).map_err(|e| Error::Message(e.to_string()))
 }
