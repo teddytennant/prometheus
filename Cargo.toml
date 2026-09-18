@@ -26,6 +26,7 @@ members = [
     "harness/slurm",
     "obs",
     "rl/coordinator",
+    "rl/multiagent",
     "rl/envs",
     "rl/rewards",
     "rl/tasks",

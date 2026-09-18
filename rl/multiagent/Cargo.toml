@@ -1,0 +1,11 @@
+[package]
+name = "prometheus-multiagent"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Multi-agent topologies, messaging, credit, distill-back (spec 15.5 I7)"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

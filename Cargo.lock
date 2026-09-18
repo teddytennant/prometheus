@@ -1332,6 +1332,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-multiagent"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "prometheus-obs"
 version = "0.0.1"
 dependencies = [
