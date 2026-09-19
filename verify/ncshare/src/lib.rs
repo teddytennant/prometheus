@@ -210,10 +210,21 @@ pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 ///
 /// Distinct from `render_job(Stage::V0, ...)`, which is the 1-GPU first
 /// allocation (`--nodes=1`). This script must request 2 nodes and 4 GPUs
-/// per node, launch nccl-tests all_reduce via MPI across both nodes, and
-/// write the same `busbw_gbps` and `node_facts.txt` files `check_exit(V0)`
-/// reads. The 8-GPU window is real: the caller stops gpu-opportunist around
-/// it, same as V2/V5.
+/// per node, run nccl-tests all_reduce intra-node (4 GPUs on one node,
+/// non-MPI `all_reduce_perf -g 4`) and across both nodes (8 ranks of
+/// `all_reduce_perf_mpi` via `srun --mpi=pmix`), and write the same
+/// `busbw_gbps` and `node_facts.txt` files `check_exit(V0)` reads.
+/// `busbw_gbps` is the 2-node measurement. Intra-node stdout is a
+/// separate file. Node facts (`/dev/kvm` and NVMe) must be recorded on
+/// every allocated compute node, not only the batch-script host. Spec
+/// 16.2: "intra-node and across 2 nodes", "on compute nodes". The 8-GPU
+/// window is real: the caller stops gpu-opportunist around it, same as
+/// V2/V5.
+///
+/// Override the non-MPI binary with `NCCL_TESTS_ALL_REDUCE` and the MPI
+/// binary with `NCCL_TESTS_ALL_REDUCE_MPI`. Do not hardcode a site path
+/// as the only way to find either. Do not fall back to `mpirun` (734144
+/// SIGSEGV in `PMIx_Init`).
 ///
 /// NCShare sbatch rejects combining typed `--gres=gpu:h200:N` with
 /// `--gpus-per-task` ("Invalid GRES specification (with and without type
@@ -232,9 +243,6 @@ pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 ///   `mpirun` wrapper
 /// - `LD_LIBRARY_PATH` includes the system OpenMPI lib dir (and the
 ///   nccl-tests CUDA/NCCL libs when those live outside the default path)
-///
-/// Override the binary with `NCCL_TESTS_ALL_REDUCE_MPI`. Do not hardcode a
-/// site path as the only way to find it.
 pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
     render::render_v0_2node(run_id, walltime)
 }
