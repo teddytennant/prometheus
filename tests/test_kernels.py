@@ -17,10 +17,12 @@ Groups:
   independence, shapes/dtypes, finite-difference grads, custom_vjp, goldens,
   KernelError on bad shapes.
 - FP8: roundtrip bound, vs-reference, vs FP32 matmul (documented tolerance),
-  backward uses forward scales (STE), goldens, KernelError on bad shapes.
+  backward uses forward scales (STE), jax.custom_vjp / jax.grad STE
+  (matches fp8_linear_bwd residual, not scale-path autodiff), goldens,
+  KernelError on bad shapes.
 - EP: combine(dispatch(x)) weighted identity, rack span > MAX_RACKS,
   padding shape, goldens, residual is opaque.
-- GPU: V1 linear-attn parity, V3 FP8 parity (pytest marker ``gpu``).
+- GPU: V1 linear-attn parity, V3 FP8 parity and jax.grad STE (pytest marker ``gpu``).
 """
 
 from __future__ import annotations
@@ -50,6 +52,11 @@ def _require_gpu():
     if not gpus:
         pytest.skip("V-stage GPU test requires a GPU device")
     return jax
+
+
+def _jax():
+    jax = pytest.importorskip("jax")
+    return jax, jax.numpy
 
 
 def _delta_inputs(rng, batch=2, seq=5, heads=2, dim=4):
@@ -500,6 +507,199 @@ def test_fp8_linear_bad_shapes_raise_kernel_error():
 
 
 # ---------------------------------------------------------------------------
+# FP8 jax.custom_vjp / STE through jax.grad(fp8_linear)
+# ---------------------------------------------------------------------------
+
+
+def test_fp8_linear_is_registered_jax_custom_vjp():
+    """fp8_linear must be jax.custom_vjp so jax.grad is STE, not discrete quantize."""
+    jax, jnp = _jax()
+
+    @jax.custom_vjp
+    def _probe(z):
+        return z
+
+    def _probe_fwd(z):
+        return z, None
+
+    def _probe_bwd(_res, g):
+        return (g,)
+
+    _probe.defvjp(_probe_fwd, _probe_bwd)
+
+    assert type(kernels.fp8_linear) is type(_probe), (
+        "fp8_linear must be decorated with jax.custom_vjp so backward reuses "
+        "forward FP8 scales (STE); it must not be a plain function"
+    )
+    assert hasattr(kernels.fp8_linear, "defvjp")
+
+    x = jnp.asarray(np.ones((2, 4), dtype=np.float32))
+    w = jnp.asarray(np.ones((3, 4), dtype=np.float32))
+    gx = jax.grad(lambda xx: jnp.sum(kernels.fp8_linear(xx, w, block=4)))(x)
+    assert gx.shape == x.shape
+    assert gx.dtype == jnp.float32
+    assert np.isfinite(_np(gx)).all()
+
+
+def test_fp8_linear_jax_grad_matches_fp8_linear_bwd_ste():
+    """jax.grad(fp8_linear) equals fp8_linear_bwd(residual, g) from fp8_linear_fwd."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(21)
+    block = 8
+    x = rng.standard_normal((2, 3, 8)).astype(np.float32)
+    w = rng.standard_normal((5, 8)).astype(np.float32)
+    x_j = jnp.asarray(x)
+    w_j = jnp.asarray(w)
+
+    y_fwd, residual = kernels.fp8_linear_fwd(x, w, block)
+    g = rng.standard_normal(np.shape(y_fwd)).astype(np.float32)
+    gx_bwd, gw_bwd = kernels.fp8_linear_bwd(residual, g)
+
+    def _apply(xx, ww):
+        return kernels.fp8_linear(xx, ww, block=block)
+
+    y_vjp, vjp_fn = jax.vjp(_apply, x_j, w_j)
+    gx_vjp, gw_vjp = vjp_fn(jnp.asarray(g))
+    np.testing.assert_allclose(_np(y_vjp), _np(y_fwd), **TOL)
+    np.testing.assert_allclose(_np(gx_vjp), _np(gx_bwd), **TOL)
+    np.testing.assert_allclose(_np(gw_vjp), _np(gw_bwd), **TOL)
+    assert gx_vjp.shape == x.shape
+    assert gw_vjp.shape == w.shape
+    assert gx_vjp.dtype == jnp.float32
+    assert gw_vjp.dtype == jnp.float32
+
+    def _sum_linear(xx, ww):
+        return jnp.sum(kernels.fp8_linear(xx, ww, block=block))
+
+    gx_grad, gw_grad = jax.grad(_sum_linear, argnums=(0, 1))(x_j, w_j)
+    g_ones = np.ones_like(_np(y_fwd), dtype=np.float32)
+    gx_ones, gw_ones = kernels.fp8_linear_bwd(residual, g_ones)
+    np.testing.assert_allclose(_np(gx_grad), _np(gx_ones), **TOL)
+    np.testing.assert_allclose(_np(gw_grad), _np(gw_ones), **TOL)
+
+    gx_first = jax.grad(
+        lambda xx: jnp.sum(kernels.fp8_linear(xx, w_j, block=block))
+    )(x_j)
+    np.testing.assert_allclose(_np(gx_first), _np(gx_ones), **TOL)
+
+
+def test_fp8_linear_jax_grad_ste_matches_dequantized_linear():
+    """STE through jax.grad(fp8_linear) equals FP32 linear VJP on frozen fake-quant."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(22)
+    block = 8
+    x = rng.standard_normal((4, 8)).astype(np.float32)
+    w = rng.standard_normal((6, 8)).astype(np.float32)
+    y = ref.fp8_linear(x, w, block=block)
+    g = rng.standard_normal(y.shape).astype(np.float32)
+
+    gx_ref, gw_ref = ref.fp8_linear_vjp(x, w, g, block=block)
+    x_hat = ref.fp8_dequantize(ref.fp8_quantize(x, block=block))
+    w_hat = ref.fp8_dequantize(ref.fp8_quantize(w, block=block))
+    gx_fp32 = np.matmul(g, w_hat)
+    gw_fp32 = np.matmul(g.T, x_hat)
+    np.testing.assert_allclose(gx_ref, gx_fp32, **TOL)
+    np.testing.assert_allclose(gw_ref, gw_fp32, **TOL)
+
+    def _apply(xx, ww):
+        return kernels.fp8_linear(xx, ww, block=block)
+
+    _, vjp_fn = jax.vjp(_apply, jnp.asarray(x), jnp.asarray(w))
+    gx_j, gw_j = vjp_fn(jnp.asarray(g))
+    np.testing.assert_allclose(_np(gx_j), gx_fp32, **TOL)
+    np.testing.assert_allclose(_np(gw_j), gw_fp32, **TOL)
+
+    d = rng.standard_normal(x_hat.shape).astype(np.float32)
+    d /= np.linalg.norm(d) + np.float32(1e-12)
+    eps = 1e-3
+
+    def _frozen_sum(xh):
+        return float(np.sum(np.matmul(xh, w_hat.T)))
+
+    fd = (_frozen_sum(x_hat + eps * d) - _frozen_sum(x_hat - eps * d)) / (2 * eps)
+    g_ones = np.ones_like(y, dtype=np.float32)
+    gx_ones, _ = ref.fp8_linear_vjp(x, w, g_ones, block=block)
+    analytic = float(np.sum(gx_ones * d))
+    np.testing.assert_allclose(fd, analytic, **FD_TOL)
+
+
+def test_fp8_linear_jax_array_bad_shapes_raise_kernel_error():
+    """KernelError still fires on the public function with jax.Array inputs."""
+    _, jnp = _jax()
+    x = jnp.asarray(np.ones((4, 8), dtype=np.float32))
+    w_bad = jnp.asarray(np.ones((3, 7), dtype=np.float32))
+    with pytest.raises(kernels.KernelError):
+        kernels.fp8_linear(x, w_bad, block=8)
+    w_ok = jnp.asarray(np.ones((3, 8), dtype=np.float32))
+    with pytest.raises(kernels.KernelError):
+        kernels.fp8_linear(x, w_ok, block=0)
+    w_3d = jnp.asarray(np.ones((3, 5, 8), dtype=np.float32))
+    with pytest.raises(kernels.KernelError):
+        kernels.fp8_linear(x, w_3d, block=8)
+
+
+def test_fp8_linear_jax_grad_is_ste_not_quantized_scale_path():
+    """jax.grad must be STE, not autodiff through per-block scale / quantize.
+
+    Golden: x = w = [1, 2, 3, 4], block=4. 3.0 quantises to 20/7, so STE
+    d(sum y)/dx = x_hat = [1, 2, 20/7, 4]. Differentiating live scales
+    concentrates gradient on the amax element; true FP32 would keep 3.0.
+    Either bug fails this check.
+    """
+    jax, jnp = _jax()
+    block = 4
+    x = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32)
+    w = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32)
+    y = ref.fp8_linear(x, w, block=block)
+    g = np.ones_like(y, dtype=np.float32)
+
+    gx_ste, gw_ste = ref.fp8_linear_vjp(x, w, g, block=block)
+    gx_scale, gw_scale = ref.fp8_linear_scale_path_grad(x, w, g, block=block)
+    np.testing.assert_allclose(gx_ste[0, 2], np.float32(20.0 / 7.0), **TOL)
+    np.testing.assert_allclose(gw_ste[0, 2], np.float32(20.0 / 7.0), **TOL)
+    assert np.max(np.abs(gx_ste - gx_scale)) > 1e-3
+    assert np.max(np.abs(gw_ste - gw_scale)) > 1e-3
+    assert not np.allclose(gx_ste[0, 2], np.float32(3.0), atol=1e-5)
+
+    def _sum_linear(xx, ww):
+        return jnp.sum(kernels.fp8_linear(xx, ww, block=block))
+
+    gx_j, gw_j = jax.grad(_sum_linear, argnums=(0, 1))(jnp.asarray(x), jnp.asarray(w))
+    np.testing.assert_allclose(_np(gx_j), gx_ste, **TOL)
+    np.testing.assert_allclose(_np(gw_j), gw_ste, **TOL)
+    assert not np.allclose(_np(gx_j), gx_scale, **TOL)
+    assert not np.allclose(_np(gw_j), gw_scale, **TOL)
+
+
+def test_fp8_linear_jax_grad_not_finite_diff_of_discrete_quant():
+    """A locally constant quantized forward has FD ~ 0; STE / jax.grad must not.
+
+    Perturbing a non-amax element inside an E4M3 bin leaves y unchanged, so
+    the true derivative of discrete quantize is 0 there. Differentiating the
+    quantize/scale path would miss the STE cotangent g @ w_hat.
+    """
+    jax, jnp = _jax()
+    block = 4
+    x = np.array([[8.0, 1.0, 0.5, 0.25]], dtype=np.float32)
+    w = np.array([[1.3, 1.7, 2.1, 0.9]], dtype=np.float32)
+    y0 = ref.fp8_linear(x, w, block=block)
+    x_eps = x.copy()
+    x_eps[0, 3] += np.float32(1e-3)
+    y1 = ref.fp8_linear(x_eps, w, block=block)
+    np.testing.assert_array_equal(y0, y1)
+
+    g = np.ones_like(y0, dtype=np.float32)
+    gx_ste, _ = ref.fp8_linear_vjp(x, w, g, block=block)
+    assert abs(float(gx_ste[0, 3])) > 0.1
+
+    gx_j = jax.grad(
+        lambda xx: jnp.sum(kernels.fp8_linear(xx, jnp.asarray(w), block=block))
+    )(jnp.asarray(x))
+    np.testing.assert_allclose(_np(gx_j), gx_ste, **TOL)
+    assert abs(float(_np(gx_j)[0, 3])) > 0.1
+
+
+# ---------------------------------------------------------------------------
 # Expert-parallel dispatch / combine
 # ---------------------------------------------------------------------------
 
@@ -674,3 +874,24 @@ def test_v3_gpu_fp8_linear_matches_reference():
     got = kernels.fp8_linear(x, w, block=kernels.DEFAULT_FP8_BLOCK)
     exp = ref.fp8_linear(x, w, block=kernels.DEFAULT_FP8_BLOCK)
     np.testing.assert_allclose(_np(got), exp, **TOL)
+
+
+@pytest.mark.gpu
+def test_v3_gpu_fp8_linear_jax_grad_matches_ste():
+    """V3: GPU jax.grad(fp8_linear) matches STE VJP (forward scales, not differentiated)."""
+    jax = _require_gpu()
+    jnp = jax.numpy
+    rng = np.random.default_rng(52)
+    block = kernels.DEFAULT_FP8_BLOCK
+    x = rng.standard_normal((8, 128)).astype(np.float32)
+    w = rng.standard_normal((16, 128)).astype(np.float32)
+    g = rng.standard_normal((8, 16)).astype(np.float32)
+    gx_ref, gw_ref = ref.fp8_linear_vjp(x, w, g, block=block)
+
+    def _apply(xx, ww):
+        return kernels.fp8_linear(xx, ww, block=block)
+
+    _, vjp_fn = jax.vjp(_apply, jnp.asarray(x), jnp.asarray(w))
+    gx_j, gw_j = vjp_fn(jnp.asarray(g))
+    np.testing.assert_allclose(_np(gx_j), gx_ref, **TOL)
+    np.testing.assert_allclose(_np(gw_j), gw_ref, **TOL)

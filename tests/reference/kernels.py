@@ -30,7 +30,10 @@ quantized payload ``q`` is the E4M3 bit pattern stored as int8.
 
 ``fp8_linear`` is y = x_hat @ w_hat^T with both sides quantised then dequantised.
 Backward (STE) reuses those forward dequantised tensors; scales are not
-differentiated.
+differentiated. ``fp8_linear_vjp(x, weight, g)`` is the jax.grad-facing
+form of that VJP (freeze x_hat, w_hat then FP32 linear backward).
+``fp8_linear_scale_path_grad`` is the *wrong* VJP that differentiates
+dequant through live per-block scales; production jax.grad must not match it.
 
 EP dispatch
 -----------
@@ -326,6 +329,79 @@ def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
     x_f = x_hat.reshape(-1, in_f)
     grad_x = np.matmul(g_f, w_hat).reshape(x_hat.shape)
     grad_w = np.matmul(g_f.T, x_f)
+    return grad_x.astype(np.float32), grad_w.astype(np.float32)
+
+
+def fp8_linear_vjp(
+    x: Array, weight: Array, g: Array, *, block: int = DEFAULT_FP8_BLOCK
+) -> tuple[Array, Array]:
+    """STE VJP of ``fp8_linear`` for comparison with ``jax.vjp`` / ``jax.grad``.
+
+    Independent of production internals: fake-quant both operands (per-block
+    E4M3FN), freeze those dequantised tensors, then the FP32 linear VJP.
+    Scales are not differentiated.
+    """
+    x = _as_f32(x)
+    weight = _as_f32(weight)
+    g = _as_f32(g)
+    if weight.ndim != 2:
+        raise ValueError(f"weight must be 2-D (out, in), got {weight.shape}")
+    if x.shape[-1] != weight.shape[-1]:
+        raise ValueError(
+            f"contracting dim mismatch: x[..., {x.shape[-1]}] vs weight[..., {weight.shape[-1]}]"
+        )
+    x_hat = fp8_dequantize(fp8_quantize(x, block=block))
+    w_hat = fp8_dequantize(fp8_quantize(weight, block=block))
+    in_f = int(x_hat.shape[-1])
+    out_f = int(w_hat.shape[0])
+    g_f = g.reshape(-1, out_f)
+    x_f = x_hat.reshape(-1, in_f)
+    grad_x = np.matmul(g_f, w_hat).reshape(x_hat.shape)
+    grad_w = np.matmul(g_f.T, x_f)
+    return grad_x.astype(np.float32), grad_w.astype(np.float32)
+
+
+def _grad_through_live_block_scale(operand: Array, g_hat: Array, block: int) -> Array:
+    """dL/doperand with hat = decode(q)*scale, q frozen, scale = amax/448."""
+    operand = _as_f32(operand)
+    g_hat = _as_f32(g_hat)
+    blocked, n, n_blocks = _pad_blocks(operand, block)
+    g_blocked, _, _ = _pad_blocks(g_hat, block)
+    amax = np.max(np.abs(blocked), axis=-1)
+    scale = np.where(
+        amax == 0, np.float32(1.0), amax / np.float32(FP8_E4M3_MAX)
+    ).astype(np.float32)
+    hat = fp8_dequantize(fp8_quantize(operand, block=block))
+    hat_blocked, _, _ = _pad_blocks(hat, block)
+    raw = hat_blocked / scale[..., None]
+    g_scale = np.sum(g_blocked * raw, axis=-1)
+    g_amax = np.where(amax == 0, np.float32(0.0), g_scale / np.float32(FP8_E4M3_MAX))
+    is_amax = np.abs(blocked) == amax[..., None]
+    g_blocked_out = np.where(is_amax, g_amax[..., None] * np.sign(blocked), np.float32(0.0))
+    g_out = g_blocked_out.reshape(*operand.shape[:-1], n_blocks * block)[..., :n]
+    return g_out.astype(np.float32)
+
+
+def fp8_linear_scale_path_grad(
+    x: Array, weight: Array, g: Array, *, block: int = DEFAULT_FP8_BLOCK
+) -> tuple[Array, Array]:
+    """Wrong VJP: freeze E4M3 codes, differentiate dequant through live scales.
+
+    Used only as a counterexample. STE / ``jax.grad(fp8_linear)`` must not
+    match this: scales are not differentiated.
+    """
+    x = _as_f32(x)
+    weight = _as_f32(weight)
+    g = _as_f32(g)
+    x_hat = fp8_dequantize(fp8_quantize(x, block=block))
+    w_hat = fp8_dequantize(fp8_quantize(weight, block=block))
+    in_f = int(x_hat.shape[-1])
+    out_f = int(w_hat.shape[0])
+    g_f = g.reshape(-1, out_f)
+    g_xhat = np.matmul(g_f, w_hat).reshape(x_hat.shape)
+    g_what = np.matmul(g_f.T, x_hat.reshape(-1, in_f))
+    grad_x = _grad_through_live_block_scale(x, g_xhat, block)
+    grad_w = _grad_through_live_block_scale(weight, g_what, block)
     return grad_x.astype(np.float32), grad_w.astype(np.float32)
 
 
