@@ -224,10 +224,7 @@ fn assert_v0_2node_script(out: &str, run_id: &str, walltime: &str) {
         lower.contains("kvm") && non_comment_contains(out, "/dev/kvm"),
         "node_facts must record /dev/kvm: {out}"
     );
-    assert!(
-        lower.contains("nvme"),
-        "node_facts must record NVMe: {out}"
-    );
+    assert!(lower.contains("nvme"), "node_facts must record NVMe: {out}");
 
     assert!(
         has_venv_inside_job(out),
@@ -263,7 +260,11 @@ fn ref_render_v0_2node_requests_2_nodes_and_4_h200s_per_node() {
 fn ref_render_v0_2node_launches_8_ranks_one_per_gpu() {
     let out = reference::render_v0_2node("ranks", "01:00:00").unwrap();
     assert!(sbatch_has_kv(&out, "--ntasks", ranks()));
-    assert!(sbatch_has_kv(&out, "--ntasks-per-node", V0_2NODE_GPUS_PER_NODE));
+    assert!(sbatch_has_kv(
+        &out,
+        "--ntasks-per-node",
+        V0_2NODE_GPUS_PER_NODE
+    ));
     assert!(sbatch_has_kv(&out, "--gpus-per-task", 1));
 }
 
