@@ -41,6 +41,14 @@
 //! After substitution the job name line from the stock templates is
 //! `#SBATCH -J fv-<run_id>-v{n}` (`JOB_PREFIX` is `fv`).
 //!
+//! # `render_v0_2node`
+//!
+//! Independent of production `templates/`. Substitutes `{{RUN_ID}}` and
+//! `{{WALLTIME}}` in `tests/reference/v0_2node.sh`. Empty `run_id` or
+//! `walltime` is `Error::Other`. The stub requests 2 nodes × 4 H200s, 8 MPI
+//! ranks (one per GPU), `srun --mpi=pmix` of `all_reduce_perf_mpi`, writes
+//! `busbw_gbps` and `node_facts.txt`, and builds the venv inside the job.
+//!
 //! # `check_exit` on-disk layout
 //!
 //! Checkers read `output_dir` only. Files named `summary`, `summary.json`,
@@ -93,7 +101,7 @@ use prometheus_verify_ncshare::{Error, Result, Stage};
 pub use check::check_exit;
 pub use kvm::kvm_available;
 pub use parse::parse_busbw_gbps;
-pub use render::render_job;
+pub use render::{render_job, render_v0_2node};
 
 pub const NCCL_INTRA: &str = include_str!("../fixtures/nccl/allreduce_intra.txt");
 pub const NCCL_2NODE: &str = include_str!("../fixtures/nccl/allreduce_2node.txt");
