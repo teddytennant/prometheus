@@ -9,6 +9,14 @@ import ``tests``, talk to a coordinator, or need a GPU. Arrays are
 numpy or JAX; math is the Reverie formulas from spec 4.3 and the
 Gaussian policy from spec 4.4.
 
+``jax.jit`` of ``ponder_distribution``, ``halt_from_logits``,
+``halt_loss``, ``halt_kl``, ``thought_decode_ce``,
+``answer_ce_at_depths``, and ``stage_b_loss`` must match the eager call
+at 1e-5. Traced arrays must not be converted with ``numpy.asarray`` or
+Python ``float()`` / ``int()`` on values. Python scalars (``n``,
+``lambda_prior``, ``teacher_steps``, ``answer_id``) and ``LatentConfig``
+stay host-side. ``geometric_prior`` is host-side (Python ``n``).
+
 IS weighting of latent log-probs is ``rl.loss``, not this module.
 """
 
@@ -250,6 +258,10 @@ def ponder_distribution(lambdas: Array) -> Array:
 
     ``lambdas`` is a 1-D vector of length K+1. Empty or non-1-D raises
     ``LatentError``. Non-finite entries raise ``LatentError``.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``lambdas`` with ``numpy.asarray`` or Python
+    ``float()`` on entries.
     """
     arr = _as_float_array(lambdas)
     if arr.ndim != 1:
@@ -295,6 +307,10 @@ def halt_from_logits(halt_logits: Array) -> HaltOutput:
 
     ``halt_logits`` is 1-D, length K+1. Returns lambdas (post-pin), p, and
     expected depth as a Python float.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``halt_logits`` with ``numpy.asarray``.
+    ``expected_depth`` may be a 0-d array under jit.
     """
     arr = _require_1d_finite_nonempty(halt_logits, "halt_logits")
     sig = _sigmoid_1d(arr)
@@ -311,6 +327,11 @@ def halt_loss(p: Array, teacher_steps: int) -> float:
 
     ``p`` must be 1-D and finite. ``teacher_steps`` may sit outside
     ``0..K``; it is clipped, not rejected.
+
+    ``jax.jit`` of this function, with ``teacher_steps`` a Python int
+    (closed over or ``static_argnums``), must match the eager result at
+    1e-5. Must not convert traced ``p`` with ``numpy.asarray`` or Python
+    ``float()`` on ``p[k]``.
     """
     arr = _require_1d_finite_nonempty(p, "p")
     k_max = int(arr.shape[0]) - 1
@@ -326,6 +347,11 @@ def halt_kl(p: Array, lambda_prior: float) -> float:
     """``sum_m p_m (log(p_m + HALT_EPS) - log(g_m + HALT_EPS))``.
 
     ``g`` is ``geometric_prior(len(p), lambda_prior)``.
+
+    ``jax.jit`` of this function, with ``lambda_prior`` a Python float
+    (closed over or ``static_argnums``), must match the eager result at
+    1e-5. Must not convert traced ``p`` with ``numpy.asarray`` or Python
+    ``float()`` on entries.
     """
     arr = _require_1d_finite_nonempty(p, "p")
     lam_p = float(lambda_prior)
@@ -352,6 +378,11 @@ def thought_decode_ce(
     Masked-out rows (mask == 0) do not enter the mean. If the mask is
     all zeros the result is 0.0. Length mismatch, empty logits, or a
     teacher id outside ``[0, vocab)`` raises ``LatentError``.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``logits``, ``teacher_ids``, or ``mask`` with
+    ``numpy.asarray``. Empty mask returns 0 without a Python branch on a
+    traced denom.
     """
     logits_a = _as_float_array(logits)
     if logits_a.ndim != 2:
@@ -388,6 +419,10 @@ def answer_ce_at_depths(logits: Array, answer_id: int) -> Array:
     """Per-depth answer CE. ``logits`` is (K+1, vocab). Returns (K+1,).
 
     ``answer_id`` outside ``[0, vocab)`` raises ``LatentError``.
+
+    ``jax.jit`` of this function, with ``answer_id`` a Python int (closed
+    over or ``static_argnums``), must match the eager result at 1e-5.
+    Must not convert traced ``logits`` with ``numpy.asarray``.
     """
     logits_a = _as_float_array(logits)
     if logits_a.ndim != 2:
@@ -426,6 +461,11 @@ def stage_b_loss(
     ``halt_logits`` and ``answer_logits`` share length K+1.
     ``thought_logits`` is the K thought slots (not depth 0). Validates
     ``config`` first. Does not look up a model or an episode.
+
+    ``jax.jit`` of this function, with ``answer_id`` / ``teacher_steps``
+    Python ints and ``config`` host-side (closed over or static), must
+    match the eager result at 1e-5. Must not convert traced arrays with
+    ``numpy.asarray`` or Python ``float()`` on values.
     """
     validate_latent_config(config)
     halt = _as_float_array(halt_logits)
