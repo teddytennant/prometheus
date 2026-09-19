@@ -214,6 +214,13 @@ pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 /// write the same `busbw_gbps` and `node_facts.txt` files `check_exit(V0)`
 /// reads. The 8-GPU window is real: the caller stops gpu-opportunist around
 /// it, same as V2/V5.
+///
+/// NCShare sbatch rejects combining typed `--gres=gpu:h200:N` with
+/// `--gpus-per-task` ("Invalid GRES specification (with and without type
+/// identification)"). Confirmed `sbatch --test-only` 2026-09-19: with
+/// `--gpus-per-task=1` rc=1, without it rc=0. Job 734382: `srun
+/// --gpus-per-task=1` failed ("2 requested but only 1 were found"); `srun
+/// --mpi=pmix --ntasks=2` without that flag passed, `#wrong=0`.
 pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
     render::render_v0_2node(run_id, walltime)
 }
