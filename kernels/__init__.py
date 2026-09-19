@@ -86,6 +86,9 @@ class DispatchMeta:
     Must be a jax.tree_util registered dataclass so jax.jit(ep_dispatch)
     and jax.jit(ep_combine) can take it. expert_ids, probs, racks are data
     fields (arrays). n_experts and max_racks are meta fields (ints).
+    `_static_max_per` is the pad width baked into the jit treedef so the
+    dispatched tensor can keep a data-dependent shape without host-copying
+    traced routing arrays.
     """
 
     expert_ids: Array
@@ -93,6 +96,14 @@ class DispatchMeta:
     racks: Array
     n_experts: int
     max_racks: int = MAX_RACKS
+    _static_max_per: int | None = None
+
+    def __post_init__(self) -> None:
+        if self._static_max_per is not None:
+            return
+        object.__setattr__(
+            self, "_static_max_per", _try_max_per(self.expert_ids, int(self.n_experts))
+        )
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,11 @@ class _DispatchResidual:
 
 
 jax.tree_util.register_dataclass(
+    DispatchMeta,
+    data_fields=("expert_ids", "probs", "racks"),
+    meta_fields=("n_experts", "max_racks", "_static_max_per"),
+)
+jax.tree_util.register_dataclass(
     _DispatchResidual,
     data_fields=("token_index", "k_index"),
     meta_fields=("max_per_expert",),
@@ -125,6 +141,34 @@ def _f32(x: Array) -> np.ndarray:
 
 def _is_jax(*xs: Array) -> bool:
     return any(isinstance(x, jax.Array) for x in xs if x is not None)
+
+
+def _is_tracer(*xs: Array) -> bool:
+    return any(isinstance(x, jax.core.Tracer) for x in xs if x is not None)
+
+
+def _try_max_per(expert_ids: Array, n_experts: int) -> int | None:
+    """Concrete pad width, or None if `expert_ids` is a tracer."""
+    if isinstance(expert_ids, jax.core.Tracer):
+        return None
+    try:
+        flat = np.asarray(expert_ids).reshape(-1)
+    except Exception:
+        return None
+    if flat.size == 0:
+        return 0
+    counts = np.bincount(flat.astype(np.int64, copy=False), minlength=int(n_experts))
+    return int(counts.max()) if int(n_experts) else 0
+
+
+def _static_max_per_of(meta: DispatchMeta, expert_ids: Array, n_experts: int) -> int:
+    cached = getattr(meta, "_static_max_per", None)
+    if cached is not None:
+        return int(cached)
+    got = _try_max_per(expert_ids, n_experts)
+    if got is not None:
+        return got
+    return int(expert_ids.shape[0]) * int(expert_ids.shape[1])
 
 
 # ---------------------------------------------------------------------------
@@ -800,35 +844,40 @@ def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
 
 
 def _validate_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[
-    np.ndarray, np.ndarray, np.ndarray, int, int
+    Array, Array, Array, int, int
 ]:
     if tokens.ndim != 2:
         raise KernelError(f"tokens must be (n_tokens, d_model), got {tokens.shape}")
     n_tokens = int(tokens.shape[0])
-    expert_ids = np.asarray(meta.expert_ids)
-    probs = _f32(meta.probs)
-    racks = np.asarray(meta.racks)
+    expert_ids = meta.expert_ids
+    probs = meta.probs
+    racks = meta.racks
     n_experts = int(meta.n_experts)
     max_racks = int(meta.max_racks)
-    if expert_ids.ndim != 2 or expert_ids.shape[0] != n_tokens:
+    if expert_ids.ndim != 2 or int(expert_ids.shape[0]) != n_tokens:
         raise KernelError("expert_ids must be (n_tokens, top_k)")
-    if probs.shape != tuple(expert_ids.shape):
+    if tuple(probs.shape) != tuple(expert_ids.shape):
         raise KernelError(f"probs shape {probs.shape} != expert_ids shape {expert_ids.shape}")
-    if racks.shape != (n_experts,):
+    if tuple(racks.shape) != (n_experts,):
         raise KernelError(f"racks length {racks.shape} != n_experts={n_experts}")
     if n_experts < 0:
         raise KernelError(f"n_experts must be >= 0, got {n_experts}")
-    if expert_ids.size:
-        if np.any((expert_ids < 0) | (expert_ids >= n_experts)):
+    if not _is_tracer(expert_ids) and np.asarray(expert_ids).size:
+        ids_np = np.asarray(expert_ids)
+        if np.any((ids_np < 0) | (ids_np >= n_experts)):
             raise KernelError(f"expert id out of range [0, {n_experts})")
     return expert_ids, probs, racks, n_experts, max_racks
 
 
-def _check_rack_span(expert_ids: np.ndarray, racks: np.ndarray, max_racks: int) -> None:
+def _check_rack_span(expert_ids: Array, racks: Array, max_racks: int) -> None:
     """KernelError if any token's chosen experts span more than max_racks racks."""
-    if expert_ids.size == 0:
+    if _is_tracer(expert_ids, racks):
         return
-    chosen = racks[expert_ids]
+    expert_ids_np = np.asarray(expert_ids)
+    racks_np = np.asarray(racks)
+    if expert_ids_np.size == 0:
+        return
+    chosen = racks_np[expert_ids_np]
     if chosen.ndim == 1:
         chosen = chosen[:, None]
     ordered = np.sort(chosen, axis=1)
@@ -865,6 +914,36 @@ def _dispatch_tables(
     k_index = np.full((n_experts, max_per), -1, dtype=np.int32)
     token_index[flat_e, slots] = flat_t
     k_index[flat_e, slots] = flat_k
+    return token_index, k_index, max_per
+
+
+def _dispatch_tables_jax(
+    expert_ids: jax.Array, n_experts: int, max_per: int
+) -> tuple[jax.Array, jax.Array, int]:
+    n_tokens = int(expert_ids.shape[0])
+    top_k = int(expert_ids.shape[1])
+    n_assign = n_tokens * top_k
+    n_experts = int(n_experts)
+    max_per = int(max_per)
+    if n_assign == 0 or max_per == 0:
+        empty = jnp.full((n_experts, max_per), -1, dtype=jnp.int32)
+        return empty, empty, max_per
+    flat_e = jnp.ravel(expert_ids).astype(jnp.int32)
+    flat_t = jnp.repeat(jnp.arange(n_tokens, dtype=jnp.int32), top_k)
+    flat_k = jnp.tile(jnp.arange(top_k, dtype=jnp.int32), n_tokens)
+    counts = jnp.bincount(flat_e, length=n_experts)
+    order = jnp.argsort(flat_e, stable=True)
+    sorted_e = flat_e[order]
+    offsets = jnp.zeros((n_experts + 1,), dtype=jnp.int32)
+    offsets = offsets.at[1:].set(jnp.cumsum(counts).astype(jnp.int32))
+    slots = jnp.zeros((n_assign,), dtype=jnp.int32)
+    slots = slots.at[order].set(
+        jnp.arange(n_assign, dtype=jnp.int32) - offsets[sorted_e]
+    )
+    token_index = jnp.full((n_experts, max_per), -1, dtype=jnp.int32)
+    k_index = jnp.full((n_experts, max_per), -1, dtype=jnp.int32)
+    token_index = token_index.at[flat_e, slots].set(flat_t)
+    k_index = k_index.at[flat_e, slots].set(flat_k)
     return token_index, k_index, max_per
 
 
@@ -963,7 +1042,24 @@ def _make_dispatch_residual(
     )
 
 
-@partial(jax.custom_vjp, nondiff_argnames=("meta",))
+def _ep_dispatch_impl(
+    tokens: Array, meta: DispatchMeta, *, as_jax: bool
+) -> tuple[Array, _DispatchResidual]:
+    expert_ids, _probs, racks, n_experts, max_racks = _validate_dispatch(tokens, meta)
+    _check_rack_span(expert_ids, racks, max_racks)
+    if as_jax:
+        max_per = _static_max_per_of(meta, expert_ids, n_experts)
+        token_index, k_index, max_per = _dispatch_tables_jax(
+            jnp.asarray(expert_ids, dtype=jnp.int32), n_experts, max_per
+        )
+        residual = _make_dispatch_residual(token_index, k_index, max_per, as_jax=True)
+        return _ep_dispatch_jax(tokens, token_index), residual
+    token_index, k_index, max_per = _dispatch_tables(np.asarray(expert_ids), n_experts)
+    residual = _make_dispatch_residual(token_index, k_index, max_per, as_jax=False)
+    return _ep_dispatch_numpy(_f32(tokens), token_index), residual
+
+
+@jax.custom_vjp
 def ep_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[Array, Any]:
     """All-to-all tokens to experts.
 
@@ -980,39 +1076,59 @@ def ep_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[Array, Any]:
     jax.jit(ep_dispatch)(tokens, meta) must match the eager result (1e-5).
     The traced path must not require DispatchMeta to be an abstract array.
     """
-    expert_ids, _probs, racks, n_experts, max_racks = _validate_dispatch(tokens, meta)
-    _check_rack_span(expert_ids, racks, max_racks)
-    token_index, k_index, max_per = _dispatch_tables(expert_ids, n_experts)
-    use_jax = _is_jax(tokens)
-    residual = _make_dispatch_residual(token_index, k_index, max_per, as_jax=use_jax)
-    if use_jax:
-        return _ep_dispatch_jax(tokens, token_index), residual
-    return _ep_dispatch_numpy(_f32(tokens), token_index), residual
+    return _ep_dispatch_impl(
+        tokens, meta, as_jax=_is_jax(tokens, meta.expert_ids)
+    )
 
 
 def _ep_dispatch_fwd(tokens: Array, meta: DispatchMeta):
-    expert_ids, _probs, racks, n_experts, max_racks = _validate_dispatch(tokens, meta)
-    _check_rack_span(expert_ids, racks, max_racks)
-    token_index, k_index, max_per = _dispatch_tables(expert_ids, n_experts)
-    dispatched = _ep_dispatch_jax(tokens, token_index)
-    residual = _make_dispatch_residual(token_index, k_index, max_per, as_jax=True)
-    # custom_vjp residual is arrays only (public residual stays the dataclass).
-    return (dispatched, residual), (jnp.asarray(token_index, dtype=jnp.int32),)
+    dispatched, residual = _ep_dispatch_impl(tokens, meta, as_jax=True)
+    n_tokens = int(tokens.shape[0])
+    return (dispatched, residual), (
+        jnp.asarray(residual.token_index, dtype=jnp.int32),
+        n_tokens,
+    )
 
 
-def _ep_dispatch_bwd(meta: DispatchMeta, res: tuple[jax.Array, ...], g):
-    (token_index,) = res
+def _ep_dispatch_bwd(res: tuple[Any, ...], g):
+    token_index, n_tokens = res
     g_disp, _g_residual = g
-    n_tokens = int(np.asarray(meta.expert_ids).shape[0])
     if g_disp is None:
-        return (jnp.zeros((n_tokens, 0), dtype=jnp.float32),)
-    return (_ep_dispatch_vjp_jax(g_disp, token_index, n_tokens),)
+        return (jnp.zeros((n_tokens, 0), dtype=jnp.float32), None)
+    return (_ep_dispatch_vjp_jax(g_disp, token_index, n_tokens), None)
 
 
 ep_dispatch.defvjp(_ep_dispatch_fwd, _ep_dispatch_bwd)
 
 
-@partial(jax.custom_vjp, nondiff_argnames=("meta",))
+def _require_int_index(name: str, x: Array) -> None:
+    dtype = getattr(x, "dtype", None)
+    if dtype is not None and not jnp.issubdtype(dtype, jnp.integer):
+        raise TypeError(f"{name} must be integer")
+
+
+def _ep_combine_impl(
+    expert_out: Array, meta: DispatchMeta, residual: Any, *, as_jax: bool
+) -> Array:
+    _require_int_index("residual.token_index", residual.token_index)
+    n_experts = int(meta.n_experts)
+    n_tokens = int(meta.expert_ids.shape[0])
+    if expert_out.ndim != 3 or int(expert_out.shape[0]) != n_experts:
+        raise KernelError("expert_out must be (n_experts, max_per_expert, d_model)")
+    if as_jax:
+        return _ep_combine_jax(
+            expert_out, meta.probs, residual.token_index, residual.k_index, n_tokens
+        )
+    return _ep_combine_numpy(
+        _f32(expert_out),
+        _f32(meta.probs),
+        np.asarray(residual.token_index),
+        np.asarray(residual.k_index),
+        n_tokens,
+    )
+
+
+@jax.custom_vjp
 def ep_combine(expert_out: Array, meta: DispatchMeta, residual: Any) -> Array:
     """Weighted sum of expert outputs back to token order.
 
@@ -1026,33 +1142,16 @@ def ep_combine(expert_out: Array, meta: DispatchMeta, residual: Any) -> Array:
     jax.jit(ep_combine)(expert_out, meta, residual) must match eager (1e-5).
     jax.jit of dispatch-then-combine must compose.
     """
-    expert_ids = np.asarray(meta.expert_ids)
-    n_experts = int(meta.n_experts)
-    n_tokens = int(expert_ids.shape[0])
-    if expert_out.ndim != 3 or int(expert_out.shape[0]) != n_experts:
-        raise KernelError("expert_out must be (n_experts, max_per_expert, d_model)")
-    if _is_jax(expert_out):
-        return _ep_combine_jax(
-            expert_out, meta.probs, residual.token_index, residual.k_index, n_tokens
-        )
-    return _ep_combine_numpy(
-        _f32(expert_out),
-        _f32(meta.probs),
-        np.asarray(residual.token_index),
-        np.asarray(residual.k_index),
-        n_tokens,
+    return _ep_combine_impl(
+        expert_out,
+        meta,
+        residual,
+        as_jax=_is_jax(expert_out, meta.probs, residual.token_index),
     )
 
 
 def _ep_combine_fwd(expert_out: Array, meta: DispatchMeta, residual: Any):
-    expert_ids = np.asarray(meta.expert_ids)
-    n_experts = int(meta.n_experts)
-    n_tokens = int(expert_ids.shape[0])
-    if expert_out.ndim != 3 or int(expert_out.shape[0]) != n_experts:
-        raise KernelError("expert_out must be (n_experts, max_per_expert, d_model)")
-    out = _ep_combine_jax(
-        expert_out, meta.probs, residual.token_index, residual.k_index, n_tokens
-    )
+    out = _ep_combine_impl(expert_out, meta, residual, as_jax=True)
     return out, (
         jnp.asarray(meta.probs, dtype=jnp.float32),
         jnp.asarray(residual.token_index, dtype=jnp.int32),
@@ -1060,10 +1159,9 @@ def _ep_combine_fwd(expert_out: Array, meta: DispatchMeta, residual: Any):
     )
 
 
-def _ep_combine_bwd(meta: DispatchMeta, res: tuple[jax.Array, ...], g: jax.Array):
+def _ep_combine_bwd(res: tuple[jax.Array, ...], g: jax.Array):
     probs, token_index, k_index = res
-    del meta
-    return (_ep_combine_vjp_jax(g, probs, token_index, k_index), None)
+    return (_ep_combine_vjp_jax(g, probs, token_index, k_index), None, None)
 
 
 ep_combine.defvjp(_ep_combine_fwd, _ep_combine_bwd)
