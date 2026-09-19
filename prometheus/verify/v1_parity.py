@@ -1,4 +1,9 @@
-"""V1 reference parity runner (spec 16.2)."""
+"""V1 reference parity runner (spec 16.2).
+
+Independent logits are a PyTorch forward (not JAX ``model.forward``, not
+NumPy, not ``tests/``). Default CPU analog ``run_v1`` stays callable
+without a GPU and does not count as V1 verified.
+"""
 
 from __future__ import annotations
 
