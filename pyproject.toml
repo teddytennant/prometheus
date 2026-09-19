@@ -19,6 +19,16 @@ cuda = [
     "jax[cuda12]",
 ]
 
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# Flat layout at the repo root (spec/17). Do not auto-discover crates, spec, or tests.
+[tool.setuptools.packages.find]
+include = ["prometheus*", "model", "train", "kernels", "parallel"]
+exclude = ["tests*", "spec*"]
+namespaces = false
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
