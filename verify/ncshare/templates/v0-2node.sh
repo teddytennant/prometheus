@@ -14,7 +14,6 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-task=1
 #SBATCH --gres=gpu:h200:4
 #SBATCH --output=fv-{{RUN_ID}}-v0-%j.out
 #SBATCH --error=fv-{{RUN_ID}}-v0-%j.err
