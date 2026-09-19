@@ -3,8 +3,13 @@
 //! Tests always go through `render_v0_2node` / `render_job` (and the
 //! `tests/reference/` renderer), never inspect template files alone.
 //! `ref_*` pass today: the reference substitutes placeholders in an independent
-//! 2-node stub. `prod_*` tests that call `render_v0_2node` panic
-//! `unimplemented!` until the F4 follow-up fills it. Do not `#[should_panic]`.
+//! 2-node stub. Do not `#[should_panic]`.
+//!
+//! NCShare sbatch rejects combining typed `--gres=gpu:h200:N` with
+//! `--gpus-per-task` ("Invalid GRES specification (with and without type
+//! identification)"). The rendered 2-node script must not emit
+//! `#SBATCH --gpus-per-task` or `srun --gpus-per-task`. One rank per GPU is
+//! `--ntasks=8` and `--ntasks-per-node=4` under `--gres=gpu:h200:4`.
 //!
 //! `render_job(Stage::V0, ...)` is the 1-GPU first allocation and must stay
 //! 1-node. That regression is allowed to pass on the current tree.
@@ -136,6 +141,44 @@ fn has_venv_inside_job(script: &str) -> bool {
     })
 }
 
+fn token_is_gpus_per_task(tok: &str) -> bool {
+    tok == "--gpus-per-task" || tok.starts_with("--gpus-per-task=")
+}
+
+fn line_has_gpus_per_task(line: &str) -> bool {
+    line.split_whitespace().any(token_is_gpus_per_task)
+}
+
+/// `#SBATCH --gpus-per-task` (any value / spacing). `#SBATCH` is not a comment.
+fn has_sbatch_gpus_per_task(script: &str) -> bool {
+    script
+        .lines()
+        .any(|line| sbatch_rest(line).is_some() && line_has_gpus_per_task(line))
+}
+
+/// `srun --gpus-per-task` on a non-comment, non-#SBATCH line (including
+/// continuation lines that only carry the flag).
+fn has_srun_gpus_per_task(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) || sbatch_rest(line).is_some() {
+            return false;
+        }
+        line_has_gpus_per_task(line)
+    })
+}
+
+fn assert_forbids_gpus_per_task(script: &str) {
+    let sbatch = has_sbatch_gpus_per_task(script);
+    let srun = has_srun_gpus_per_task(script);
+    assert!(
+        !sbatch && !srun,
+        "NCShare rejects combining typed --gres=gpu:h200:N with --gpus-per-task \
+         (Invalid GRES specification (with and without type identification)). \
+         Do not emit #SBATCH --gpus-per-task or srun --gpus-per-task. \
+         sbatch_gpus_per_task={sbatch} srun_gpus_per_task={srun}: {script}"
+    );
+}
+
 fn assert_rejects_empty(result: prometheus_verify_ncshare::Result<String>) {
     match result {
         Err(Error::Other(_)) => {}
@@ -188,10 +231,6 @@ fn assert_v0_2node_script(out: &str, run_id: &str, walltime: &str) {
         sbatch_has_kv(out, "--ntasks-per-node", V0_2NODE_GPUS_PER_NODE),
         "must set #SBATCH --ntasks-per-node={} (one rank per GPU): {out}",
         V0_2NODE_GPUS_PER_NODE
-    );
-    assert!(
-        sbatch_has_kv(out, "--gpus-per-task", 1),
-        "must set #SBATCH --gpus-per-task=1 (one rank per GPU): {out}"
     );
 
     assert!(
@@ -265,7 +304,12 @@ fn ref_render_v0_2node_launches_8_ranks_one_per_gpu() {
         "--ntasks-per-node",
         V0_2NODE_GPUS_PER_NODE
     ));
-    assert!(sbatch_has_kv(&out, "--gpus-per-task", 1));
+}
+
+#[test]
+fn ref_render_v0_2node_forbids_gpus_per_task() {
+    let out = reference::render_v0_2node("gres", "01:00:00").unwrap();
+    assert_forbids_gpus_per_task(&out);
 }
 
 #[test]
@@ -293,7 +337,8 @@ fn ref_render_v0_2node_builds_venv_inside_job() {
 }
 
 // ---------------------------------------------------------------------------
-// prod_* — call render_v0_2node; must FAIL on the unimplemented stub
+// prod_* — call render_v0_2node. The GRES forbid test must fail until
+// production drops #SBATCH --gpus-per-task / srun --gpus-per-task.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -337,10 +382,12 @@ fn prod_render_v0_2node_launches_8_ranks_one_per_gpu() {
         "must set --ntasks-per-node={}: {out}",
         V0_2NODE_GPUS_PER_NODE
     );
-    assert!(
-        sbatch_has_kv(&out, "--gpus-per-task", 1),
-        "must set --gpus-per-task=1: {out}"
-    );
+}
+
+#[test]
+fn prod_render_v0_2node_forbids_gpus_per_task() {
+    let out = render_v0_2node("gres", "01:00:00").unwrap();
+    assert_forbids_gpus_per_task(&out);
 }
 
 #[test]

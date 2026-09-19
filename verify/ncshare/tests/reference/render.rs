@@ -29,8 +29,9 @@ pub fn render_job(stage: Stage, run_id: &str, walltime: &str, gpus: u32) -> Resu
 /// (`v0_2node.sh` next to this file, not production `templates/`).
 ///
 /// Empty `run_id` or `walltime` is `Error::Other`, matching `render_job`.
-/// GPU counts are fixed by the stub (`#SBATCH --nodes=2`, `gpu:h200:4`); there
-/// is no `{{GPUS}}` placeholder.
+/// GPU counts are fixed by the stub (`#SBATCH --nodes=2`, `gpu:h200:4`,
+/// `--ntasks=8`, `--ntasks-per-node=4`; never `--gpus-per-task`); there is
+/// no `{{GPUS}}` placeholder.
 pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
     if run_id.is_empty() {
         return Err(Error::Other("empty run_id".into()));

@@ -7,13 +7,16 @@
 # Cross-node nccl-tests all_reduce is srun --mpi=pmix of all_reduce_perf_mpi
 # (not srun -N 2 of the non-MPI all_reduce_perf).
 # Checker reads busbw_gbps (2-node all_reduce) and node_facts.txt (kvm + NVMe).
+# Do not set #SBATCH --gpus-per-task or srun --gpus-per-task: NCShare rejects
+# combining typed --gres=gpu:h200:N with --gpus-per-task ("Invalid GRES
+# specification (with and without type identification)"). One rank per GPU is
+# --ntasks=8 and --ntasks-per-node=4 under --gres=gpu:h200:4.
 #SBATCH -J fv-{{RUN_ID}}-v0
 #SBATCH -t {{WALLTIME}}
 #SBATCH -p gpu
 #SBATCH --nodes=2
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-task=1
 #SBATCH --gres=gpu:h200:4
 #SBATCH --output=fv-{{RUN_ID}}-v0-%j.out
 #SBATCH --error=fv-{{RUN_ID}}-v0-%j.err
@@ -48,7 +51,7 @@ python -m pip install -q --upgrade pip
 } > "$OUT/node_facts.txt"
 
 # 8 ranks, one per GPU. Multi-rank nccl-tests on this cluster only works as
-# srun --mpi=pmix of all_reduce_perf_mpi.
+# srun --mpi=pmix of all_reduce_perf_mpi (no --gpus-per-task; see header).
 NCCL_BIN="${NCCL_TESTS_ALL_REDUCE_MPI:-all_reduce_perf_mpi}"
 NCCL_LOG="$OUT/nccl_allreduce_2node.txt"
 srun --mpi=pmix "$NCCL_BIN" -b 8 -e 128M -f 2 -g 1 | tee "$NCCL_LOG"

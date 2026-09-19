@@ -46,7 +46,8 @@
 //! Independent of production `templates/`. Substitutes `{{RUN_ID}}` and
 //! `{{WALLTIME}}` in `tests/reference/v0_2node.sh`. Empty `run_id` or
 //! `walltime` is `Error::Other`. The stub requests 2 nodes × 4 H200s, 8 MPI
-//! ranks (one per GPU), `srun --mpi=pmix` of `all_reduce_perf_mpi`, writes
+//! ranks (one per GPU via `--ntasks=8` / `--ntasks-per-node=4`, never
+//! `--gpus-per-task`), `srun --mpi=pmix` of `all_reduce_perf_mpi`, writes
 //! `busbw_gbps` and `node_facts.txt`, and builds the venv inside the job.
 //!
 //! # `check_exit` on-disk layout
