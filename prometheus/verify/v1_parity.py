@@ -15,7 +15,7 @@ import numpy as np
 
 import model
 import train
-from prometheus.verify._numpy_forward import forward as numpy_forward
+from prometheus.verify._torch_forward import forward as torch_forward
 
 LOGITS_MAX_ABS = 1e-5
 
@@ -126,10 +126,10 @@ def run_v1(*, gpus: int) -> V1Result:
 
     jax_out = model.forward(tokens, params, cfg, r=1)
     jax_logits = np.asarray(jax_out.logits, dtype=np.float32)
-    np_logits = np.asarray(
-        numpy_forward(tokens, _numpy_tree(params), cfg, r=1), dtype=np.float32
+    torch_logits = np.asarray(
+        torch_forward(tokens, _numpy_tree(params), cfg, r=1), dtype=np.float32
     )
-    logits_max_diff = float(np.max(np.abs(jax_logits - np_logits)))
+    logits_max_diff = float(np.max(np.abs(jax_logits - torch_logits)))
 
     grad_ok = _grad_ok(params, tokens, cfg)
     overfit_ok = _overfit_ok(params, cfg)

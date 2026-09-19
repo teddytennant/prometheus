@@ -11,6 +11,7 @@ dependencies = [
     "rfc3339-validator>=0.1.4",
     "jax>=0.4",
     "numpy>=1.26",
+    "torch",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +33,7 @@ testpaths = ["tests"]
 addopts = "-q"
 pythonpath = [".", "sglang-fork", "harness/genome-seed"]
 markers = [
-    "gpu: V1 H200 GPU tests (JAX vs numpy reference); skipped without a GPU",
+    "gpu: V1 H200 GPU tests (JAX vs PyTorch reference); skipped without a GPU",
 ]
 
 [tool.ruff]
