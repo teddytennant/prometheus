@@ -151,6 +151,13 @@ class NoisyLatent:
     log_density: float
 
 
+jax.tree_util.register_dataclass(
+    NoisyLatent,
+    data_fields=("mu", "sigma", "eps", "z", "log_density"),
+    meta_fields=(),
+)
+
+
 def _is_tracer(x: object) -> bool:
     return isinstance(x, jax.core.Tracer)
 
