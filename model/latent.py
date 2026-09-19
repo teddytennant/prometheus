@@ -11,11 +11,15 @@ Gaussian policy from spec 4.4.
 
 ``jax.jit`` of ``ponder_distribution``, ``halt_from_logits``,
 ``halt_loss``, ``halt_kl``, ``thought_decode_ce``,
-``answer_ce_at_depths``, and ``stage_b_loss`` must match the eager call
-at 1e-5. Traced arrays must not be converted with ``numpy.asarray`` or
-Python ``float()`` / ``int()`` on values. Python scalars (``n``,
-``lambda_prior``, ``teacher_steps``, ``answer_id``) and ``LatentConfig``
-stay host-side. ``geometric_prior`` is host-side (Python ``n``).
+``answer_ce_at_depths``, ``stage_b_loss``, ``jacobi_sweeps``,
+``clamp_sigma``, and ``noisy_latent`` must match the eager call at 1e-5.
+Traced arrays must not be converted with ``numpy.asarray`` or Python
+``float()`` / ``int()`` on values. Python scalars (``n``,
+``lambda_prior``, ``teacher_steps``, ``answer_id``, ``n_sweeps``,
+``truncated_sweeps``) and ``LatentConfig`` stay host-side.
+``geometric_prior`` is host-side (Python ``n``). ``jacobi_sweeps``
+``update`` must be JAX-traceable. Do not jit ``validate_latent_config``
+as an entry point.
 
 IS weighting of latent log-probs is ``rl.loss``, not this module.
 """
@@ -560,6 +564,12 @@ def jacobi_sweeps(
 
     ``n < 1``, ``n_sweeps < 1``, rank != 2, or a shape change from
     ``update`` raises ``LatentError``.
+
+    ``jax.jit`` of this function, with ``n_sweeps`` and
+    ``truncated_sweeps`` Python ints (closed over or
+    ``static_argnums``) and a JAX-traceable ``update``, must match the
+    eager result at 1e-5. Must not convert traced ``thoughts`` with
+    ``numpy.asarray``.
     """
     arr = np.asarray(thoughts)
     if arr.ndim != 2:
@@ -587,6 +597,10 @@ def clamp_sigma(sigma: Array, config: LatentConfig) -> Array:
     """Per-element clamp into ``[sigma_min, sigma_max]``.
 
     Non-finite sigma raises ``LatentError``. Empty is rejected.
+
+    ``jax.jit`` of this function, with ``config`` host-side, must match
+    the eager result at 1e-5. Must not convert traced ``sigma`` with
+    ``numpy.asarray`` or Python ``float()`` on entries.
     """
     arr = _as_float_array(sigma)
     if arr.size < 1:
@@ -616,6 +630,11 @@ def noisy_latent(mu: Array, sigma: Array, eps: Array, config: LatentConfig) -> N
     All three vectors 1-D, same length, finite. Empty raises ``LatentError``.
     ``log_density = -0.5 * sum[((z-mu)/s)^2 + 2 log s + log(2π)]`` on the
     clamped ``s``. Does not import ``rl.loss``.
+
+    ``jax.jit`` of this function, with ``config`` host-side, must match
+    the eager result at 1e-5. Must not convert traced ``mu`` / ``sigma``
+    / ``eps`` with ``numpy.asarray`` or Python ``float()`` on entries.
+    ``log_density`` may be a 0-d array under jit.
     """
     mu_a = _require_1d_finite_nonempty(mu, "mu")
     sigma_a = _require_1d_finite_nonempty(sigma, "sigma")
