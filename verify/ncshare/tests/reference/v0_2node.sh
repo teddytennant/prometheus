@@ -5,7 +5,11 @@
 #
 # Login node has no AVX — venv is built inside this job on a compute node.
 # Cross-node nccl-tests all_reduce is srun --mpi=pmix of all_reduce_perf_mpi
-# (not srun -N 2 of the non-MPI all_reduce_perf).
+# (not srun -N 2 of the non-MPI all_reduce_perf; not an mpirun wrapper).
+# Override the binary with NCCL_TESTS_ALL_REDUCE_MPI; do not hardcode a site
+# path as the only way to find the ELF.
+# PMIx env that works on NCShare (jobs 734353 / 734382): export PMIX_MCA_gds=hash,
+# unset OMPI_MCA_mca_base_component_path, LD_LIBRARY_PATH includes openmpi/lib.
 # Checker reads busbw_gbps (2-node all_reduce) and node_facts.txt (kvm + NVMe).
 # Do not set #SBATCH --gpus-per-task or srun --gpus-per-task: NCShare rejects
 # combining typed --gres=gpu:h200:N with --gpus-per-task ("Invalid GRES
@@ -52,7 +56,18 @@ python -m pip install -q --upgrade pip
 
 # 8 ranks, one per GPU. Multi-rank nccl-tests on this cluster only works as
 # srun --mpi=pmix of all_reduce_perf_mpi (no --gpus-per-task; see header).
+# Binary override is NCCL_TESTS_ALL_REDUCE_MPI; do not hardcode a site path
+# as the only way to find the ELF.
 NCCL_BIN="${NCCL_TESTS_ALL_REDUCE_MPI:-all_reduce_perf_mpi}"
 NCCL_LOG="$OUT/nccl_allreduce_2node.txt"
+
+# PMIx env that actually works on NCShare (jobs 734353 / 734382).
+# Job 734144 copied a tools-prefix MCA path and launched via mpirun:
+# PMIX_ERR_FILE_OPEN_FAILURE then SIGSEGV in PMIx_Init (gds_shmem).
+export PMIX_MCA_gds=hash
+unset OMPI_MCA_mca_base_component_path
+# System OpenMPI lib dir on LD_LIBRARY_PATH (`openmpi/lib` is enough).
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/openmpi/lib:${LD_LIBRARY_PATH:-}"
+
 srun --mpi=pmix "$NCCL_BIN" -b 8 -e 128M -f 2 -g 1 | tee "$NCCL_LOG"
 cp "$NCCL_LOG" "$OUT/busbw_gbps"

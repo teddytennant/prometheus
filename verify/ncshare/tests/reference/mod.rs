@@ -47,7 +47,10 @@
 //! `{{WALLTIME}}` in `tests/reference/v0_2node.sh`. Empty `run_id` or
 //! `walltime` is `Error::Other`. The stub requests 2 nodes × 4 H200s, 8 MPI
 //! ranks (one per GPU via `--ntasks=8` / `--ntasks-per-node=4`, never
-//! `--gpus-per-task`), `srun --mpi=pmix` of `all_reduce_perf_mpi`, writes
+//! `--gpus-per-task`), `srun --mpi=pmix` of `all_reduce_perf_mpi` (not
+//! `mpirun`; override `NCCL_TESTS_ALL_REDUCE_MPI`), PMIx env
+//! (`PMIX_MCA_gds=hash`, `unset OMPI_MCA_mca_base_component_path`,
+//! system OpenMPI `openmpi/lib` on `LD_LIBRARY_PATH`), writes
 //! `busbw_gbps` and `node_facts.txt`, and builds the venv inside the job.
 //!
 //! # `check_exit` on-disk layout

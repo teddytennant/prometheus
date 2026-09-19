@@ -11,6 +11,16 @@
 //! `#SBATCH --gpus-per-task` or `srun --gpus-per-task`. One rank per GPU is
 //! `--ntasks=8` and `--ntasks-per-node=4` under `--gres=gpu:h200:4`.
 //!
+//! Cross-node all_reduce on this cluster is `srun --mpi=pmix` of the
+//! `all_reduce_perf_mpi` ELF (not an `mpirun` wrapper). The job must also
+//! emit the PMIx env that actually works on NCShare (734353 / 734382):
+//! non-comment `PMIX_MCA_gds=hash`, `unset OMPI_MCA_mca_base_component_path`,
+//! and `LD_LIBRARY_PATH` including a system OpenMPI lib dir (`openmpi/lib`).
+//! Binary override is `NCCL_TESTS_ALL_REDUCE_MPI` — do not require a
+//! hardcoded site path as the only way to find the ELF. Job 734144
+//! (`fv-mpifix`) SIGSEGV'd in `PMIx_Init` after copying a tools-prefix MCA
+//! path and launching via `mpirun`.
+//!
 //! `render_job(Stage::V0, ...)` is the 1-GPU first allocation and must stay
 //! 1-node. That regression is allowed to pass on the current tree.
 
@@ -179,6 +189,117 @@ fn assert_forbids_gpus_per_task(script: &str) {
     );
 }
 
+fn strip_shell_quotes(s: &str) -> String {
+    s.replace(['"', '\''], "")
+}
+
+fn assignment_tokens(line: &str) -> Vec<String> {
+    strip_shell_quotes(line)
+        .split_whitespace()
+        .map(|tok| tok.trim_matches(|c| c == ';' || c == '&').to_string())
+        .collect()
+}
+
+/// Non-comment `export PMIX_MCA_gds=hash` or `PMIX_MCA_gds=hash` (quotes ok).
+fn has_pmix_mca_gds_hash(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) {
+            return false;
+        }
+        assignment_tokens(line)
+            .iter()
+            .any(|tok| tok == "PMIX_MCA_gds=hash")
+    })
+}
+
+/// Non-comment `unset OMPI_MCA_mca_base_component_path` (`unset -v` ok).
+fn has_unset_ompi_mca_component_path(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) {
+            return false;
+        }
+        let tokens = assignment_tokens(line);
+        tokens.iter().any(|t| t == "unset")
+            && tokens
+                .iter()
+                .any(|t| t == "OMPI_MCA_mca_base_component_path")
+    })
+}
+
+/// Non-comment `LD_LIBRARY_PATH` assignment/export whose value mentions
+/// a system OpenMPI lib dir. `openmpi/lib` is enough; do not require a
+/// hardcoded `/work/ttennant1` (or any other) site prefix.
+fn has_ld_library_path_openmpi_lib(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) {
+            return false;
+        }
+        line.contains("LD_LIBRARY_PATH") && line.contains("openmpi/lib")
+    })
+}
+
+fn token_is_mpirun(tok: &str) -> bool {
+    let tok = tok.trim_matches(|c: char| c == '"' || c == '\'' || c == ';' || c == '&');
+    tok == "mpirun" || tok.ends_with("/mpirun")
+}
+
+/// Non-comment launch via `mpirun` (the 734144 wrapper). Comments that
+/// mention mpirun do not count.
+fn launches_via_mpirun(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) {
+            return false;
+        }
+        line.split_whitespace().any(token_is_mpirun)
+    })
+}
+
+/// Non-comment `NCCL_TESTS_ALL_REDUCE_MPI` override. Do not require a
+/// hardcoded site path as the only way to find `all_reduce_perf_mpi`.
+fn has_nccl_tests_all_reduce_mpi_override(script: &str) -> bool {
+    non_comment_contains(script, "NCCL_TESTS_ALL_REDUCE_MPI")
+}
+
+fn assert_pmix_launch_env(script: &str) {
+    let mut missing = Vec::new();
+    if !has_pmix_mca_gds_hash(script) {
+        missing.push("non-comment PMIX_MCA_gds=hash (export or assignment)");
+    }
+    if !has_unset_ompi_mca_component_path(script) {
+        missing.push("non-comment unset OMPI_MCA_mca_base_component_path");
+    }
+    if !has_ld_library_path_openmpi_lib(script) {
+        missing.push("non-comment LD_LIBRARY_PATH including system OpenMPI lib dir (openmpi/lib)");
+    }
+    if launches_via_mpirun(script) {
+        missing.push("must not launch via mpirun (job 734144 wrapper)");
+    }
+    if !has_nccl_tests_all_reduce_mpi_override(script) {
+        missing.push("NCCL_TESTS_ALL_REDUCE_MPI binary override");
+    }
+    assert!(
+        missing.is_empty(),
+        "pmix launch env missing {missing:?}. \
+         Job 734144 SIGSEGV'd in PMIx_Init (gds_shmem) after copying a \
+         tools-prefix MCA path and launching via mpirun. Jobs 734353/734382 \
+         passed with this env. srun --mpi=pmix of all_reduce_perf_mpi stays \
+         required; do not require a hardcoded /work/ttennant1 path. \
+         Comments do not count: {script}"
+    );
+    assert!(
+        has_srun(script),
+        "must still invoke srun (not mpirun): {script}"
+    );
+    assert!(
+        has_mpi_pmix(script),
+        "must still pass --mpi=pmix to srun: {script}"
+    );
+    assert!(
+        has_all_reduce_perf_mpi(script),
+        "must still launch all_reduce_perf_mpi: {script}"
+    );
+}
+
 fn assert_rejects_empty(result: prometheus_verify_ncshare::Result<String>) {
     match result {
         Err(Error::Other(_)) => {}
@@ -322,6 +443,12 @@ fn ref_render_v0_2node_uses_mpi_all_reduce_perf_mpi() {
 }
 
 #[test]
+fn ref_render_v0_2node_pmix_launch_env() {
+    let out = reference::render_v0_2node("pmix", "01:00:00").unwrap();
+    assert_pmix_launch_env(&out);
+}
+
+#[test]
 fn ref_render_v0_2node_writes_busbw_and_node_facts() {
     let out = reference::render_v0_2node("facts", "01:00:00").unwrap();
     assert!(non_comment_contains(&out, "busbw_gbps"));
@@ -337,8 +464,10 @@ fn ref_render_v0_2node_builds_venv_inside_job() {
 }
 
 // ---------------------------------------------------------------------------
-// prod_* — call render_v0_2node. The GRES forbid test must fail until
-// production drops #SBATCH --gpus-per-task / srun --gpus-per-task.
+// prod_* — call render_v0_2node. The pmix-env test must fail until
+// production emits PMIX_MCA_gds=hash, unsets
+// OMPI_MCA_mca_base_component_path, and puts system OpenMPI on
+// LD_LIBRARY_PATH (jobs 734353 / 734382). Do not launch via mpirun.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -408,6 +537,12 @@ fn prod_render_v0_2node_uses_mpi_all_reduce_perf_mpi() {
         "must not srun -N {} the non-MPI all_reduce_perf: {out}",
         V0_2NODE_NODES
     );
+}
+
+#[test]
+fn prod_render_v0_2node_pmix_launch_env() {
+    let out = render_v0_2node("pmix", "01:00:00").unwrap();
+    assert_pmix_launch_env(&out);
 }
 
 #[test]
