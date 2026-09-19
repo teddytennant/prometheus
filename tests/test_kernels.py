@@ -4,7 +4,10 @@ These import production ``kernels``. Constants, enums, and dataclasses are real
 and membership tests may pass against the stub. Every test that *calls*
 ``chunked_delta_rule``, ``chunked_delta_rule_fwd``, ``chunked_delta_rule_bwd``,
 ``fp8_quantize``, ``fp8_dequantize``, ``fp8_linear``, ``fp8_linear_fwd``,
-``fp8_linear_bwd``, ``ep_dispatch``, or ``ep_combine`` must FAIL on the stub.
+or ``fp8_linear_bwd`` must FAIL on the stub. Forward ``ep_dispatch`` /
+``ep_combine`` (numpy permutation) is implemented; ``jax.grad`` through
+them and the ``jax.custom_vjp`` type tests must FAIL until the public
+names are the fused-permutation ``jax.custom_vjp`` objects themselves.
 
 The numpy reference (``tests.reference.kernels``) is the gated delta-rule
 recurrence with no chunking, E4M3FN per-block abs-max fake-quant, and
@@ -22,7 +25,10 @@ Groups:
   (matches fp8_linear_bwd residual, not scale-path autodiff), goldens,
   KernelError on bad shapes.
 - EP: combine(dispatch(x)) weighted identity, rack span > MAX_RACKS,
-  padding shape, goldens, residual is opaque.
+  padding shape, goldens, residual is opaque. Public ``ep_dispatch`` /
+  ``ep_combine`` must be the ``jax.custom_vjp`` object itself (not a
+  wrapper); ``jax.grad`` / ``jax.vjp`` through dispatched matches the
+  residual scatter VJP, through combined the weighted-scatter VJP, 1e-5.
 - GPU: V1 linear-attn parity and jax.grad reverse-state VJP, V3 FP8 parity
   and jax.grad STE (pytest marker ``gpu``). CPU tests cover jax.grad.
 """
@@ -111,6 +117,66 @@ def _dispatch_meta(expert_ids, probs, racks, n_experts, max_racks=None):
         n_experts=int(n_experts),
         max_racks=int(max_racks),
     )
+
+
+def _ep_vjp_layouts(rng):
+    """Layouts covering top_k>1, padded experts, unused slots, duplicate ids."""
+    cases = []
+    tokens = rng.standard_normal((3, 4)).astype(np.float32)
+    cases.append(
+        (
+            "pad_topk1",
+            tokens,
+            _dispatch_meta(
+                expert_ids=[[0], [1], [0]],
+                probs=[[1.0], [1.0], [1.0]],
+                racks=[0, 1],
+                n_experts=2,
+            ),
+        )
+    )
+    tokens = rng.standard_normal((4, 3)).astype(np.float32)
+    probs = rng.random((4, 2)).astype(np.float32)
+    probs /= probs.sum(axis=1, keepdims=True)
+    cases.append(
+        (
+            "topk2_pad",
+            tokens,
+            _dispatch_meta(
+                expert_ids=[[0, 1], [0, 2], [1, 2], [0, 1]],
+                probs=probs,
+                racks=[0, 0, 1],
+                n_experts=3,
+            ),
+        )
+    )
+    tokens = rng.standard_normal((3, 2)).astype(np.float32)
+    cases.append(
+        (
+            "unused_expert",
+            tokens,
+            _dispatch_meta(
+                expert_ids=[[0], [0], [1]],
+                probs=[[1.0], [1.0], [1.0]],
+                racks=[0, 1, 2],
+                n_experts=3,
+            ),
+        )
+    )
+    tokens = rng.standard_normal((2, 5)).astype(np.float32)
+    cases.append(
+        (
+            "dup_expert_topk2",
+            tokens,
+            _dispatch_meta(
+                expert_ids=[[0, 0], [1, 0]],
+                probs=[[0.4, 0.6], [0.3, 0.7]],
+                racks=[0, 1],
+                n_experts=2,
+            ),
+        )
+    )
+    return cases
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1106,147 @@ def test_ep_dispatch_out_of_range_expert_raises():
     )
     with pytest.raises(kernels.KernelError):
         kernels.ep_dispatch(tokens, meta)
+
+
+def test_ep_dispatch_is_registered_jax_custom_vjp():
+    """Public ``ep_dispatch`` must be the ``jax.custom_vjp`` object, not a wrapper."""
+    jax, jnp = _jax()
+
+    @jax.custom_vjp
+    def _probe(z):
+        return z
+
+    def _probe_fwd(z):
+        return z, ()
+
+    def _probe_bwd(_res, g):
+        return (g,)
+
+    _probe.defvjp(_probe_fwd, _probe_bwd)
+    assert type(kernels.ep_dispatch) is type(_probe)
+    assert hasattr(kernels.ep_dispatch, "defvjp")
+    tokens = jnp.asarray([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=jnp.float32)
+    meta = _dispatch_meta(
+        expert_ids=[[0], [1], [0]],
+        probs=[[1.0], [1.0], [1.0]],
+        racks=[0, 1],
+        n_experts=2,
+    )
+    g = jax.grad(lambda t: jnp.sum(kernels.ep_dispatch(t, meta)[0]))(tokens)
+    assert g.shape == tokens.shape
+    np.testing.assert_allclose(_np(g), np.ones_like(_np(tokens)), **TOL)
+
+
+def test_ep_combine_is_registered_jax_custom_vjp():
+    """Public ``ep_combine`` must be the ``jax.custom_vjp`` object, not a wrapper."""
+    jax, jnp = _jax()
+
+    @jax.custom_vjp
+    def _probe(z):
+        return z
+
+    def _probe_fwd(z):
+        return z, ()
+
+    def _probe_bwd(_res, g):
+        return (g,)
+
+    _probe.defvjp(_probe_fwd, _probe_bwd)
+    assert type(kernels.ep_combine) is type(_probe)
+    assert hasattr(kernels.ep_combine, "defvjp")
+    tokens = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+    meta = _dispatch_meta(
+        expert_ids=[[0], [1], [0]],
+        probs=[[1.0], [1.0], [1.0]],
+        racks=[0, 1],
+        n_experts=2,
+    )
+    dispatched, residual = kernels.ep_dispatch(tokens, meta)
+    expert_out = jnp.asarray(dispatched)
+    g = jax.grad(lambda eo: jnp.sum(kernels.ep_combine(eo, meta, residual)))(expert_out)
+    assert g.shape == expert_out.shape
+    assert _np(g).dtype == np.float32
+
+
+def test_ep_dispatch_jax_grad_matches_scatter_vjp():
+    """jax.grad / jax.vjp through dispatched equals scatter of cotangents via residual."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(60)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        dispatched_ref, residual_ref = ref.ep_dispatch(tokens, meta)
+        g_disp = rng.standard_normal(dispatched_ref.shape).astype(np.float32)
+        exp = ref.ep_dispatch_vjp(tokens, meta, g_disp, residual_ref)
+        tokens_j = jnp.asarray(tokens)
+        g_disp_j = jnp.asarray(g_disp)
+
+        def _dispatched(tok, _meta=meta):
+            d, _r = kernels.ep_dispatch(tok, _meta)
+            return d
+
+        _primals, vjp_fn = jax.vjp(_dispatched, tokens_j)
+        (got_vjp,) = vjp_fn(g_disp_j)
+        np.testing.assert_allclose(_np(got_vjp), exp, **TOL, err_msg=name)
+        assert _np(got_vjp).shape == tokens.shape
+        assert _np(got_vjp).dtype == np.float32
+
+        def _loss(tok, _meta=meta, _g=g_disp_j):
+            d, _r = kernels.ep_dispatch(tok, _meta)
+            return jnp.sum(d * _g)
+
+        got_grad = jax.grad(_loss)(tokens_j)
+        np.testing.assert_allclose(_np(got_grad), exp, **TOL, err_msg=name)
+
+        # Directional finite-difference vs jax.grad (fails on the numpy stub).
+        d = _unit(rng, tokens.shape)
+        eps = 1e-3
+        plus, _ = ref.ep_dispatch(tokens + eps * d, meta)
+        minus, _ = ref.ep_dispatch(tokens - eps * d, meta)
+        fd = (float(np.sum(plus * g_disp)) - float(np.sum(minus * g_disp))) / (2 * eps)
+        analytic = float(np.sum(_np(got_grad) * d))
+        np.testing.assert_allclose(fd, analytic, **FD_TOL, err_msg=name)
+
+
+def test_ep_combine_jax_grad_matches_weighted_scatter_vjp():
+    """jax.grad / jax.vjp through combined equals weighted scatter onto expert slots."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(61)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        dispatched_ref, residual_ref = ref.ep_dispatch(tokens, meta)
+        _, residual = kernels.ep_dispatch(tokens, meta)
+        expert_out = rng.standard_normal(dispatched_ref.shape).astype(np.float32)
+        g_comb = rng.standard_normal(tokens.shape).astype(np.float32)
+        exp = ref.ep_combine_vjp(expert_out, meta, residual_ref, g_comb)
+        expert_j = jnp.asarray(expert_out)
+        g_comb_j = jnp.asarray(g_comb)
+
+        def _combined(eo, _meta=meta, _residual=residual):
+            return kernels.ep_combine(eo, _meta, _residual)
+
+        _primals, vjp_fn = jax.vjp(_combined, expert_j)
+        (got_vjp,) = vjp_fn(g_comb_j)
+        np.testing.assert_allclose(_np(got_vjp), exp, **TOL, err_msg=name)
+        assert _np(got_vjp).shape == expert_out.shape
+        assert _np(got_vjp).dtype == np.float32
+
+        def _loss(eo, _meta=meta, _residual=residual, _g=g_comb_j):
+            return jnp.sum(kernels.ep_combine(eo, _meta, _residual) * _g)
+
+        got_grad = jax.grad(_loss)(expert_j)
+        np.testing.assert_allclose(_np(got_grad), exp, **TOL, err_msg=name)
+
+        d = _unit(rng, expert_out.shape)
+        eps = 1e-3
+        plus = ref.ep_combine(expert_out + eps * d, meta, residual_ref)
+        minus = ref.ep_combine(expert_out - eps * d, meta, residual_ref)
+        fd = (float(np.sum(plus * g_comb)) - float(np.sum(minus * g_comb))) / (2 * eps)
+        analytic = float(np.sum(_np(got_grad) * d))
+        np.testing.assert_allclose(fd, analytic, **FD_TOL, err_msg=name)
+
+        # Unused / padded slots must receive zero cotangent.
+        token_index = np.asarray(residual_ref.token_index)
+        unused = token_index < 0
+        if np.any(unused):
+            np.testing.assert_allclose(_np(got_grad)[unused], 0.0, **TOL, err_msg=f"{name}-unused")
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,12 @@ Each token is copied to each of its top-k experts, padded to max_per_expert
 along the slot axis. Token order within an expert is increasing token index,
 then k. A token whose chosen experts span more than ``max_racks`` distinct
 racks is an error. ``ep_combine`` is the inverse: weighted sum with ``probs``.
+
+The fused permutation VJP is ``ep_dispatch_vjp`` (scatter cotangents onto
+tokens via residual) and ``ep_combine_vjp`` (weighted-scatter cotangents
+onto expert slots using ``probs`` and residual). Production
+``jax.grad(ep_dispatch)`` / ``jax.grad(ep_combine)`` must match these.
+``meta`` routing ids and residual are not differentiated.
 """
 
 from __future__ import annotations
@@ -497,3 +503,66 @@ def ep_combine(expert_out: Array, meta: Any, residual: Any) -> Array:
             k = int(k_index[e, slot])
             out[t] += probs[t, k] * expert_out[e, slot]
     return out.astype(np.float32)
+
+
+def ep_dispatch_vjp(tokens: Array, meta: Any, g_dispatched: Array, residual: Any) -> Array:
+    """Scatter dispatch cotangents onto tokens via residual (inverse permutation).
+
+    ``g_dispatched`` is (n_experts, max_per_expert, d_model). Each occupied
+    slot ``(e, s)`` with ``token_index[e, s] == t`` adds ``g_dispatched[e, s]``
+    onto ``grad_tokens[t]``. Padded slots (token_index < 0) contribute nothing.
+    A token routed to several experts (top_k > 1) receives the sum of those
+    slot cotangents.
+
+    ``meta`` is not differentiated. ``residual`` is not differentiated.
+    Independent of production ``kernels`` (duck-types residual / meta).
+    """
+    tokens = _as_f32(tokens)
+    g_dispatched = _as_f32(g_dispatched)
+    _expert_ids, _probs, _racks, n_experts, _max_racks = _meta_fields(meta)
+    del _expert_ids, _probs, _racks, _max_racks
+    if g_dispatched.ndim != 3 or int(g_dispatched.shape[0]) != n_experts:
+        raise ValueError("g_dispatched must be (n_experts, max_per_expert, d_model)")
+    n_tokens = int(tokens.shape[0])
+    d_model = int(tokens.shape[1])
+    token_index = np.asarray(residual.token_index)
+    max_per = int(g_dispatched.shape[1])
+    grad = np.zeros((n_tokens, d_model), dtype=np.float32)
+    for e in range(n_experts):
+        for slot in range(max_per):
+            t = int(token_index[e, slot])
+            if t < 0:
+                continue
+            grad[t] += g_dispatched[e, slot]
+    return grad.astype(np.float32)
+
+
+def ep_combine_vjp(expert_out: Array, meta: Any, residual: Any, g_combined: Array) -> Array:
+    """Weighted-scatter combine cotangents onto expert slots.
+
+    ``grad_expert_out[e, s] = probs[t, k] * g_combined[t]`` for occupied
+    slots with ``token_index[e, s] == t`` and ``k_index[e, s] == k``.
+    Padded / unused slots get zero. Routing ids (expert_ids, racks) and
+    residual are not differentiated.
+
+    Independent of production ``kernels`` (duck-types residual / meta).
+    """
+    expert_out = _as_f32(expert_out)
+    g_combined = _as_f32(g_combined)
+    _expert_ids, probs, _racks, n_experts, _max_racks = _meta_fields(meta)
+    del _expert_ids, _racks, _max_racks
+    if expert_out.ndim != 3 or int(expert_out.shape[0]) != n_experts:
+        raise ValueError("expert_out must be (n_experts, max_per_expert, d_model)")
+    token_index = np.asarray(residual.token_index)
+    k_index = np.asarray(residual.k_index)
+    max_per = int(expert_out.shape[1])
+    d_model = int(expert_out.shape[2])
+    grad = np.zeros((n_experts, max_per, d_model), dtype=np.float32)
+    for e in range(n_experts):
+        for slot in range(max_per):
+            t = int(token_index[e, slot])
+            if t < 0:
+                continue
+            k = int(k_index[e, slot])
+            grad[e, slot] = probs[t, k] * g_combined[t]
+    return grad.astype(np.float32)
