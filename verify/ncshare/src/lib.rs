@@ -206,6 +206,16 @@ pub const V0_2NODE_NODES: u32 = 2;
 /// Spec 16.2 V0 second allocation: 4 H200s per node.
 pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 
+/// Optional-dependency extra that installs GPU JAX for V1 (spec 16.2).
+///
+/// `templates/v1.sh` must `pip install -e ".[cuda]"` (this extra name) so
+/// the 1-GPU job is not a CPU-JAX stand-in. Default `[project] dependencies`
+/// stay CPU JAX: CI and `uv run pytest` must not need CUDA. The extra is a
+/// portable JAX CUDA extra, not a site path. After install, the job template
+/// must fail if JAX is not using a GPU. `run_v1` itself stays callable on
+/// CPU JAX for the analog tests in `tests/test_v1_parity.py`.
+pub const V1_CUDA_EXTRA: &str = "cuda";
+
 /// Render the V0 2-node × 4 GPU job (spec 16.2).
 ///
 /// Distinct from `render_job(Stage::V0, ...)`, which is the 1-GPU first
