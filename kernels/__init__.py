@@ -133,6 +133,11 @@ class _DispatchResidual:
 
 
 jax.tree_util.register_dataclass(
+    Fp8Meta,
+    data_fields=("q", "scale"),
+    meta_fields=("block", "dtype"),
+)
+jax.tree_util.register_dataclass(
     DispatchMeta,
     data_fields=("expert_ids", "probs", "racks"),
     meta_fields=("n_experts", "max_racks", "_static_max_per"),
