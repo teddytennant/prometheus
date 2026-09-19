@@ -217,7 +217,7 @@ def classify_param(name: str, value: Array) -> ParamKind:
     low = name.lower()
     if any(tok in low for tok in _ADAMW_NAME_TOKS):
         return ParamKind.ADAMW
-    if int(np.asarray(value).ndim) == 2:
+    if int(jnp.asarray(value).ndim) == 2:
         return ParamKind.MUON_2D
     return ParamKind.ADAMW
 
@@ -542,13 +542,13 @@ def apply_precision(
     return _map_tree(params, leaf)
 
 
-def _tree_sum_sq(obj: Any) -> float:
+def _tree_sum_sq(obj: Any) -> Array:
     if isinstance(obj, dict):
-        return sum(_tree_sum_sq(v) for v in obj.values())
+        return sum((_tree_sum_sq(v) for v in obj.values()), start=jnp.float32(0.0))
     if isinstance(obj, (list, tuple)):
-        return sum(_tree_sum_sq(v) for v in obj)
+        return sum((_tree_sum_sq(v) for v in obj), start=jnp.float32(0.0))
     g = _as_f32(obj)
-    return float(np.sum(g * g))
+    return jnp.sum(g * g)
 
 
 def _scale_tree(obj: Any, scale: float) -> Any:
@@ -558,7 +558,7 @@ def _scale_tree(obj: Any, scale: float) -> Any:
         return [_scale_tree(v, scale) for v in obj]
     if isinstance(obj, tuple):
         return tuple(_scale_tree(v, scale) for v in obj)
-    return _as_f32(obj) * np.float32(scale)
+    return _as_f32(obj) * jnp.asarray(scale, dtype=jnp.float32)
 
 
 def _map_opt(p: Any, g: Any, s: Any, fn: Any, prefix: str = "") -> tuple[Any, Any]:
@@ -632,8 +632,8 @@ def _clip_qk_weights(params: Any, max_logit: float) -> Any:
                 qn = _as_f32(q).reshape(-1, int(q.shape[-1]))
                 kn = _as_f32(k).reshape(-1, int(k.shape[-1]))
                 qc, kc = qk_clip(qn, kn, max_logit)
-                out["W_q"] = np.asarray(qc, dtype=np.float32).reshape(q.shape)
-                out["W_k"] = np.asarray(kc, dtype=np.float32).reshape(k.shape)
+                out["W_q"] = jnp.asarray(qc, dtype=jnp.float32).reshape(q.shape)
+                out["W_k"] = jnp.asarray(kc, dtype=jnp.float32).reshape(k.shape)
         return out
     if isinstance(params, list):
         return [_clip_qk_weights(v, max_logit) for v in params]
@@ -647,18 +647,16 @@ def _update_router_bias(params: Any, router_probs: Array, u: float = 1e-3) -> An
     probs = _as_f32(router_probs)
     if probs.size == 0:
         return params
-    load = np.mean(probs.reshape(-1, probs.shape[-1]), axis=0).astype(np.float32)
-    delta = np.sign(load - np.mean(load)).astype(np.float32) * np.float32(u)
+    load = jnp.mean(probs.reshape(-1, probs.shape[-1]), axis=0).astype(jnp.float32)
+    delta = jnp.sign(load - jnp.mean(load)).astype(jnp.float32) * jnp.float32(u)
 
     def walk(obj: Any) -> Any:
         if isinstance(obj, dict):
             out = {k: walk(v) for k, v in obj.items()}
             if "router_bias" in out:
                 bias = _as_f32(out["router_bias"])
-                n = min(bias.shape[-1], delta.shape[0])
-                bias = np.array(bias, copy=True)
-                bias[..., :n] = bias[..., :n] - delta[:n]
-                out["router_bias"] = bias.astype(np.float32)
+                n = min(int(bias.shape[-1]), int(delta.shape[0]))
+                out["router_bias"] = bias.at[..., :n].add(-delta[:n]).astype(jnp.float32)
             return out
         if isinstance(obj, list):
             return [walk(v) for v in obj]
@@ -722,11 +720,17 @@ def train_step(
         params
     )
 
-    gnorm = float(np.sqrt(max(_tree_sum_sq(grads), 0.0)))
+    gnorm = jnp.sqrt(jnp.maximum(_tree_sum_sq(grads), jnp.float32(0.0)))
     clip = float(train_config.grad_clip)
-    scale = 1.0
-    if clip > 0.0 and gnorm > clip:
-        scale = clip / (gnorm + 1e-6)
+    if clip > 0.0:
+        clip_a = jnp.float32(clip)
+        scale = jnp.where(
+            gnorm > clip_a,
+            clip_a / (gnorm + jnp.float32(1e-6)),
+            jnp.float32(1.0),
+        )
+    else:
+        scale = jnp.float32(1.0)
     grads = _scale_tree(grads, scale)
 
     def apply_one(name: str, p: Any, g: Any, s: Any) -> tuple[Any, Any]:
@@ -764,12 +768,12 @@ def train_step(
         params=new_params,
         opt_state=new_opt,
         loss=LossBreakdown(
-            ce=np.float32(float(ce)),
-            mtp=np.float32(float(mtp)),
-            z=np.float32(float(z)),
-            total=np.float32(float(total)),
+            ce=_as_f32(ce),
+            mtp=_as_f32(mtp),
+            z=_as_f32(z),
+            total=_as_f32(total),
         ),
         lr=sched,
-        grad_norm=np.float32(gnorm),
+        grad_norm=_as_f32(gnorm),
         step=t,
     )
