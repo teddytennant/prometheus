@@ -5,9 +5,12 @@ and membership tests may pass against the stub. Every test that *calls*
 ``chunked_delta_rule``, ``chunked_delta_rule_fwd``, ``chunked_delta_rule_bwd``,
 ``fp8_quantize``, ``fp8_dequantize``, ``fp8_linear``, ``fp8_linear_fwd``,
 or ``fp8_linear_bwd`` must FAIL on the stub. Forward ``ep_dispatch`` /
-``ep_combine`` (numpy permutation) is implemented; ``jax.grad`` through
-them and the ``jax.custom_vjp`` type tests must FAIL until the public
-names are the fused-permutation ``jax.custom_vjp`` objects themselves.
+``ep_combine`` are the fused-permutation ``jax.custom_vjp`` objects (eager
+``jax.grad`` matches the scatter VJPs). ``jax.jit(ep_dispatch)`` /
+``jax.jit(ep_combine)`` and composed jit must FAIL until ``DispatchMeta``
+is a ``jax.tree_util`` registered dataclass (array fields as data, ints as
+meta) and the traced path does not treat ``DispatchMeta`` as an abstract
+array.
 
 The numpy reference (``tests.reference.kernels``) is the gated delta-rule
 recurrence with no chunking, E4M3FN per-block abs-max fake-quant, and
@@ -29,6 +32,10 @@ Groups:
   ``ep_combine`` must be the ``jax.custom_vjp`` object itself (not a
   wrapper); ``jax.grad`` / ``jax.vjp`` through dispatched matches the
   residual scatter VJP, through combined the weighted-scatter VJP, 1e-5.
+  ``DispatchMeta`` is a registered pytree (array fields are leaves);
+  ``jax.jit(ep_dispatch)`` / ``jax.jit(ep_combine)`` match eager at 1e-5;
+  composed jit(dispatch-then-combine) identity; ``jax.grad`` through
+  those jitted primitives matches the scatter VJPs.
 - GPU: V1 linear-attn parity and jax.grad reverse-state VJP, V3 FP8 parity
   and jax.grad STE (pytest marker ``gpu``). CPU tests cover jax.grad.
 """
@@ -177,6 +184,30 @@ def _ep_vjp_layouts(rng):
         )
     )
     return cases
+
+
+def _pytree_leaves_contain_array(leaves, arr) -> bool:
+    """True if ``arr`` appears as a pytree leaf (value + shape), not buried in aux."""
+    target = np.asarray(arr)
+    for leaf in leaves:
+        if type(leaf) is kernels.DispatchMeta or not hasattr(leaf, "shape"):
+            continue
+        got = _np(leaf)
+        if got.shape == target.shape and np.array_equal(got, target):
+            return True
+    return False
+
+
+def _assert_residual_indices_equal(got, exp, err_msg=""):
+    """token_index / k_index match eager; pad slots stay -1."""
+    got_t = _np(got.token_index)
+    got_k = _np(got.k_index)
+    exp_t = _np(exp.token_index)
+    exp_k = _np(exp.k_index)
+    np.testing.assert_array_equal(got_t, exp_t, err_msg=err_msg)
+    np.testing.assert_array_equal(got_k, exp_k, err_msg=err_msg)
+    assert np.all(got_t[exp_t < 0] == -1), err_msg
+    assert np.all(got_k[exp_k < 0] == -1), err_msg
 
 
 # ---------------------------------------------------------------------------
@@ -1243,6 +1274,254 @@ def test_ep_combine_jax_grad_matches_weighted_scatter_vjp():
         np.testing.assert_allclose(fd, analytic, **FD_TOL, err_msg=name)
 
         # Unused / padded slots must receive zero cotangent.
+        token_index = np.asarray(residual_ref.token_index)
+        unused = token_index < 0
+        if np.any(unused):
+            np.testing.assert_allclose(_np(got_grad)[unused], 0.0, **TOL, err_msg=f"{name}-unused")
+
+
+# ---------------------------------------------------------------------------
+# EP jax.jit / DispatchMeta pytree (must fail until meta is a registered pytree)
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_meta_is_registered_jax_pytree():
+    """DispatchMeta must be a jax.tree_util registered dataclass so jit can take it.
+
+    expert_ids / probs / racks are data-field array leaves (values match).
+    n_experts / max_racks may live in aux_data or in leaves. A dummy register
+    that treats the whole object as one leaf, or stuffs arrays into aux, fails.
+    """
+    jax, jnp = _jax()
+    expert_ids = np.array([[0, 2], [1, 0], [2, 1]], dtype=np.int32)
+    probs = np.array([[0.11, 0.89], [0.22, 0.78], [0.33, 0.67]], dtype=np.float32)
+    racks = np.array([7, 8, 9], dtype=np.int32)
+    meta = _dispatch_meta(expert_ids, probs, racks, n_experts=3, max_racks=4)
+
+    leaves, treedef = jax.tree_util.tree_flatten(meta)
+    assert not any(type(leaf) is kernels.DispatchMeta for leaf in leaves), (
+        "DispatchMeta must not be a pytree leaf; jax.jit would treat it as an "
+        "abstract array. Register it so array fields are leaves."
+    )
+    assert _pytree_leaves_contain_array(leaves, expert_ids), (
+        "expert_ids must be a pytree data-field leaf (value match); a dummy "
+        "register or aux-only flatten is not enough"
+    )
+    assert _pytree_leaves_contain_array(leaves, probs), (
+        "probs must be a pytree data-field leaf (value match)"
+    )
+    assert _pytree_leaves_contain_array(leaves, racks), (
+        "racks must be a pytree data-field leaf (value match)"
+    )
+
+    rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
+    np.testing.assert_array_equal(_np(rebuilt.expert_ids), expert_ids)
+    np.testing.assert_array_equal(_np(rebuilt.probs), probs)
+    np.testing.assert_array_equal(_np(rebuilt.racks), racks)
+    assert int(rebuilt.n_experts) == 3
+    assert int(rebuilt.max_racks) == 4
+
+    def _double_floats(x):
+        if hasattr(x, "dtype") and np.issubdtype(np.asarray(x).dtype, np.floating):
+            return x * np.float32(2.0)
+        return x
+
+    mapped = jax.tree_util.tree_map(_double_floats, meta)
+    assert type(mapped) is kernels.DispatchMeta
+    np.testing.assert_allclose(_np(mapped.probs), np.float32(2.0) * probs, **TOL)
+    np.testing.assert_array_equal(_np(mapped.expert_ids), expert_ids)
+    np.testing.assert_array_equal(_np(mapped.racks), racks)
+    assert int(mapped.n_experts) == 3
+    assert int(mapped.max_racks) == 4
+
+    # jit must accept DispatchMeta as a pytree argument, not an abstract array.
+    jitted_meta = jax.jit(lambda m: m)(meta)
+    np.testing.assert_array_equal(_np(jitted_meta.expert_ids), expert_ids)
+    np.testing.assert_allclose(_np(jitted_meta.probs), probs, **TOL)
+    np.testing.assert_array_equal(_np(jitted_meta.racks), racks)
+    assert int(jitted_meta.n_experts) == 3
+    assert int(jitted_meta.max_racks) == 4
+
+    # Constructing DispatchMeta from traced array args must be legal.
+    def _rebuild(eids, pr, rk):
+        m = kernels.DispatchMeta(expert_ids=eids, probs=pr, racks=rk, n_experts=3, max_racks=4)
+        return m.probs
+
+    rebuilt_probs = jax.jit(_rebuild)(
+        jnp.asarray(expert_ids), jnp.asarray(probs), jnp.asarray(racks)
+    )
+    np.testing.assert_allclose(_np(rebuilt_probs), probs, **TOL)
+
+
+def test_ep_dispatch_jax_jit_matches_eager():
+    """jax.jit(ep_dispatch)(tokens, meta) equals eager; pad slots stay -1."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(70)
+    jitted = jax.jit(kernels.ep_dispatch)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        tokens_j = jnp.asarray(tokens)
+        eager_d, eager_r = kernels.ep_dispatch(tokens_j, meta)
+        jit_d, jit_r = jitted(tokens_j, meta)
+        np.testing.assert_allclose(_np(jit_d), _np(eager_d), **TOL, err_msg=name)
+        ref_d, _ = ref.ep_dispatch(tokens, meta)
+        np.testing.assert_allclose(_np(jit_d), ref_d, **TOL, err_msg=name)
+        _assert_residual_indices_equal(jit_r, eager_r, err_msg=name)
+        assert jit_d.shape == eager_d.shape
+        assert _np(jit_d).dtype == np.float32
+
+    # numpy tokens converted at the jit boundary (not pre-wrapped in jnp.asarray).
+    tokens_np = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
+    meta_np = _dispatch_meta(
+        expert_ids=[[0], [1], [0]],
+        probs=[[1.0], [1.0], [1.0]],
+        racks=[0, 1],
+        n_experts=2,
+    )
+    eager_d, eager_r = kernels.ep_dispatch(tokens_np, meta_np)
+    jit_d, jit_r = jitted(tokens_np, meta_np)
+    np.testing.assert_allclose(_np(jit_d), _np(eager_d), **TOL, err_msg="numpy-tokens")
+    _assert_residual_indices_equal(jit_r, eager_r, err_msg="numpy-tokens")
+
+    # jax.Array meta fields must be traced (not host-copied as an abstract array).
+    meta_j = kernels.DispatchMeta(
+        expert_ids=jnp.asarray(meta_np.expert_ids),
+        probs=jnp.asarray(meta_np.probs),
+        racks=jnp.asarray(meta_np.racks),
+        n_experts=int(meta_np.n_experts),
+        max_racks=int(meta_np.max_racks),
+    )
+    jit_d_j, jit_r_j = jitted(jnp.asarray(tokens_np), meta_j)
+    np.testing.assert_allclose(_np(jit_d_j), _np(eager_d), **TOL, err_msg="jax-meta")
+    _assert_residual_indices_equal(jit_r_j, eager_r, err_msg="jax-meta")
+
+
+def test_ep_combine_jax_jit_matches_eager():
+    """jax.jit(ep_combine)(expert_out, meta, residual) equals eager / ref at 1e-5."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(71)
+    jitted_dispatch = jax.jit(kernels.ep_dispatch)
+    jitted_combine = jax.jit(kernels.ep_combine)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        tokens_j = jnp.asarray(tokens)
+        eager_d, eager_r = kernels.ep_dispatch(tokens_j, meta)
+        g = rng.standard_normal(np.shape(_np(eager_d))).astype(np.float32)
+        expert_out = _np(eager_d) + g
+        expert_j = jnp.asarray(expert_out)
+
+        eager_c = kernels.ep_combine(expert_j, meta, eager_r)
+        jit_c_eager_r = jitted_combine(expert_j, meta, eager_r)
+        np.testing.assert_allclose(_np(jit_c_eager_r), _np(eager_c), **TOL, err_msg=name)
+        np.testing.assert_allclose(
+            _np(jit_c_eager_r),
+            ref.ep_combine(expert_out, meta, ref.ep_dispatch(tokens, meta)[1]),
+            **TOL,
+            err_msg=f"{name}-ref",
+        )
+        assert _np(jit_c_eager_r).dtype == np.float32
+        assert jit_c_eager_r.shape == tokens.shape
+
+        _, jit_r = jitted_dispatch(tokens_j, meta)
+        jit_c_jit_r = jitted_combine(expert_j, meta, jit_r)
+        np.testing.assert_allclose(_np(jit_c_jit_r), _np(eager_c), **TOL, err_msg=f"{name}-jit-res")
+
+
+def test_ep_dispatch_then_combine_jax_jit_composes():
+    """A single jax.jit of dispatch-then-combine must match eager (identity at mass 1)."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(72)
+
+    def _roundtrip(tok, m):
+        dispatched, residual = kernels.ep_dispatch(tok, m)
+        return kernels.ep_combine(dispatched, m, residual)
+
+    jitted = jax.jit(_roundtrip)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        tokens_j = jnp.asarray(tokens)
+        eager = _roundtrip(tokens_j, meta)
+        got = jitted(tokens_j, meta)
+        np.testing.assert_allclose(_np(got), _np(eager), **TOL, err_msg=name)
+        mass = np.asarray(meta.probs).sum(axis=-1)
+        if np.allclose(mass, 1.0, **TOL):
+            np.testing.assert_allclose(_np(got), tokens, **TOL, err_msg=f"{name}-identity")
+        assert got.shape == tokens.shape
+        assert _np(got).dtype == np.float32
+
+    # Non-unit routing mass: compose must run combine, not passthrough tokens.
+    tokens_w = np.array([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]], dtype=np.float32)
+    meta_w = _dispatch_meta(
+        expert_ids=[[0, 1], [1, 2], [0, 2]],
+        probs=[[0.25, 0.25], [0.5, 0.1], [0.1, 0.2]],
+        racks=[0, 0, 1],
+        n_experts=3,
+    )
+    eager_w = _roundtrip(tokens_w, meta_w)
+    got_w = jitted(jnp.asarray(tokens_w), meta_w)
+    disp_w, res_w = ref.ep_dispatch(tokens_w, meta_w)
+    np.testing.assert_allclose(_np(got_w), _np(eager_w), **TOL, err_msg="non-unit-mass")
+    np.testing.assert_allclose(_np(got_w), ref.ep_combine(disp_w, meta_w, res_w), **TOL)
+    assert not np.allclose(_np(got_w), tokens_w, atol=1e-5)
+
+
+def test_ep_dispatch_jax_grad_through_jit_matches_scatter_vjp():
+    """jax.grad through jax.jit(ep_dispatch) matches ref.ep_dispatch_vjp; FD vs ref."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(73)
+    jitted = jax.jit(kernels.ep_dispatch)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        dispatched_ref, residual_ref = ref.ep_dispatch(tokens, meta)
+        g_disp = rng.standard_normal(dispatched_ref.shape).astype(np.float32)
+        exp = ref.ep_dispatch_vjp(tokens, meta, g_disp, residual_ref)
+        tokens_j = jnp.asarray(tokens)
+        g_disp_j = jnp.asarray(g_disp)
+
+        def _loss(tok, m, _g=g_disp_j):
+            dispatched, _residual = jitted(tok, m)
+            return jnp.sum(dispatched * _g)
+
+        got_grad = jax.grad(_loss, argnums=0)(tokens_j, meta)
+        np.testing.assert_allclose(_np(got_grad), exp, **TOL, err_msg=name)
+        assert got_grad.shape == tokens.shape
+        assert got_grad.dtype == jnp.float32
+
+        d = _unit(rng, tokens.shape)
+        eps = 1e-3
+        plus, _ = ref.ep_dispatch(tokens + eps * d, meta)
+        minus, _ = ref.ep_dispatch(tokens - eps * d, meta)
+        fd = (float(np.sum(plus * g_disp)) - float(np.sum(minus * g_disp))) / (2 * eps)
+        analytic = float(np.sum(_np(got_grad) * d))
+        np.testing.assert_allclose(fd, analytic, **FD_TOL, err_msg=name)
+
+
+def test_ep_combine_jax_grad_through_jit_matches_weighted_scatter_vjp():
+    """jax.grad through jax.jit(ep_combine) matches ref.ep_combine_vjp; pad slots 0."""
+    jax, jnp = _jax()
+    rng = np.random.default_rng(74)
+    jitted = jax.jit(kernels.ep_combine)
+    for name, tokens, meta in _ep_vjp_layouts(rng):
+        dispatched, residual_ref = ref.ep_dispatch(tokens, meta)
+        expert_out = dispatched + rng.standard_normal(dispatched.shape).astype(np.float32)
+        g_comb = rng.standard_normal((tokens.shape[0], tokens.shape[1])).astype(np.float32)
+        exp = ref.ep_combine_vjp(expert_out, meta, residual_ref, g_comb)
+        _, residual = kernels.ep_dispatch(tokens, meta)
+        expert_j = jnp.asarray(expert_out)
+        g_comb_j = jnp.asarray(g_comb)
+
+        def _loss(eo, m, r, _g=g_comb_j):
+            return jnp.sum(jitted(eo, m, r) * _g)
+
+        got_grad = jax.grad(_loss, argnums=0)(expert_j, meta, residual)
+        np.testing.assert_allclose(_np(got_grad), exp, **TOL, err_msg=name)
+        assert got_grad.shape == expert_out.shape
+        assert got_grad.dtype == jnp.float32
+
+        d = _unit(rng, expert_out.shape)
+        eps = 1e-3
+        plus = ref.ep_combine(expert_out + eps * d, meta, residual_ref)
+        minus = ref.ep_combine(expert_out - eps * d, meta, residual_ref)
+        fd = (float(np.sum(plus * g_comb)) - float(np.sum(minus * g_comb))) / (2 * eps)
+        analytic = float(np.sum(_np(got_grad) * d))
+        np.testing.assert_allclose(fd, analytic, **FD_TOL, err_msg=name)
+
         token_index = np.asarray(residual_ref.token_index)
         unused = token_index < 0
         if np.any(unused):
