@@ -236,11 +236,11 @@ def _as_f32(x: Array) -> Array:
     return jnp.asarray(x, dtype=jnp.float32)
 
 
-def _logsumexp(x: np.ndarray, axis: int = -1) -> np.ndarray:
+def _logsumexp(x: Array, axis: int = -1) -> Array:
     x = _as_f32(x)
-    m = np.max(x, axis=axis, keepdims=True)
-    s = np.log(np.maximum(np.exp(x - m).sum(axis=axis, keepdims=True), 1e-12))
-    return np.squeeze(m + s, axis=axis)
+    m = jnp.max(x, axis=axis, keepdims=True)
+    s = jnp.log(jnp.maximum(jnp.exp(x - m).sum(axis=axis, keepdims=True), 1e-12))
+    return jnp.squeeze(m + s, axis=axis)
 
 
 def newton_schulz(matrix: Array, steps: int) -> Array:
@@ -399,8 +399,8 @@ def soft_cap(logits: Array, cap: float) -> Array:
     if cap <= 0:
         raise ValueError("soft_cap cap must be > 0")
     x = _as_f32(logits)
-    c = np.float32(cap)
-    return (c * np.tanh(x / c)).astype(np.float32)
+    c = jnp.float32(cap)
+    return (c * jnp.tanh(x / c)).astype(jnp.float32)
 
 
 def cross_entropy(logits: Array, targets: Array, loss_mask: Array) -> Array:
@@ -412,7 +412,7 @@ def cross_entropy(logits: Array, targets: Array, loss_mask: Array) -> Array:
     returns 0 without a Python branch on a traced denom.
     """
     logits_f = _as_f32(logits)
-    targets_i = np.asarray(targets)
+    targets_i = jnp.asarray(targets)
     mask = _as_f32(loss_mask)
     if logits_f.shape[:-1] != tuple(targets_i.shape) or logits_f.shape[:-1] != tuple(mask.shape):
         raise ValueError(
@@ -421,15 +421,18 @@ def cross_entropy(logits: Array, targets: Array, loss_mask: Array) -> Array:
         )
     vocab = int(logits_f.shape[-1])
     flat = logits_f.reshape(-1, vocab)
-    tgt = targets_i.reshape(-1).astype(np.int64)
+    tgt = targets_i.reshape(-1).astype(jnp.int32)
     m = mask.reshape(-1)
-    shifted = flat - np.max(flat, axis=-1, keepdims=True)
-    log_z = np.log(np.maximum(np.exp(shifted).sum(axis=-1), 1e-12))
-    nll = -(shifted[np.arange(flat.shape[0]), tgt] - log_z)
-    denom = float(m.sum())
-    if denom <= 0.0:
-        return np.float32(0.0)
-    return np.float32(float((nll * m).sum() / denom))
+    shifted = flat - jnp.max(flat, axis=-1, keepdims=True)
+    log_z = jnp.log(jnp.maximum(jnp.exp(shifted).sum(axis=-1), 1e-12))
+    nll = -(shifted[jnp.arange(flat.shape[0]), tgt] - log_z)
+    denom = m.sum()
+    eps = jnp.float32(1e-12)
+    return jnp.where(
+        denom > 0,
+        (nll * m).sum() / jnp.maximum(denom, eps),
+        jnp.float32(0.0),
+    ).astype(jnp.float32)
 
 
 def mtp_loss(mtp_logits: tuple[Array, ...], tokens: Array, loss_mask: Array) -> Array:
@@ -439,10 +442,10 @@ def mtp_loss(mtp_logits: tuple[Array, ...], tokens: Array, loss_mask: Array) -> 
     Must not convert traced ``mtp_logits``, ``tokens``, or ``loss_mask``
     with ``numpy.asarray``. Head count is a Python int (tuple length).
     """
-    tokens_i = np.asarray(tokens)
+    tokens_i = jnp.asarray(tokens)
     mask = _as_f32(loss_mask)
     seq = int(tokens_i.shape[-1])
-    losses: list[np.ndarray] = []
+    losses: list[Array] = []
     for i, logits in enumerate(mtp_logits):
         offset = i + 1
         if offset >= seq:
@@ -453,9 +456,9 @@ def mtp_loss(mtp_logits: tuple[Array, ...], tokens: Array, loss_mask: Array) -> 
         m = mask[..., offset:] * mask[..., : seq - offset]
         losses.append(cross_entropy(src, tgt, m))
     if not losses:
-        return np.float32(0.0)
-    stacked = np.stack([np.asarray(x, dtype=np.float32) for x in losses])
-    return np.float32(float(np.mean(stacked)))
+        return jnp.float32(0.0)
+    stacked = jnp.stack([_as_f32(x) for x in losses])
+    return jnp.mean(stacked).astype(jnp.float32)
 
 
 def z_loss(router_probs: Array) -> Array:
@@ -467,7 +470,7 @@ def z_loss(router_probs: Array) -> Array:
     """
     p = _as_f32(router_probs)
     lse = _logsumexp(p, axis=-1)
-    return np.float32(float(np.mean(lse**2)))
+    return jnp.mean(lse**2).astype(jnp.float32)
 
 
 def total_loss(
@@ -482,8 +485,8 @@ def total_loss(
     or static), must match the eager result at 1e-5. Must not convert
     traced ``ce``, ``mtp``, or ``z`` with ``numpy.asarray``.
     """
-    w = np.float32(float(config.z_loss_weight))
-    return (_as_f32(ce) + _as_f32(mtp) + w * _as_f32(z)).astype(np.float32)
+    w = jnp.float32(float(config.z_loss_weight))
+    return (_as_f32(ce) + _as_f32(mtp) + w * _as_f32(z)).astype(jnp.float32)
 
 
 def _map_tree(obj: Any, fn: Any, prefix: str = "") -> Any:
