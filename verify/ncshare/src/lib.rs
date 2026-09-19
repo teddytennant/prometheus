@@ -200,6 +200,24 @@ pub fn render_job(stage: Stage, run_id: &str, walltime: &str, gpus: u32) -> Resu
     render::render_job(stage, run_id, walltime, gpus)
 }
 
+/// Spec 16.2 V0 second allocation: 2 nodes.
+pub const V0_2NODE_NODES: u32 = 2;
+
+/// Spec 16.2 V0 second allocation: 4 H200s per node.
+pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
+
+/// Render the V0 2-node × 4 GPU job (spec 16.2).
+///
+/// Distinct from `render_job(Stage::V0, ...)`, which is the 1-GPU first
+/// allocation (`--nodes=1`). This script must request 2 nodes and 4 GPUs
+/// per node, launch nccl-tests all_reduce via MPI across both nodes, and
+/// write the same `busbw_gbps` and `node_facts.txt` files `check_exit(V0)`
+/// reads. The 8-GPU window is real: the caller stops gpu-opportunist around
+/// it, same as V2/V5.
+pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
+    render::render_v0_2node(run_id, walltime)
+}
+
 /// Read the job output dir and decide pass/fail from the files, never a summary.
 pub fn check_exit(stage: Stage, output_dir: &Path) -> Result<()> {
     check::check_exit(stage, output_dir)

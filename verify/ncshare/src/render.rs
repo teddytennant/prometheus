@@ -24,3 +24,8 @@ pub(crate) fn render_job(stage: Stage, run_id: &str, walltime: &str, gpus: u32) 
         .replace("{{WALLTIME}}", walltime)
         .replace("{{GPUS}}", &gpus.to_string()))
 }
+
+/// V0 2-node × 4 template. Unimplemented until the F4 follow-up fills it.
+pub(crate) fn render_v0_2node(_run_id: &str, _walltime: &str) -> Result<String> {
+    unimplemented!("V0 2-node template (spec 16.2)")
+}
