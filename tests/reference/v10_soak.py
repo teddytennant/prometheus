@@ -262,7 +262,12 @@ class World:
             self._append(
                 origin,
                 EVENT_FAULT,
-                extra={"kind": "partition", "src": int(src), "dst": int(dst), "asymmetric": asymmetric},
+                extra={
+                    "kind": "partition",
+                    "src": int(src),
+                    "dst": int(dst),
+                    "asymmetric": asymmetric,
+                },
             )
         self.advance(FAULT_TICK_MS)
 

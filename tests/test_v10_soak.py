@@ -453,6 +453,8 @@ def test_v10_gpu_hours_less_than_one_still_v10error() -> None:
     """V10 GPU analog still rejects hours < 1 with V10Error."""
     _require_gpu()
     _assert_v10error(hours=0.0)
-    result = _assert_v10_result_shape(v10.run_v10(hours=v10.SOAK_HOURS_MIN), hours=v10.SOAK_HOURS_MIN)
+    result = _assert_v10_result_shape(
+        v10.run_v10(hours=v10.SOAK_HOURS_MIN), hours=v10.SOAK_HOURS_MIN
+    )
     _assert_counts_zero(result)
     assert ref.meets_v10_gates(result) is True
