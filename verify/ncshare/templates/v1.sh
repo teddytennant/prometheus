@@ -29,6 +29,7 @@ from pathlib import Path
 import jax
 
 assert any(d.platform == "gpu" for d in jax.devices()), "JAX is not using a GPU"
+import torch
 
 root = Path(os.environ["PROMETHEUS_ROOT"])
 out = Path(os.environ["VERIFY_OUT"])
