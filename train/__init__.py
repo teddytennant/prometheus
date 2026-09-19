@@ -18,11 +18,12 @@ heads plus router z-loss, with logit soft-capping (3.1).
 
 Aux-loss-free router bias updates live here, not in the A1 forward.
 
-``jax.jit`` of ``newton_schulz``, ``muon_update``, ``adamw_update``, and
-``qk_clip`` must match the eager call at 1e-5. Traced arrays must not be
-converted with ``numpy.asarray`` or Python ``float()`` / ``int()`` on
-values. Python scalars (``steps``, ``lr``, ``ns_steps``, ``step``,
-``max_logit``) stay host-side.
+``jax.jit`` of ``newton_schulz``, ``muon_update``, ``adamw_update``,
+``qk_clip``, ``soft_cap``, ``cross_entropy``, ``mtp_loss``, ``z_loss``,
+and ``total_loss`` must match the eager call at 1e-5. Traced arrays must
+not be converted with ``numpy.asarray`` or Python ``float()`` / ``int()``
+on values. Python scalars (``steps``, ``lr``, ``ns_steps``, ``step``,
+``max_logit``, ``cap``) and ``TrainConfig`` stay host-side.
 """
 
 from __future__ import annotations
@@ -389,7 +390,12 @@ def wsd_lr(step: int, config: TrainConfig) -> float:
 
 
 def soft_cap(logits: Array, cap: float) -> Array:
-    """Logit soft-capping: cap * tanh(logits / cap)."""
+    """Logit soft-capping: cap * tanh(logits / cap).
+
+    ``jax.jit`` of this function, with ``cap`` a Python float (closed over
+    or ``static_argnums``), must match the eager result at 1e-5. Must not
+    convert traced ``logits`` with ``numpy.asarray``.
+    """
     if cap <= 0:
         raise ValueError("soft_cap cap must be > 0")
     x = _as_f32(logits)
@@ -398,7 +404,13 @@ def soft_cap(logits: Array, cap: float) -> Array:
 
 
 def cross_entropy(logits: Array, targets: Array, loss_mask: Array) -> Array:
-    """Masked mean CE. `logits` are already soft-capped."""
+    """Masked mean CE. `logits` are already soft-capped.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``logits``, ``targets``, or ``loss_mask`` with
+    ``numpy.asarray`` or Python ``float()`` on the mask sum. Empty mask
+    returns 0 without a Python branch on a traced denom.
+    """
     logits_f = _as_f32(logits)
     targets_i = np.asarray(targets)
     mask = _as_f32(loss_mask)
@@ -421,7 +433,12 @@ def cross_entropy(logits: Array, targets: Array, loss_mask: Array) -> Array:
 
 
 def mtp_loss(mtp_logits: tuple[Array, ...], tokens: Array, loss_mask: Array) -> Array:
-    """Mean CE of each MTP head on the token `head_index + 1` steps ahead."""
+    """Mean CE of each MTP head on the token `head_index + 1` steps ahead.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``mtp_logits``, ``tokens``, or ``loss_mask``
+    with ``numpy.asarray``. Head count is a Python int (tuple length).
+    """
     tokens_i = np.asarray(tokens)
     mask = _as_f32(loss_mask)
     seq = int(tokens_i.shape[-1])
@@ -442,7 +459,12 @@ def mtp_loss(mtp_logits: tuple[Array, ...], tokens: Array, loss_mask: Array) -> 
 
 
 def z_loss(router_probs: Array) -> Array:
-    """Mean squared log-sum-exp of router probabilities, per token then mean."""
+    """Mean squared log-sum-exp of router probabilities, per token then mean.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``router_probs`` with ``numpy.asarray`` or
+    Python ``float()`` on the mean.
+    """
     p = _as_f32(router_probs)
     lse = _logsumexp(p, axis=-1)
     return np.float32(float(np.mean(lse**2)))
@@ -454,7 +476,12 @@ def total_loss(
     z: Array,
     config: TrainConfig,
 ) -> Array:
-    """ce + mtp + z_loss_weight * z."""
+    """ce + mtp + z_loss_weight * z.
+
+    ``jax.jit`` of this function, with ``config`` host-side (closed over
+    or static), must match the eager result at 1e-5. Must not convert
+    traced ``ce``, ``mtp``, or ``z`` with ``numpy.asarray``.
+    """
     w = np.float32(float(config.z_loss_weight))
     return (_as_f32(ce) + _as_f32(mtp) + w * _as_f32(z)).astype(np.float32)
 
