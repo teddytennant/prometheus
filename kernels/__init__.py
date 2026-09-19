@@ -13,8 +13,12 @@ verified. Until then the A1 numpy/JAX path stays the CPU source of truth.
   constraint on the dispatch metadata, not a separate kernel.
 
 Each primitive is a `jax.custom_vjp`. `jax.jit` of each public primitive
-must match the eager result. The CPU tests compare against a slow
-reference the oracle writes; the GPU path is the V1 / V3 gate.
+must match the eager result. `Fp8Meta` must be a jax.tree_util registered
+dataclass so `jax.jit(fp8_quantize)` and `jax.jit(fp8_dequantize)` can
+return and take it. `q` and `scale` are data fields (arrays). `block` and
+`dtype` are meta fields (int, DType). Analog of `DispatchMeta`. The CPU
+tests compare against a slow reference the oracle writes; the GPU path is
+the V1 / V3 gate.
 """
 
 from __future__ import annotations
@@ -67,6 +71,11 @@ class Fp8Meta:
 
     `q` is the quantized payload (int8-view of fp8). `scale` has one value
     per block of `block` elements along the contracting axis.
+
+    Must be a jax.tree_util registered dataclass so jax.jit(fp8_quantize)
+    and jax.jit(fp8_dequantize) can return and take it. q and scale are data
+    fields (arrays). block and dtype are meta fields (int, DType). Analog of
+    DispatchMeta.
     """
 
     q: Array
@@ -673,7 +682,11 @@ def _pad_blocks_jax(x: jax.Array, block: int) -> tuple[jax.Array, int, int]:
 
 
 def fp8_quantize(x: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Fp8Meta:
-    """Per-block abs-max scale, quantize to FP8. `x` is FP32 or BF16."""
+    """Per-block abs-max scale, quantize to FP8. `x` is FP32 or BF16.
+
+    `jax.jit(fp8_quantize, static_argnames=('block',))` must match eager at
+    1e-5 and return a pytree `Fp8Meta`. `block` is a Python int (static).
+    """
     if block < 1:
         raise KernelError(f"fp8 block must be >= 1, got {block}")
     if _is_jax(x):
@@ -702,7 +715,11 @@ def fp8_quantize(x: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Fp8Meta:
 
 
 def fp8_dequantize(meta: Fp8Meta) -> Array:
-    """Unpack FP8 + scales to FP32. Inverse of `fp8_quantize` up to rounding."""
+    """Unpack FP8 + scales to FP32. Inverse of `fp8_quantize` up to rounding.
+
+    `jax.jit(fp8_dequantize)(meta)` must match eager at 1e-5. `meta` is a
+    pytree `Fp8Meta`. `block` / `dtype` stay meta (not traced arrays).
+    """
     block = int(meta.block)
     if block < 1:
         raise KernelError(f"fp8 block must be >= 1, got {block}")
