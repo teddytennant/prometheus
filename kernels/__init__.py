@@ -439,8 +439,11 @@ def chunked_delta_rule(
     state: (batch, heads, dim, dim) recurrent state, zeros if None.
     Returns (output, next_state) with output shaped like v.
 
-    Must be jax.custom_vjp: the backward is the fused reverse-state kernel,
-    not JAX's default loop autodiff.
+    Must be the jax.custom_vjp object itself (not a wrapper around one).
+    The backward is the fused reverse-state kernel, not JAX's default loop
+    autodiff. jax.grad through the outputs equals
+    chunked_delta_rule_bwd(residual, grads) with residual from
+    chunked_delta_rule_fwd. config is not differentiated.
     """
     cfg = LinearAttnConfig() if config is None else config
     (out, ns), _ = chunked_delta_rule_fwd(q, k, v, beta, state, cfg)
