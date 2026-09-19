@@ -17,6 +17,12 @@ valid starting point for a later decay. Loss is next-token CE plus MTP
 heads plus router z-loss, with logit soft-capping (3.1).
 
 Aux-loss-free router bias updates live here, not in the A1 forward.
+
+``jax.jit`` of ``newton_schulz``, ``muon_update``, ``adamw_update``, and
+``qk_clip`` must match the eager call at 1e-5. Traced arrays must not be
+converted with ``numpy.asarray`` or Python ``float()`` / ``int()`` on
+values. Python scalars (``steps``, ``lr``, ``ns_steps``, ``step``,
+``max_logit``) stay host-side.
 """
 
 from __future__ import annotations
@@ -236,7 +242,12 @@ def _logsumexp(x: np.ndarray, axis: int = -1) -> np.ndarray:
 
 
 def newton_schulz(matrix: Array, steps: int) -> Array:
-    """Newton-Schulz orthogonalization of a 2D gradient. Odd `steps` >= 1."""
+    """Newton-Schulz orthogonalization of a 2D gradient. Odd `steps` >= 1.
+
+    ``jax.jit`` of this function, with ``steps`` a Python int (closed over
+    or ``static_argnums``), must match the eager result at 1e-5. Must not
+    call ``numpy.asarray`` or Python ``float()`` on traced ``matrix``.
+    """
     if int(steps) < 1 or int(steps) % 2 == 0:
         raise ValueError("newton_schulz steps must be odd and >= 1")
     g = _as_f32(matrix)
@@ -267,7 +278,13 @@ def muon_update(
     momentum_coeff: float,
     ns_steps: int,
 ) -> tuple[Array, Array]:
-    """Nesterov momentum then Newton-Schulz. Returns (delta, new_momentum)."""
+    """Nesterov momentum then Newton-Schulz. Returns (delta, new_momentum).
+
+    ``jax.jit`` of this function, with ``lr``, ``momentum_coeff``, and
+    ``ns_steps`` Python scalars (closed over or static), must match the
+    eager pair at 1e-5. Must not convert traced ``grad`` or ``momentum``
+    with ``numpy.asarray``.
+    """
     g = _as_f32(grad)
     m = _as_f32(momentum)
     if g.shape != m.shape:
@@ -285,7 +302,12 @@ def muon_update(
 
 
 def qk_clip(q: Array, k: Array, max_logit: float) -> tuple[Array, Array]:
-    """Scale Q or K so max |q k^T| does not exceed `max_logit` (Kimi K2)."""
+    """Scale Q or K so max |q k^T| does not exceed `max_logit` (Kimi K2).
+
+    ``jax.jit`` of this function, with ``max_logit`` a Python float, must
+    match the eager pair at 1e-5. Must not convert traced ``q`` or ``k``
+    with ``numpy.asarray`` or Python ``float()`` on traced maxima.
+    """
     if max_logit <= 0:
         raise ValueError("qk_clip max_logit must be > 0")
     q32 = _as_f32(q)
@@ -314,7 +336,13 @@ def adamw_update(
     wd: float,
     step: int,
 ) -> tuple[Array, Array, Array]:
-    """Decoupled AdamW. `step` is 1-based for bias correction. Returns (p, m, v)."""
+    """Decoupled AdamW. `step` is 1-based for bias correction. Returns (p, m, v).
+
+    ``jax.jit`` of this function, with ``lr``, ``beta1``, ``beta2``,
+    ``eps``, ``wd``, and ``step`` Python scalars (closed over or static),
+    must match the eager triple at 1e-5. Must not convert traced
+    ``param``, ``grad``, ``m``, or ``v`` with ``numpy.asarray``.
+    """
     if int(step) < 1:
         raise ValueError("adamw_update step must be 1-based (>= 1)")
     p = _as_f32(param)
