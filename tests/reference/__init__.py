@@ -8,6 +8,7 @@ V2 (v2_parallel).
 V3 (v3_precision).
 V4 (v4_fault).
 V5 (v5_rung0).
+V6 (v6_latent).
 V7 (v7_rl).
 V8 (v8_serving).
 """
