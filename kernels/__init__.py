@@ -162,6 +162,11 @@ jax.tree_util.register_dataclass(
     data_fields=("token_index", "k_index"),
     meta_fields=("max_per_expert",),
 )
+jax.tree_util.register_dataclass(
+    _DeltaResidual,
+    data_fields=("q", "k", "v", "beta", "state0"),
+    meta_fields=("chunk",),
+)
 
 
 def _f32(x: Array) -> np.ndarray:
@@ -645,25 +650,23 @@ def chunked_delta_rule_fwd(
     """
     if config.chunk < 1:
         raise KernelError(f"chunk must be >= 1, got {config.chunk}")
-    q_np, k_np, v_np, beta_np, state_np = _validate_delta(q, k, v, beta, state)
-    residual = _DeltaResidual(
-        q=q_np, k=k_np, v=v_np, beta=beta_np, state0=state_np, chunk=int(config.chunk)
-    )
+    chunk = int(config.chunk)
     if _is_jax(q, k, v, beta, state):
-        out, ns = _chunked_fwd_jax(
-            jnp.asarray(q_np, dtype=jnp.float32),
-            jnp.asarray(k_np, dtype=jnp.float32),
-            jnp.asarray(v_np, dtype=jnp.float32),
-            jnp.asarray(beta_np, dtype=jnp.float32),
-            jnp.asarray(state_np, dtype=jnp.float32),
-            int(config.chunk),
-        )
+        qj, kj, vj, bj, sj = _delta_jax_inputs(q, k, v, beta, state)
+        out, ns = _chunked_fwd_jax(qj, kj, vj, bj, sj, chunk)
+        residual = _DeltaResidual(q=qj, k=kj, v=vj, beta=bj, state0=sj, chunk=chunk)
         return (out, ns), residual
-    out, ns = _chunked_fwd_np(q_np, k_np, v_np, beta_np, state_np, int(config.chunk))
+    q_np, k_np, v_np, beta_np, state_np = _validate_delta(q, k, v, beta, state)
+    out, ns = _chunked_fwd_np(q_np, k_np, v_np, beta_np, state_np, chunk)
+    residual = _DeltaResidual(
+        q=q_np, k=k_np, v=v_np, beta=beta_np, state0=state_np, chunk=chunk
+    )
     return (out, ns), residual
 
 
-def chunked_delta_rule_bwd(residual: _DeltaResidual, grads: tuple[Array, Array]) -> tuple[Array, ...]:
+def chunked_delta_rule_bwd(
+    residual: _DeltaResidual, grads: tuple[Array, Array]
+) -> tuple[Array, ...]:
     """Custom VJP backward. Returns grads for (q, k, v, beta, state).
 
     `jax.jit(chunked_delta_rule_bwd)(residual, grads)` must match eager at
@@ -671,20 +674,24 @@ def chunked_delta_rule_bwd(residual: _DeltaResidual, grads: tuple[Array, Array])
     converted with `numpy.asarray`.
     """
     go, gs = grads
-    go_np, gs_np = _f32(go), _f32(gs)
-    gq, gk, gv, gbeta, gst = _delta_vjp_np(
-        residual.q, residual.k, residual.v, residual.beta, go_np, gs_np,
-        residual.state0, int(residual.chunk),
-    )
-    if _is_jax(go, gs):
-        return (
-            jnp.asarray(gq),
-            jnp.asarray(gk),
-            jnp.asarray(gv),
-            jnp.asarray(gbeta),
-            jnp.asarray(gst),
+    chunk = int(residual.chunk)
+    if _is_jax(residual.q, residual.k, residual.v, residual.beta, residual.state0, go, gs):
+        goj = go if isinstance(go, jax.Array) else jnp.asarray(go, dtype=jnp.float32)
+        gsj = gs if isinstance(gs, jax.Array) else jnp.asarray(gs, dtype=jnp.float32)
+        return _delta_vjp_jax(
+            residual.q, residual.k, residual.v, residual.beta, goj, gsj, residual.state0, chunk
         )
-    return gq, gk, gv, gbeta, gst
+    go_np, gs_np = _f32(go), _f32(gs)
+    return _delta_vjp_np(
+        residual.q,
+        residual.k,
+        residual.v,
+        residual.beta,
+        go_np,
+        gs_np,
+        residual.state0,
+        chunk,
+    )
 
 
 # ---------------------------------------------------------------------------
