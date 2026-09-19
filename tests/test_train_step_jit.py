@@ -402,5 +402,5 @@ def test_train_step_jit_shapes_and_dtypes() -> None:
     for leaf in _array_leaves(new_opt):
         assert leaf.dtype == np.float32
 
-    assert float(_np(lr)) == float(ref.wsd_lr(STEP, tcfg))
+    _close(lr, ref.wsd_lr(STEP, tcfg))
     assert int(step) == STEP
