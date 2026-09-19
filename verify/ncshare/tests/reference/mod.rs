@@ -94,6 +94,17 @@
 //!
 //! Extra JSON keys are ignored. `output_dir` that is not a directory →
 //! `MissingOutput`.
+//!
+//! # V1 CUDA extra (`v1_cuda`)
+//!
+//! Independent of production `templates/v1.sh` and of the crate sources. Knows
+//! extra name `cuda` (`V1_CUDA_EXTRA`) and pip extra syntax `.[cuda]`. Walks
+//! PEP 621 `pyproject.toml` tables by hand (no toml crate): the extra lives
+//! under `[project.optional-dependencies]`, lists a portable GPU JAX extra
+//! (`jax[cuda12]` / `jax[cuda13]`, not empty, not a site path), and is **not**
+//! pulled in by default `[project] dependencies` (CPU CI / `uv run pytest`).
+//! A rendered V1 job must `pip install -e ".[cuda]"` and then fail closed if
+//! JAX is not using a GPU. `/work/ttennant1` and other site paths are rejected.
 
 #![allow(dead_code, unused_imports)]
 
@@ -101,6 +112,7 @@ mod check;
 mod kvm;
 mod parse;
 mod render;
+pub mod v1_cuda;
 
 use std::path::Path;
 
