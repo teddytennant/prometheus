@@ -583,7 +583,10 @@ def fp8_linear(x: Array, weight: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Ar
     """y = x @ w^T with both sides quantized per-block to FP8.
 
     x: (..., in), weight: (out, in). Accumulates in FP32.
-    Must be jax.custom_vjp so the backward uses the same scales as the forward.
+    Must be jax.custom_vjp so the backward uses the same scales as the
+    forward. ``jax.grad(fp8_linear)(x, weight)`` equals
+    ``fp8_linear_bwd(residual, g)`` with ``residual`` from
+    ``fp8_linear_fwd``; scales are not differentiated (STE).
     """
     y, _ = fp8_linear_fwd(x, weight, block)
     return y
