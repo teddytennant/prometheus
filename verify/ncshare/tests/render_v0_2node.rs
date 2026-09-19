@@ -21,6 +21,14 @@
 //! (`fv-mpifix`) SIGSEGV'd in `PMIx_Init` after copying a tools-prefix MCA
 //! path and launching via `mpirun`.
 //!
+//! Spec 16.2 also requires intra-node all_reduce (4 GPUs on one node,
+//! non-MPI `all_reduce_perf` with `-g 4` or `-g=4`, override
+//! `NCCL_TESTS_ALL_REDUCE`, stdout not `busbw_gbps` /
+//! `nccl_allreduce_2node.txt`) and `/dev/kvm` plus NVMe recorded on every
+//! allocated compute node via a non-comment `srun` with `-N 2` or
+//! `--nodes=2` and `--ntasks-per-node=1` (not only local hostname on the
+//! batch host). Do not `srun -N 2` the non-MPI `all_reduce_perf`.
+//!
 //! `render_job(Stage::V0, ...)` is the 1-GPU first allocation and must stay
 //! 1-node. That regression is allowed to pass on the current tree.
 
@@ -300,6 +308,213 @@ fn assert_pmix_launch_env(script: &str) {
     );
 }
 
+/// `NCCL_TESTS_ALL_REDUCE` as its own override, not only
+/// `NCCL_TESTS_ALL_REDUCE_MPI` (which contains that prefix).
+fn has_nccl_tests_all_reduce_override(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) {
+            return false;
+        }
+        let mut rest = line;
+        while let Some(idx) = rest.find("NCCL_TESTS_ALL_REDUCE") {
+            let after = &rest[idx + "NCCL_TESTS_ALL_REDUCE".len()..];
+            if !after.starts_with("_MPI") {
+                return true;
+            }
+            rest = after;
+        }
+        false
+    })
+}
+
+fn has_non_mpi_all_reduce_perf(script: &str) -> bool {
+    script
+        .lines()
+        .any(|line| !is_comment(line) && non_mpi_all_reduce_token(line))
+}
+
+/// Digit-bounded flag match so `-g 4` does not hit `-g 40`.
+fn contains_flag_count(line: &str, needles: &[String]) -> bool {
+    needles.iter().any(|needle| {
+        let mut rest = line;
+        while let Some(idx) = rest.find(needle.as_str()) {
+            let after = &rest[idx + needle.len()..];
+            if after
+                .chars()
+                .next()
+                .map(|c| !c.is_ascii_digit())
+                .unwrap_or(true)
+            {
+                return true;
+            }
+            rest = &rest[idx + 1..];
+        }
+        false
+    })
+}
+
+fn line_has_g_count(line: &str, n: u32) -> bool {
+    let nstr = n.to_string();
+    contains_flag_count(
+        line,
+        &[
+            format!("-g {nstr}"),
+            format!("-g{nstr}"),
+            format!("-g={nstr}"),
+        ],
+    )
+}
+
+fn line_has_mpi_pmix(line: &str) -> bool {
+    line.split_whitespace().any(|tok| {
+        let tok = tok.trim_matches(|c| c == '"' || c == '\'');
+        tok == "--mpi=pmix"
+    })
+}
+
+/// Non-MPI `-g 4` / `-g=4` / `-g4` on one node (not `srun -N 2`, not pmix).
+fn has_intra_node_all_reduce_g4(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) || sbatch_rest(line).is_some() {
+            return false;
+        }
+        line_has_g_count(line, 4) && !line_has_mpi_pmix(line) && !line_has_two_nodes(line)
+    })
+}
+
+fn has_intra_node_log(script: &str) -> bool {
+    non_comment_contains(script, "nccl_allreduce_intra.txt")
+        || non_comment_contains(script, "nccl_allreduce.txt")
+}
+
+fn intra_g4_line_writes_forbidden_log(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) || sbatch_rest(line).is_some() {
+            return false;
+        }
+        line_has_g_count(line, 4)
+            && (line.contains("busbw_gbps") || line.contains("nccl_allreduce_2node.txt"))
+    })
+}
+
+fn has_g_count(script: &str, n: u32) -> bool {
+    script
+        .lines()
+        .any(|line| !is_comment(line) && sbatch_rest(line).is_none() && line_has_g_count(line, n))
+}
+
+fn assert_intra_node_all_reduce(script: &str) {
+    let mut missing = Vec::new();
+    if !has_nccl_tests_all_reduce_override(script) {
+        missing.push("NCCL_TESTS_ALL_REDUCE binary override (not only NCCL_TESTS_ALL_REDUCE_MPI)");
+    }
+    if !has_non_mpi_all_reduce_perf(script) {
+        missing.push("non-MPI all_reduce_perf (not all_reduce_perf_mpi)");
+    }
+    if !has_intra_node_all_reduce_g4(script) {
+        missing.push("intra-node all_reduce_perf with -g 4 or -g=4 on one node");
+    }
+    if !has_intra_node_log(script) {
+        missing.push(
+            "intra-node stdout file (nccl_allreduce.txt or nccl_allreduce_intra.txt, \
+             not busbw_gbps / nccl_allreduce_2node.txt)",
+        );
+    }
+    if intra_g4_line_writes_forbidden_log(script) {
+        missing.push("intra-node -g 4 stdout must not be busbw_gbps or nccl_allreduce_2node.txt");
+    }
+    if launches_non_mpi_all_reduce_across_nodes(script) {
+        missing.push("must not srun -N 2 the non-MPI all_reduce_perf");
+    }
+    assert!(
+        missing.is_empty(),
+        "intra-node all_reduce missing {missing:?}. \
+         Spec 16.2: nccl-tests all_reduce intra-node (4 GPUs on one node, \
+         non-MPI all_reduce_perf -g 4) and across 2 nodes. Override via \
+         NCCL_TESTS_ALL_REDUCE. Intra stdout is a separate file. \
+         Comments do not count: {script}"
+    );
+    assert!(
+        has_all_reduce_perf_mpi(script),
+        "must still launch all_reduce_perf_mpi: {script}"
+    );
+    assert!(
+        has_srun(script),
+        "must still invoke srun for the 2-node MPI all_reduce: {script}"
+    );
+    assert!(
+        has_mpi_pmix(script),
+        "must still pass --mpi=pmix to srun: {script}"
+    );
+    assert!(
+        non_comment_contains(script, "busbw_gbps"),
+        "busbw_gbps must still come from the 2-node log: {script}"
+    );
+    assert!(
+        has_g_count(script, 1),
+        "2-node MPI all_reduce must still use -g 1: {script}"
+    );
+}
+
+fn line_has_ntasks_per_node(line: &str, n: u32) -> bool {
+    let nstr = n.to_string();
+    contains_flag_count(
+        line,
+        &[
+            format!("--ntasks-per-node={nstr}"),
+            format!("--ntasks-per-node {nstr}"),
+        ],
+    )
+}
+
+fn line_has_srun(line: &str) -> bool {
+    line.split_whitespace().any(|tok| {
+        let tok = tok.trim_matches(|c: char| c == '"' || c == '\'' || c == ';' || c == '&');
+        tok == "srun" || tok.ends_with("/srun")
+    })
+}
+
+/// Non-comment `srun` with `-N 2`/`--nodes=2` and `--ntasks-per-node=1`,
+/// not the all_reduce launch.
+fn records_facts_via_srun_on_every_node(script: &str) -> bool {
+    script.lines().any(|line| {
+        if is_comment(line) || sbatch_rest(line).is_some() {
+            return false;
+        }
+        line_has_srun(line)
+            && line_has_two_nodes(line)
+            && line_has_ntasks_per_node(line, 1)
+            && !non_mpi_all_reduce_token(line)
+            && !line.contains("all_reduce_perf_mpi")
+    })
+}
+
+fn assert_node_facts_on_every_node(script: &str) {
+    assert!(
+        records_facts_via_srun_on_every_node(script),
+        "node facts must be recorded on every allocated compute node via a \
+         non-comment srun with -N 2 or --nodes=2 and --ntasks-per-node=1 \
+         (not only local hostname on the batch host). Spec 16.2: check \
+         /dev/kvm and NVMe on compute nodes. Comments do not count: {script}"
+    );
+    assert!(
+        non_comment_contains(script, "/dev/kvm"),
+        "missing /dev/kvm in node facts: {script}"
+    );
+    assert!(
+        non_comment_contains(script, "nvme"),
+        "missing nvme in node facts: {script}"
+    );
+    assert!(
+        non_comment_contains(script, "node_facts.txt"),
+        "missing node_facts.txt: {script}"
+    );
+    assert!(
+        !launches_non_mpi_all_reduce_across_nodes(script),
+        "srun -N 2 of non-MPI all_reduce_perf is still forbidden: {script}"
+    );
+}
+
 fn assert_rejects_empty(result: prometheus_verify_ncshare::Result<String>) {
     match result {
         Err(Error::Other(_)) => {}
@@ -449,6 +664,12 @@ fn ref_render_v0_2node_pmix_launch_env() {
 }
 
 #[test]
+fn ref_render_v0_2node_intra_node_all_reduce() {
+    let out = reference::render_v0_2node("intra", "01:00:00").unwrap();
+    assert_intra_node_all_reduce(&out);
+}
+
+#[test]
 fn ref_render_v0_2node_writes_busbw_and_node_facts() {
     let out = reference::render_v0_2node("facts", "01:00:00").unwrap();
     assert!(non_comment_contains(&out, "busbw_gbps"));
@@ -458,16 +679,23 @@ fn ref_render_v0_2node_writes_busbw_and_node_facts() {
 }
 
 #[test]
+fn ref_render_v0_2node_node_facts_on_every_node() {
+    let out = reference::render_v0_2node("facts-all", "01:00:00").unwrap();
+    assert_node_facts_on_every_node(&out);
+}
+
+#[test]
 fn ref_render_v0_2node_builds_venv_inside_job() {
     let out = reference::render_v0_2node("venv", "01:00:00").unwrap();
     assert!(has_venv_inside_job(&out));
 }
 
 // ---------------------------------------------------------------------------
-// prod_* — call render_v0_2node. The pmix-env test must fail until
-// production emits PMIX_MCA_gds=hash, unsets
-// OMPI_MCA_mca_base_component_path, and puts system OpenMPI on
-// LD_LIBRARY_PATH (jobs 734353 / 734382). Do not launch via mpirun.
+// prod_* — call render_v0_2node. Intra-node all_reduce and per-node facts
+// tests must fail until production emits non-MPI all_reduce_perf -g 4
+// (override NCCL_TESTS_ALL_REDUCE; stdout not busbw_gbps /
+// nccl_allreduce_2node.txt) and records /dev/kvm + NVMe on every node via
+// srun -N 2 --ntasks-per-node=1. Do not srun -N 2 the non-MPI binary.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -546,6 +774,12 @@ fn prod_render_v0_2node_pmix_launch_env() {
 }
 
 #[test]
+fn prod_render_v0_2node_intra_node_all_reduce() {
+    let out = render_v0_2node("intra", "01:00:00").unwrap();
+    assert_intra_node_all_reduce(&out);
+}
+
+#[test]
 fn prod_render_v0_2node_writes_busbw_and_node_facts() {
     let out = render_v0_2node("facts", "01:00:00").unwrap();
     assert!(
@@ -564,6 +798,12 @@ fn prod_render_v0_2node_writes_busbw_and_node_facts() {
         out.to_ascii_lowercase().contains("nvme"),
         "node_facts must record NVMe: {out}"
     );
+}
+
+#[test]
+fn prod_render_v0_2node_node_facts_on_every_node() {
+    let out = render_v0_2node("facts-all", "01:00:00").unwrap();
+    assert_node_facts_on_every_node(&out);
 }
 
 #[test]

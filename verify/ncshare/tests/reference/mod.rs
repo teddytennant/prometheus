@@ -47,11 +47,15 @@
 //! `{{WALLTIME}}` in `tests/reference/v0_2node.sh`. Empty `run_id` or
 //! `walltime` is `Error::Other`. The stub requests 2 nodes × 4 H200s, 8 MPI
 //! ranks (one per GPU via `--ntasks=8` / `--ntasks-per-node=4`, never
-//! `--gpus-per-task`), `srun --mpi=pmix` of `all_reduce_perf_mpi` (not
-//! `mpirun`; override `NCCL_TESTS_ALL_REDUCE_MPI`), PMIx env
-//! (`PMIX_MCA_gds=hash`, `unset OMPI_MCA_mca_base_component_path`,
-//! system OpenMPI `openmpi/lib` on `LD_LIBRARY_PATH`), writes
-//! `busbw_gbps` and `node_facts.txt`, and builds the venv inside the job.
+//! `--gpus-per-task`), intra-node non-MPI `all_reduce_perf -g 4` (override
+//! `NCCL_TESTS_ALL_REDUCE`; stdout not `busbw_gbps` /
+//! `nccl_allreduce_2node.txt`; not `srun -N 2` of that binary),
+//! `srun --mpi=pmix` of `all_reduce_perf_mpi` (not `mpirun`; override
+//! `NCCL_TESTS_ALL_REDUCE_MPI`), PMIx env (`PMIX_MCA_gds=hash`,
+//! `unset OMPI_MCA_mca_base_component_path`, system OpenMPI `openmpi/lib`
+//! on `LD_LIBRARY_PATH`), writes `busbw_gbps` from the 2-node log and
+//! `node_facts.txt` (`/dev/kvm` and NVMe on every node via `srun -N 2`
+//! `--ntasks-per-node=1`), and builds the venv inside the job.
 //!
 //! # `check_exit` on-disk layout
 //!

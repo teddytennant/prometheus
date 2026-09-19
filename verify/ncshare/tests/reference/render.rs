@@ -31,11 +31,15 @@ pub fn render_job(stage: Stage, run_id: &str, walltime: &str, gpus: u32) -> Resu
 /// Empty `run_id` or `walltime` is `Error::Other`, matching `render_job`.
 /// GPU counts are fixed by the stub (`#SBATCH --nodes=2`, `gpu:h200:4`,
 /// `--ntasks=8`, `--ntasks-per-node=4`; never `--gpus-per-task`); there is
-/// no `{{GPUS}}` placeholder. Launch is `srun --mpi=pmix` of
+/// no `{{GPUS}}` placeholder. Intra-node all_reduce is non-MPI
+/// `all_reduce_perf -g 4` (override `NCCL_TESTS_ALL_REDUCE`; stdout not
+/// `busbw_gbps` / `nccl_allreduce_2node.txt`; not `srun -N 2` of that
+/// binary). Cross-node launch is `srun --mpi=pmix` of
 /// `all_reduce_perf_mpi` (not `mpirun`; override `NCCL_TESTS_ALL_REDUCE_MPI`)
 /// with the NCShare PMIx env (`PMIX_MCA_gds=hash`,
 /// `unset OMPI_MCA_mca_base_component_path`, system OpenMPI `openmpi/lib`
-/// on `LD_LIBRARY_PATH`).
+/// on `LD_LIBRARY_PATH`). Node facts (`/dev/kvm` and NVMe) are recorded
+/// on every allocated compute node via `srun -N 2 --ntasks-per-node=1`.
 pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
     if run_id.is_empty() {
         return Err(Error::Other("empty run_id".into()));
