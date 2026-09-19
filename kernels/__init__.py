@@ -210,6 +210,35 @@ def _validate_delta(
     return q_np, k_np, v_np, beta_np, state_np
 
 
+def _validate_delta_jax(
+    q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array, state: Array | None
+) -> None:
+    """Shape checks on JAX arrays / tracers without host roundtrips."""
+    if q.ndim != 4 or k.shape != q.shape or v.shape != q.shape:
+        raise KernelError(f"q, k, v must all have shape (B, S, H, D); got {q.shape}")
+    batch, seq, heads, dim = q.shape
+    if beta.shape != (batch, seq, heads):
+        raise KernelError(f"beta shape {beta.shape} != {(batch, seq, heads)}")
+    if state is not None and state.shape != (batch, heads, dim, dim):
+        raise KernelError(f"state shape {state.shape} != {(batch, heads, dim, dim)}")
+
+
+def _delta_jax_inputs(
+    q: Array, k: Array, v: Array, beta: Array, state: Array | None
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    qj = jnp.asarray(q, dtype=jnp.float32)
+    kj = jnp.asarray(k, dtype=jnp.float32)
+    vj = jnp.asarray(v, dtype=jnp.float32)
+    bj = jnp.asarray(beta, dtype=jnp.float32)
+    _validate_delta_jax(qj, kj, vj, bj, state)
+    if state is None:
+        batch, _, heads, dim = qj.shape
+        sj = jnp.zeros((batch, heads, dim, dim), dtype=jnp.float32)
+    else:
+        sj = jnp.asarray(state, dtype=jnp.float32)
+    return qj, kj, vj, bj, sj
+
+
 def _delta_step_np(
     s: np.ndarray, q: np.ndarray, k: np.ndarray, v: np.ndarray, beta: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -382,55 +411,75 @@ def _delta_vjp_np(
     )
 
 
-def _jax_delta_fwd_impl(
-    q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array, state: jax.Array, chunk: jax.Array
-) -> tuple[tuple[jax.Array, jax.Array], tuple]:
-    chunk_i = int(chunk)
-    out, ns = _chunked_fwd_jax(q, k, v, beta, state, chunk_i)
-    return (out, ns), (q, k, v, beta, state, chunk)
+def _delta_vjp_jax(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    beta: jax.Array,
+    go: jax.Array,
+    gs: jax.Array,
+    state0: jax.Array,
+    chunk: int,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Fused reverse-state VJP on device. Chunking is only a traversal order."""
+    del chunk
+    _, seq, _, dim = q.shape
+    eye = jnp.eye(dim, dtype=jnp.float32)
+    q_t = jnp.swapaxes(q, 0, 1)
+    k_t = jnp.swapaxes(k, 0, 1)
+    v_t = jnp.swapaxes(v, 0, 1)
+    beta_t = jnp.swapaxes(beta, 0, 1)
+    go_t = jnp.swapaxes(go, 0, 1)
 
+    def collect(s: jax.Array, ins: tuple[jax.Array, jax.Array, jax.Array]):
+        kt, vt, bt = ins
+        bt_e = bt[:, :, None, None]
+        kk = jnp.einsum("bhd,bhe->bhde", kt, kt)
+        decay = eye - bt_e * kk
+        s_new = jnp.einsum("bhij,bhjk->bhik", decay, s)
+        s_new = s_new + bt_e * jnp.einsum("bhd,bhe->bhde", kt, vt)
+        return s_new, (s_new, s, decay)
 
-def _jax_delta_bwd_impl(residual: tuple, grads: tuple[jax.Array, jax.Array]):
-    q, k, v, beta, state, chunk = residual
-    go, gs = grads
-    gq, gk, gv, gbeta, gst = _delta_vjp_np(
-        np.asarray(q, dtype=np.float32),
-        np.asarray(k, dtype=np.float32),
-        np.asarray(v, dtype=np.float32),
-        np.asarray(beta, dtype=np.float32),
-        np.asarray(go, dtype=np.float32),
-        np.asarray(gs, dtype=np.float32),
-        np.asarray(state, dtype=np.float32),
-        int(chunk),
+    _, (s_t_all, s_prev_all, a_all) = jax.lax.scan(collect, state0, (k_t, v_t, beta_t))
+
+    def bwd_step(g_s: jax.Array, ins: tuple):
+        qt, kt, vt, bt, g_o, s_t, s_prev, a_t = ins
+        gq_t = jnp.einsum("bhe,bhde->bhd", g_o, s_t)
+        g_s = g_s + jnp.einsum("bhd,bhe->bhde", qt, g_o)
+        g_s_prev = jnp.einsum("bhij,bhik->bhjk", a_t, g_s)
+        g_a = jnp.einsum("bhik,bhjk->bhij", g_s, s_prev)
+        gv_t = jnp.einsum("bhde,bhd->bhe", g_s, kt) * bt[:, :, None]
+        gk_v = jnp.einsum("bhde,bhe->bhd", g_s, vt) * bt[:, :, None]
+        gbeta_v = jnp.einsum("bhde,bhd,bhe->bh", g_s, kt, vt)
+        gbeta_a = -jnp.einsum("bhde,bhd,bhe->bh", g_a, kt, kt)
+        gk_a = -bt[:, :, None] * (
+            jnp.einsum("bhde,bhe->bhd", g_a, kt) + jnp.einsum("bhed,bhe->bhd", g_a, kt)
+        )
+        return g_s_prev, (gq_t, gk_v + gk_a, gv_t, gbeta_v + gbeta_a)
+
+    g_s0, (gq_t, gk_t, gv_t, gbeta_t) = jax.lax.scan(
+        bwd_step,
+        gs,
+        (q_t, k_t, v_t, beta_t, go_t, s_t_all, s_prev_all, a_all),
+        reverse=True,
+        length=seq,
     )
     return (
-        jnp.asarray(gq),
-        jnp.asarray(gk),
-        jnp.asarray(gv),
-        jnp.asarray(gbeta),
-        jnp.asarray(gst),
-        None,
+        jnp.swapaxes(gq_t, 0, 1),
+        jnp.swapaxes(gk_t, 0, 1),
+        jnp.swapaxes(gv_t, 0, 1),
+        jnp.swapaxes(gbeta_t, 0, 1),
+        g_s0,
     )
 
 
-@jax.custom_vjp
-def _jax_delta(
-    q: jax.Array, k: jax.Array, v: jax.Array, beta: jax.Array, state: jax.Array, chunk: jax.Array
-) -> tuple[jax.Array, jax.Array]:
-    (out, ns), _ = _jax_delta_fwd_impl(q, k, v, beta, state, chunk)
-    return out, ns
-
-
-_jax_delta.defvjp(_jax_delta_fwd_impl, _jax_delta_bwd_impl)
-
-
+@partial(jax.custom_vjp, nondiff_argnames=("config",))
 def chunked_delta_rule(
     q: Array,
     k: Array,
     v: Array,
     beta: Array,
     state: Array | None = None,
-    *,
     config: LinearAttnConfig | None = None,
 ) -> tuple[Array, Array]:
     """Gated delta-rule linear attention.
@@ -446,8 +495,52 @@ def chunked_delta_rule(
     chunked_delta_rule_fwd. config is not differentiated.
     """
     cfg = LinearAttnConfig() if config is None else config
-    (out, ns), _ = chunked_delta_rule_fwd(q, k, v, beta, state, cfg)
-    return out, ns
+    if cfg.chunk < 1:
+        raise KernelError(f"chunk must be >= 1, got {cfg.chunk}")
+    if _is_jax(q, k, v, beta, state):
+        qj, kj, vj, bj, sj = _delta_jax_inputs(q, k, v, beta, state)
+        return _chunked_fwd_jax(qj, kj, vj, bj, sj, int(cfg.chunk))
+    q_np, k_np, v_np, beta_np, state_np = _validate_delta(q, k, v, beta, state)
+    return _chunked_fwd_np(q_np, k_np, v_np, beta_np, state_np, int(cfg.chunk))
+
+
+def _chunked_delta_rule_fwd(
+    q: Array,
+    k: Array,
+    v: Array,
+    beta: Array,
+    state: Array | None = None,
+    config: LinearAttnConfig | None = None,
+) -> tuple[tuple[jax.Array, jax.Array], tuple[jax.Array, ...]]:
+    cfg = LinearAttnConfig() if config is None else config
+    if cfg.chunk < 1:
+        raise KernelError(f"chunk must be >= 1, got {cfg.chunk}")
+    qj, kj, vj, bj, sj = _delta_jax_inputs(q, k, v, beta, state)
+    out, ns = _chunked_fwd_jax(qj, kj, vj, bj, sj, int(cfg.chunk))
+    return (out, ns), (qj, kj, vj, bj, sj)
+
+
+def _chunked_delta_rule_bwd(
+    config: LinearAttnConfig | None,
+    residual: tuple[jax.Array, ...],
+    grads: tuple[jax.Array | None, jax.Array | None],
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    q, k, v, beta, state0 = residual
+    go, gs = grads
+    cfg = LinearAttnConfig() if config is None else config
+    if go is None:
+        go = jnp.zeros_like(q)
+    else:
+        go = jnp.asarray(go, dtype=jnp.float32)
+    if gs is None:
+        batch, _, heads, dim = q.shape
+        gs = jnp.zeros((batch, heads, dim, dim), dtype=jnp.float32)
+    else:
+        gs = jnp.asarray(gs, dtype=jnp.float32)
+    return _delta_vjp_jax(q, k, v, beta, go, gs, state0, int(cfg.chunk))
+
+
+chunked_delta_rule.defvjp(_chunked_delta_rule_fwd, _chunked_delta_rule_bwd)
 
 
 def chunked_delta_rule_fwd(
@@ -466,13 +559,13 @@ def chunked_delta_rule_fwd(
         q=q_np, k=k_np, v=v_np, beta=beta_np, state0=state_np, chunk=int(config.chunk)
     )
     if _is_jax(q, k, v, beta, state):
-        out, ns = _jax_delta(
-            jnp.asarray(q_np),
-            jnp.asarray(k_np),
-            jnp.asarray(v_np),
-            jnp.asarray(beta_np),
-            jnp.asarray(state_np),
-            jnp.asarray(config.chunk),
+        out, ns = _chunked_fwd_jax(
+            jnp.asarray(q_np, dtype=jnp.float32),
+            jnp.asarray(k_np, dtype=jnp.float32),
+            jnp.asarray(v_np, dtype=jnp.float32),
+            jnp.asarray(beta_np, dtype=jnp.float32),
+            jnp.asarray(state_np, dtype=jnp.float32),
+            int(config.chunk),
         )
         return (out, ns), residual
     out, ns = _chunked_fwd_np(q_np, k_np, v_np, beta_np, state_np, int(config.chunk))
