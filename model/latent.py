@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 Array = Any  # numpy.ndarray or jax.Array; FP32
@@ -111,6 +113,18 @@ class StageBLoss:
     total: float
 
 
+jax.tree_util.register_dataclass(
+    HaltOutput,
+    data_fields=("lambdas", "p", "expected_depth"),
+    meta_fields=(),
+)
+jax.tree_util.register_dataclass(
+    StageBLoss,
+    data_fields=("l_task", "l_traj", "l_halt", "l_kl", "expected_depth", "total"),
+    meta_fields=(),
+)
+
+
 @dataclass(frozen=True)
 class NoisyLatent:
     """One noisy thought (spec 4.4): ``z = mu + sigma * eps``.
@@ -142,60 +156,84 @@ def _require_1d_finite_nonempty(value: Array, name: str) -> np.ndarray:
     return arr
 
 
-def _sigmoid_1d(logits: np.ndarray) -> np.ndarray:
-    out = np.empty(logits.shape[0], dtype=np.float64)
-    for i, raw in enumerate(logits):
-        x = float(raw)
-        if x >= 0.0:
-            z = math.exp(-x)
-            out[i] = 1.0 / (1.0 + z)
-        else:
-            z = math.exp(x)
-            out[i] = z / (1.0 + z)
-    return out
+def _is_tracer(x: object) -> bool:
+    return isinstance(x, jax.core.Tracer)
 
 
-def _clip_pin_lambdas(lambdas: np.ndarray) -> np.ndarray:
-    lo = float(HALT_EPS)
-    hi = 1.0 - float(HALT_EPS)
-    out = np.empty(lambdas.shape[0], dtype=np.float64)
-    for i, raw in enumerate(lambdas):
-        x = float(raw)
-        if x < lo:
-            x = lo
-        elif x > hi:
-            x = hi
-        out[i] = x
-    out[-1] = 1.0
-    return out
+def _is_jax(x: object) -> bool:
+    return isinstance(x, jax.Array)
 
 
-def _ponder_from_clipped(lam: np.ndarray) -> np.ndarray:
-    n = int(lam.shape[0])
-    p = np.empty(n, dtype=np.float64)
-    survival = 1.0
-    for m in range(n):
-        p[m] = float(lam[m]) * survival
-        survival *= 1.0 - float(lam[m])
-    return p
+def _xp(use_jax: bool) -> Any:
+    return jnp if use_jax else np
 
 
-def _log_softmax_row(row: np.ndarray) -> list[float]:
-    values = [float(x) for x in row]
-    peak = values[0]
-    for x in values[1:]:
-        if x > peak:
-            peak = x
-    total = 0.0
-    for x in values:
-        total += math.exp(x - peak)
-    log_z = peak + math.log(total)
-    return [x - log_z for x in values]
+def _as_float(value: Array, use_jax: bool) -> Array:
+    if use_jax:
+        return jnp.asarray(value, dtype=jnp.float32)
+    return np.asarray(value, dtype=np.float64)
 
 
-def _row_ce(row: np.ndarray, label: int) -> float:
-    log_probs = _log_softmax_row(row)
-    return -log_probs[label]
+def _raise_if_bad_1d_concrete(value: Array, name: str) -> None:
+    if _is_tracer(value):
+        return
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.ndim != 1:
+        raise LatentError(f"{name} must be 1-D")
+    if arr.size < 1:
+        raise LatentError(f"{name} empty")
+    if not np.all(np.isfinite(arr)):
+        raise LatentError(f"{name} non-finite")
+
+
+def _cast_1d_finite_nonempty(value: Array, name: str) -> Array:
+    _raise_if_bad_1d_concrete(value, name)
+    arr = _as_float(value, _is_jax(value))
+    if arr.ndim != 1:
+        raise LatentError(f"{name} must be 1-D")
+    if int(arr.shape[0]) < 1:
+        raise LatentError(f"{name} empty")
+    return arr
+
+
+def _raise_if_ids_oob(ids: Array, vocab: int) -> None:
+    if _is_tracer(ids):
+        return
+    arr = np.asarray(ids, dtype=np.int64)
+    if arr.size > 0 and (np.any(arr < 0) or np.any(arr >= vocab)):
+        raise LatentError("teacher id outside [0, vocab)")
+
+
+def _stable_sigmoid(x: Array) -> Array:
+    use_jax = _is_jax(x)
+    xp = _xp(use_jax)
+    dtype = x.dtype
+    lo = xp.asarray(-80.0, dtype=dtype)
+    hi = xp.asarray(80.0, dtype=dtype)
+    one = xp.asarray(1.0, dtype=dtype)
+    x_c = xp.clip(x, lo, hi)
+    return xp.where(x_c >= 0, one / (one + xp.exp(-x_c)), xp.exp(x_c) / (one + xp.exp(x_c)))
+
+
+def _clip_pin_ponder(lam: Array) -> tuple[Array, Array]:
+    use_jax = _is_jax(lam)
+    xp = _xp(use_jax)
+    dtype = lam.dtype
+    eps = xp.asarray(HALT_EPS, dtype=dtype)
+    one = xp.asarray(1.0, dtype=dtype)
+    n = lam.shape[0]
+    clipped = xp.clip(lam, eps, one - eps)
+    clipped = xp.where(xp.arange(n) == (n - 1), one, clipped)
+    stay = one - clipped
+    survival = xp.concatenate([xp.ones((1,), dtype=dtype), xp.cumprod(stay[:-1])])
+    return clipped, clipped * survival
+
+
+def _log_softmax(logits: Array) -> Array:
+    xp = _xp(_is_jax(logits))
+    shifted = logits - xp.max(logits, axis=-1, keepdims=True)
+    log_z = xp.log(xp.sum(xp.exp(shifted), axis=-1, keepdims=True))
+    return shifted - log_z
 
 
 def validate_latent_config(config: LatentConfig) -> None:
@@ -263,16 +301,9 @@ def ponder_distribution(lambdas: Array) -> Array:
     Must not convert traced ``lambdas`` with ``numpy.asarray`` or Python
     ``float()`` on entries.
     """
-    arr = _as_float_array(lambdas)
-    if arr.ndim != 1:
-        raise LatentError("lambdas must be 1-D")
-    if arr.size < 1:
-        raise LatentError("lambdas empty")
-    for item in arr:
-        if not math.isfinite(float(item)):
-            raise LatentError("lambdas non-finite")
-    lam = _clip_pin_lambdas(arr)
-    return _ponder_from_clipped(lam)
+    arr = _cast_1d_finite_nonempty(lambdas, "lambdas")
+    _lam, p = _clip_pin_ponder(arr)
+    return p
 
 
 def geometric_prior(n: int, lambda_prior: float) -> Array:
@@ -312,14 +343,12 @@ def halt_from_logits(halt_logits: Array) -> HaltOutput:
     Must not convert traced ``halt_logits`` with ``numpy.asarray``.
     ``expected_depth`` may be a 0-d array under jit.
     """
-    arr = _require_1d_finite_nonempty(halt_logits, "halt_logits")
-    sig = _sigmoid_1d(arr)
-    lam = _clip_pin_lambdas(sig)
-    p = _ponder_from_clipped(lam)
-    expected = 0.0
-    for m in range(p.shape[0]):
-        expected += float(p[m]) * float(m)
-    return HaltOutput(lambdas=lam, p=p, expected_depth=float(expected))
+    arr = _cast_1d_finite_nonempty(halt_logits, "halt_logits")
+    lam, p = _clip_pin_ponder(_stable_sigmoid(arr))
+    xp = _xp(_is_jax(p))
+    depths = xp.arange(p.shape[0], dtype=p.dtype)
+    expected = xp.sum(p * depths)
+    return HaltOutput(lambdas=lam, p=p, expected_depth=expected)
 
 
 def halt_loss(p: Array, teacher_steps: int) -> float:
@@ -333,14 +362,16 @@ def halt_loss(p: Array, teacher_steps: int) -> float:
     1e-5. Must not convert traced ``p`` with ``numpy.asarray`` or Python
     ``float()`` on ``p[k]``.
     """
-    arr = _require_1d_finite_nonempty(p, "p")
+    arr = _cast_1d_finite_nonempty(p, "p")
     k_max = int(arr.shape[0]) - 1
     k = int(teacher_steps)
     if k < 0:
         k = 0
     if k > k_max:
         k = k_max
-    return float(-math.log(float(arr[k]) + float(HALT_EPS)))
+    xp = _xp(_is_jax(arr))
+    eps = xp.asarray(HALT_EPS, dtype=arr.dtype)
+    return -xp.log(arr[k] + eps)
 
 
 def halt_kl(p: Array, lambda_prior: float) -> float:
@@ -353,18 +384,16 @@ def halt_kl(p: Array, lambda_prior: float) -> float:
     1e-5. Must not convert traced ``p`` with ``numpy.asarray`` or Python
     ``float()`` on entries.
     """
-    arr = _require_1d_finite_nonempty(p, "p")
+    arr = _cast_1d_finite_nonempty(p, "p")
     lam_p = float(lambda_prior)
     if not (0.0 < lam_p < 1.0):
         raise LatentError("lambda_prior must be in (0, 1)")
     g = geometric_prior(int(arr.shape[0]), lam_p)
-    total = 0.0
-    eps = float(HALT_EPS)
-    for pm, gm in zip(arr, g, strict=True):
-        p_m = float(pm)
-        g_m = float(gm)
-        total += p_m * (math.log(p_m + eps) - math.log(g_m + eps))
-    return float(total)
+    use_jax = _is_jax(arr)
+    g_a = _as_float(g, use_jax)
+    xp = _xp(use_jax)
+    eps = xp.asarray(HALT_EPS, dtype=arr.dtype)
+    return xp.sum(arr * (xp.log(arr + eps) - xp.log(g_a + eps)))
 
 
 def thought_decode_ce(
@@ -384,35 +413,37 @@ def thought_decode_ce(
     ``numpy.asarray``. Empty mask returns 0 without a Python branch on a
     traced denom.
     """
-    logits_a = _as_float_array(logits)
+    use_jax = _is_jax(logits) or _is_jax(teacher_ids) or _is_jax(mask)
+    xp = _xp(use_jax)
+    logits_a = _as_float(logits, use_jax)
     if logits_a.ndim != 2:
         raise LatentError("logits must be (n, vocab)")
     n = int(logits_a.shape[0])
     vocab = int(logits_a.shape[1])
     if n < 1:
         raise LatentError("empty logits")
-    ids = np.asarray(teacher_ids)
-    mask_a = np.asarray(mask)
+    ids = (
+        jnp.asarray(teacher_ids, dtype=jnp.int32)
+        if use_jax
+        else np.asarray(teacher_ids, dtype=np.int64)
+    )
+    mask_a = _as_float(mask, use_jax)
     if ids.ndim != 1 or mask_a.ndim != 1:
         raise LatentError("teacher_ids and mask must be 1-D")
     if int(ids.shape[0]) != n or int(mask_a.shape[0]) != n:
         raise LatentError("length mismatch")
-    labels: list[int] = []
-    for raw in ids:
-        label = int(raw)
-        if label < 0 or label >= vocab:
-            raise LatentError("teacher id outside [0, vocab)")
-        labels.append(label)
-    ces: list[float] = []
-    for i in range(n):
-        if mask_a[i] != 0:
-            ces.append(_row_ce(logits_a[i], labels[i]))
-    if not ces:
-        return 0.0
-    acc = 0.0
-    for ce in ces:
-        acc += ce
-    return float(acc / float(len(ces)))
+    _raise_if_ids_oob(teacher_ids, vocab)
+    log_p = _log_softmax(logits_a)
+    last = vocab - 1 if vocab > 0 else 0
+    safe = xp.clip(ids, 0, last)
+    picked = xp.take_along_axis(log_p, safe[..., None], axis=-1)[..., 0]
+    ce = -picked
+    kept = (mask_a != 0).astype(logits_a.dtype)
+    denom = xp.sum(kept)
+    eps = xp.asarray(1e-12, dtype=logits_a.dtype)
+    zero = xp.asarray(0.0, dtype=logits_a.dtype)
+    mean = xp.sum(ce * kept) / xp.maximum(denom, eps)
+    return xp.where(denom > 0, mean, zero)
 
 
 def answer_ce_at_depths(logits: Array, answer_id: int) -> Array:
@@ -424,7 +455,7 @@ def answer_ce_at_depths(logits: Array, answer_id: int) -> Array:
     over or ``static_argnums``), must match the eager result at 1e-5.
     Must not convert traced ``logits`` with ``numpy.asarray``.
     """
-    logits_a = _as_float_array(logits)
+    logits_a = _as_float(logits, _is_jax(logits))
     if logits_a.ndim != 2:
         raise LatentError("logits must be (K+1, vocab)")
     n = int(logits_a.shape[0])
@@ -434,10 +465,8 @@ def answer_ce_at_depths(logits: Array, answer_id: int) -> Array:
     aid = int(answer_id)
     if aid < 0 or aid >= vocab:
         raise LatentError("answer_id outside [0, vocab)")
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        out[i] = _row_ce(logits_a[i], aid)
-    return out
+    log_p = _log_softmax(logits_a)
+    return (-log_p[:, aid]).astype(logits_a.dtype)
 
 
 def stage_b_loss(
@@ -468,42 +497,48 @@ def stage_b_loss(
     ``numpy.asarray`` or Python ``float()`` on values.
     """
     validate_latent_config(config)
-    halt = _as_float_array(halt_logits)
-    if halt.ndim != 1 or halt.size < 1:
+    use_jax = (
+        _is_jax(halt_logits)
+        or _is_jax(answer_logits)
+        or _is_jax(thought_logits)
+        or _is_jax(teacher_ids)
+        or _is_jax(thought_mask)
+    )
+    xp = _xp(use_jax)
+    halt = _as_float(halt_logits, use_jax)
+    if halt.ndim != 1 or int(halt.shape[0]) < 1:
         raise LatentError("halt_logits must be 1-D with length K+1")
     k_plus = int(halt.shape[0])
     k = k_plus - 1
-    answer = _as_float_array(answer_logits)
+    answer = _as_float(answer_logits, use_jax)
     if answer.ndim != 2 or int(answer.shape[0]) != k_plus:
         raise LatentError("answer_logits must have length K+1")
-    thought = _as_float_array(thought_logits)
     if k == 0:
-        l_traj = 0.0
+        l_traj = xp.asarray(0.0, dtype=halt.dtype)
     else:
+        thought = _as_float(thought_logits, use_jax)
         if thought.ndim != 2 or int(thought.shape[0]) != k:
             raise LatentError("thought_logits must have K rows")
         l_traj = thought_decode_ce(thought, teacher_ids, thought_mask)
     halt_out = halt_from_logits(halt)
     p = halt_out.p
     answer_ce = answer_ce_at_depths(answer, answer_id)
-    l_task = 0.0
-    for m in range(k_plus):
-        l_task += float(p[m]) * float(answer_ce[m])
+    l_task = xp.sum(p * answer_ce)
     l_halt = halt_loss(p, teacher_steps)
     l_kl = halt_kl(p, float(config.lambda_prior))
     total = (
-        float(l_task)
-        + float(config.alpha_traj) * float(l_traj)
-        + float(config.gamma_halt) * float(l_halt)
-        + float(config.beta_kl) * float(l_kl)
+        l_task
+        + config.alpha_traj * l_traj
+        + config.gamma_halt * l_halt
+        + config.beta_kl * l_kl
     )
     return StageBLoss(
-        l_task=float(l_task),
-        l_traj=float(l_traj),
-        l_halt=float(l_halt),
-        l_kl=float(l_kl),
-        expected_depth=float(halt_out.expected_depth),
-        total=float(total),
+        l_task=l_task,
+        l_traj=l_traj,
+        l_halt=l_halt,
+        l_kl=l_kl,
+        expected_depth=halt_out.expected_depth,
+        total=total,
     )
 
 
