@@ -8,6 +8,10 @@ soft-capping, router z-loss, and the 2-layer MLP + norm latent adapter.
 This package is the CPU/FP32 JAX reference. Kernels (A3) and Stage-B latent
 training (I5: halt, thought-decode loss, Jacobi, noisy latents) come later.
 The adapter module is part of the V1 shape and lives here.
+
+``jax.jit`` of ``forward`` with ``config`` static and ``r`` a Python int
+must match the eager call. Token-id range checks must not convert traced
+token values with Python ``int()``.
 """
 
 from __future__ import annotations
@@ -800,6 +804,15 @@ def forward(
 
     `thoughts` is an optional (batch, n_thoughts, d_model) tensor inserted via
     the latent adapter before the discrete tokens. Empty/None is discrete-only.
+
+    ``jax.jit`` of this function, with ``config`` static and ``r`` a Python int
+    (closed over or ``static_argnames``), must match the eager logits, hidden,
+    mtp_logits, router_probs, expert_ids, z_loss, and r_used at 1e-5. Token-id
+    range checks must not call Python ``int()`` on traced token values.
+    ``r=None`` sampling stays host-side and is not required to jit. Traced ``r``
+    is not required (scan length is static). ``jax.grad`` through the jitted
+    call must match eager ``jax.grad``. FP32 math, recurrence, adapter, and MTP
+    stay the same.
     """
     validate_config(config)
     tokens = jnp.asarray(tokens)
