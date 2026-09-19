@@ -29,4 +29,4 @@ def forward(
     Implementation is PyTorch (CPU is enough). Returns logits of shape
     ``(batch, seq, vocab_size)`` in float32.
     """
-    ...
+    raise NotImplementedError
