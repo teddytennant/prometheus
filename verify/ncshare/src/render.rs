@@ -25,7 +25,25 @@ pub(crate) fn render_job(stage: Stage, run_id: &str, walltime: &str, gpus: u32) 
         .replace("{{GPUS}}", &gpus.to_string()))
 }
 
-/// V0 2-node × 4 template. Unimplemented until the F4 follow-up fills it.
-pub(crate) fn render_v0_2node(_run_id: &str, _walltime: &str) -> Result<String> {
-    unimplemented!("V0 2-node template (spec 16.2)")
+/// Substitute `{{RUN_ID}}` and `{{WALLTIME}}` in `templates/v0-2node.sh`.
+///
+/// Distinct from `render_job(Stage::V0, ...)`, which reads `templates/v0.sh`.
+/// Empty `run_id` or `walltime` is `Error::Other` before any template read.
+/// GPU counts are fixed by the template (`#SBATCH --nodes=2`, `gpu:h200:4`);
+/// there is no `{{GPUS}}` placeholder.
+pub(crate) fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
+    if run_id.is_empty() {
+        return Err(Error::Other("empty run_id".into()));
+    }
+    if walltime.is_empty() {
+        return Err(Error::Other("empty walltime".into()));
+    }
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("templates")
+        .join("v0-2node.sh");
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| Error::Other(format!("read template {}: {e}", path.display())))?;
+    Ok(raw
+        .replace("{{RUN_ID}}", run_id)
+        .replace("{{WALLTIME}}", walltime))
 }
