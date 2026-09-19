@@ -17,15 +17,18 @@ python3 -m venv "$OUT/venv"
 # shellcheck disable=SC1091
 source "$OUT/venv/bin/activate"
 python -m pip install -q --upgrade pip
-if [[ -f "$ROOT/pyproject.toml" ]]; then
-  python -m pip install -q -e "$ROOT"
-fi
+cd "$ROOT"
+python -m pip install -q -e ".[cuda]"
 
 export PROMETHEUS_ROOT="$ROOT"
 export VERIFY_OUT="$OUT"
 python - <<'PY'
 import json, os, sys
 from pathlib import Path
+
+import jax
+
+assert any(d.platform == "gpu" for d in jax.devices()), "JAX is not using a GPU"
 
 root = Path(os.environ["PROMETHEUS_ROOT"])
 out = Path(os.environ["VERIFY_OUT"])

@@ -13,6 +13,11 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.optional-dependencies]
+cuda = [
+    "jax[cuda12]",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
