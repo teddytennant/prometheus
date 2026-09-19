@@ -171,11 +171,11 @@ def test_clamp_sigma_jit_matches_eager_and_reference() -> None:
     _close(got, hand)
     _assert_f32_vector(got, CLAMP_SIGMA.shape)
     # below min / above max / interior unchanged
-    assert float(got[0]) == pytest.approx(lo, **TOL)
-    assert float(got[1]) == pytest.approx(lo, **TOL)
-    assert float(got[2]) == pytest.approx(0.05, **TOL)
-    assert float(got[3]) == pytest.approx(hi, **TOL)
-    assert float(got[4]) == pytest.approx(hi, **TOL)
+    _close(float(got[0]), lo)
+    _close(float(got[1]), lo)
+    _close(float(got[2]), 0.05)
+    _close(float(got[3]), hi)
+    _close(float(got[4]), hi)
 
 
 def test_clamp_sigma_jit_static_argnums_config() -> None:
