@@ -12,7 +12,8 @@ verified. Until then the A1 numpy/JAX path stays the CPU source of truth.
   weighted-sums them back. Node-limited routing (max 4 racks) is a
   constraint on the dispatch metadata, not a separate kernel.
 
-Each primitive is a `jax.custom_vjp`. The CPU tests compare against a slow
+Each primitive is a `jax.custom_vjp`. `jax.jit` of each public primitive
+must match the eager result. The CPU tests compare against a slow
 reference the oracle writes; the GPU path is the V1 / V3 gate.
 """
 
@@ -81,6 +82,10 @@ class DispatchMeta:
     `expert_ids` is (tokens, top_k). `probs` is the same shape. `racks` is
     the rack id of each expert, length n_routed_experts. Dispatch must
     refuse a token whose chosen experts span more than `max_racks` racks.
+
+    Must be a jax.tree_util registered dataclass so jax.jit(ep_dispatch)
+    and jax.jit(ep_combine) can take it. expert_ids, probs, racks are data
+    fields (arrays). n_experts and max_racks are meta fields (ints).
     """
 
     expert_ids: Array
@@ -972,6 +977,8 @@ def ep_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[Array, Any]:
     jax.grad through dispatched equals the scatter of cotangents onto tokens
     via residual. meta is not differentiated. residual is the inverse
     permutation ep_combine needs and is not differentiated.
+    jax.jit(ep_dispatch)(tokens, meta) must match the eager result (1e-5).
+    The traced path must not require DispatchMeta to be an abstract array.
     """
     expert_ids, _probs, racks, n_experts, max_racks = _validate_dispatch(tokens, meta)
     _check_rack_span(expert_ids, racks, max_racks)
@@ -1016,6 +1023,8 @@ def ep_combine(expert_out: Array, meta: DispatchMeta, residual: Any) -> Array:
     jax.grad through the combined tokens equals the weighted scatter of
     cotangents onto expert slots using meta.probs and residual.
     residual is not differentiated. meta routing ids are not differentiated.
+    jax.jit(ep_combine)(expert_out, meta, residual) must match eager (1e-5).
+    jax.jit of dispatch-then-combine must compose.
     """
     expert_ids = np.asarray(meta.expert_ids)
     n_experts = int(meta.n_experts)
