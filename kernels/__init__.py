@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from typing import Any
 
 import jax
@@ -579,7 +580,41 @@ def fp8_dequantize(meta: Fp8Meta) -> Array:
     return restored.astype(np.float32, copy=False)
 
 
-def fp8_linear(x: Array, weight: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Array:
+def _fp8_linear_hats_jax(
+    x: jax.Array, weight: jax.Array, block: int
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Quantize both sides on-device and return ``(y, x_hat, w_hat)``."""
+    if block < 1:
+        raise KernelError(f"fp8 block must be >= 1, got {block}")
+    x_j = jnp.asarray(x, dtype=jnp.float32)
+    w_j = jnp.asarray(weight, dtype=jnp.float32)
+    if w_j.ndim != 2:
+        raise KernelError(f"weight must be 2-D (out, in), got {w_j.shape}")
+    if x_j.shape[-1] != w_j.shape[-1]:
+        raise KernelError(
+            f"contracting dim mismatch: x[..., {x_j.shape[-1]}] vs weight[..., {w_j.shape[-1]}]"
+        )
+    x_hat = fp8_dequantize(fp8_quantize(x_j, block=block))
+    w_hat = fp8_dequantize(fp8_quantize(w_j, block=block))
+    y = jnp.matmul(x_hat, jnp.swapaxes(w_hat, -1, -2)).astype(jnp.float32)
+    return y, x_hat, w_hat
+
+
+def _fp8_linear_ste_bwd_jax(
+    x_hat: jax.Array, w_hat: jax.Array, g: jax.Array
+) -> tuple[jax.Array, jax.Array]:
+    g_j = jnp.asarray(g, dtype=jnp.float32)
+    in_f = x_hat.shape[-1]
+    out_f = w_hat.shape[0]
+    g_f = g_j.reshape(-1, out_f)
+    x_f = x_hat.reshape(-1, in_f)
+    grad_x = jnp.matmul(g_f, w_hat).reshape(x_hat.shape).astype(jnp.float32)
+    grad_w = jnp.matmul(g_f.T, x_f).astype(jnp.float32)
+    return grad_x, grad_w
+
+
+@partial(jax.custom_vjp, nondiff_argnames=("block",))
+def fp8_linear(x: Array, weight: Array, block: int = DEFAULT_FP8_BLOCK) -> Array:
     """y = x @ w^T with both sides quantized per-block to FP8.
 
     x: (..., in), weight: (out, in). Accumulates in FP32.
@@ -588,8 +623,25 @@ def fp8_linear(x: Array, weight: Array, *, block: int = DEFAULT_FP8_BLOCK) -> Ar
     ``fp8_linear_bwd(residual, g)`` with ``residual`` from
     ``fp8_linear_fwd``; scales are not differentiated (STE).
     """
+    if _is_jax(x, weight):
+        y, _, _ = _fp8_linear_hats_jax(x, weight, int(block))
+        return y
     y, _ = fp8_linear_fwd(x, weight, block)
     return y
+
+
+def _fp8_linear_fwd(x, weight, block):
+    # Residual is the STE dequantized tensors, kept as JAX arrays (no host numpy).
+    y, x_hat, w_hat = _fp8_linear_hats_jax(x, weight, int(block))
+    return y, (x_hat, w_hat)
+
+
+def _fp8_linear_bwd(_block, residual, g):
+    x_hat, w_hat = residual
+    return _fp8_linear_ste_bwd_jax(x_hat, w_hat, g)
+
+
+fp8_linear.defvjp(_fp8_linear_fwd, _fp8_linear_bwd)
 
 
 def fp8_linear_fwd(x: Array, weight: Array, block: int) -> tuple[Array, Any]:
