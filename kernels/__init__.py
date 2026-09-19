@@ -16,9 +16,16 @@ Each primitive is a `jax.custom_vjp`. `jax.jit` of each public primitive
 must match the eager result. `Fp8Meta` must be a jax.tree_util registered
 dataclass so `jax.jit(fp8_quantize)` and `jax.jit(fp8_dequantize)` can
 return and take it. `q` and `scale` are data fields (arrays). `block` and
-`dtype` are meta fields (int, DType). Analog of `DispatchMeta`. The CPU
-tests compare against a slow reference the oracle writes; the GPU path is
-the V1 / V3 gate.
+`dtype` are meta fields (int, DType). Analog of `DispatchMeta`.
+
+`_DeltaResidual` is the same analog for the explicit delta-rule VJP pair:
+`q`, `k`, `v`, `beta`, `state0` are data fields (arrays). `chunk` is meta
+(Python int). `jax.jit(chunked_delta_rule_fwd, static_argnames=('config',))`
+must match eager at 1e-5 and return a pytree residual.
+`jax.jit(chunked_delta_rule_bwd)(residual, grads)` must match eager at 1e-5.
+`config` is a host `LinearAttnConfig` (static). Traced arrays must not be
+converted with `numpy.asarray`. The CPU tests compare against a slow
+reference the oracle writes; the GPU path is the V1 / V3 gate.
 """
 
 from __future__ import annotations
@@ -117,11 +124,19 @@ class DispatchMeta:
 
 @dataclass(frozen=True)
 class _DeltaResidual:
-    q: np.ndarray
-    k: np.ndarray
-    v: np.ndarray
-    beta: np.ndarray
-    state0: np.ndarray
+    """VJP residual for `chunked_delta_rule_fwd` / `chunked_delta_rule_bwd`.
+
+    Must be a jax.tree_util registered dataclass so jax.jit of the explicit
+    fwd/bwd pair can return and take it. q, k, v, beta, state0 are data
+    fields (arrays). chunk is a meta field (Python int). Analog of Fp8Meta
+    and DispatchMeta.
+    """
+
+    q: Array
+    k: Array
+    v: Array
+    beta: Array
+    state0: Array
     chunk: int
 
 
@@ -620,8 +635,14 @@ def chunked_delta_rule_fwd(
     beta: Array,
     state: Array | None,
     config: LinearAttnConfig,
-) -> tuple[tuple[Array, Array], Any]:
-    """Custom VJP forward. Residual is whatever the backward needs."""
+) -> tuple[tuple[Array, Array], _DeltaResidual]:
+    """Custom VJP forward. Residual is a pytree `_DeltaResidual`.
+
+    `jax.jit(chunked_delta_rule_fwd, static_argnames=('config',))` must match
+    eager at 1e-5 and return a pytree residual. `config` is a host
+    `LinearAttnConfig` (static). Traced arrays must not be converted with
+    `numpy.asarray`.
+    """
     if config.chunk < 1:
         raise KernelError(f"chunk must be >= 1, got {config.chunk}")
     q_np, k_np, v_np, beta_np, state_np = _validate_delta(q, k, v, beta, state)
@@ -642,8 +663,13 @@ def chunked_delta_rule_fwd(
     return (out, ns), residual
 
 
-def chunked_delta_rule_bwd(residual: Any, grads: tuple[Array, Array]) -> tuple[Array, ...]:
-    """Custom VJP backward. Returns grads for (q, k, v, beta, state)."""
+def chunked_delta_rule_bwd(residual: _DeltaResidual, grads: tuple[Array, Array]) -> tuple[Array, ...]:
+    """Custom VJP backward. Returns grads for (q, k, v, beta, state).
+
+    `jax.jit(chunked_delta_rule_bwd)(residual, grads)` must match eager at
+    1e-5. `residual` is a pytree `_DeltaResidual`. Traced arrays must not be
+    converted with `numpy.asarray`.
+    """
     go, gs = grads
     go_np, gs_np = _f32(go), _f32(gs)
     gq, gk, gv, gbeta, gst = _delta_vjp_np(
