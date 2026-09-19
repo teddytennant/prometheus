@@ -837,6 +837,11 @@ def ep_dispatch(tokens: Array, meta: DispatchMeta) -> tuple[Array, Any]:
     is the inverse permutation `ep_combine` needs.
 
     Raises KernelError if a token's experts span more than meta.max_racks.
+
+    Must be the jax.custom_vjp object itself (not a wrapper around one).
+    jax.grad through dispatched equals the scatter of cotangents onto tokens
+    via residual. meta is not differentiated. residual is the inverse
+    permutation ep_combine needs and is not differentiated.
     """
     jax_out = _is_jax(tokens, meta.expert_ids, meta.probs, meta.racks)
     tok = _f32(tokens)
@@ -891,6 +896,11 @@ def ep_combine(expert_out: Array, meta: DispatchMeta, residual: Any) -> Array:
 
     expert_out: (n_experts, max_per_expert, d_model). Weights are meta.probs.
     Returns (n_tokens, d_model).
+
+    Must be the jax.custom_vjp object itself (not a wrapper around one).
+    jax.grad through the combined tokens equals the weighted scatter of
+    cotangents onto expert slots using meta.probs and residual.
+    residual is not differentiated. meta routing ids are not differentiated.
     """
     jax_out = _is_jax(expert_out)
     out_e = _f32(expert_out)
