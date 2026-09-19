@@ -19,7 +19,10 @@ Traced arrays must not be converted with ``numpy.asarray`` or Python
 ``truncated_sweeps``) and ``LatentConfig`` stay host-side.
 ``geometric_prior`` is host-side (Python ``n``). ``jacobi_sweeps``
 ``update`` must be JAX-traceable. Do not jit ``validate_latent_config``
-as an entry point.
+as an entry point. ``NoisyLatent`` must be a jax.tree_util registered
+dataclass so ``jax.jit(noisy_latent)`` can return it. ``mu``, ``sigma``,
+``eps``, ``z``, and ``log_density`` are data fields. Analog of
+``HaltOutput`` / ``StageBLoss``.
 
 IS weighting of latent log-probs is ``rl.loss``, not this module.
 """
@@ -135,6 +138,10 @@ class NoisyLatent:
 
     ``log_density`` is the sum of independent 1-D Gaussian log-densities
     at ``z``. Empty ``mu`` is not a valid thought.
+
+    Must be a jax.tree_util registered dataclass so ``jax.jit(noisy_latent)``
+    can return it. ``mu``, ``sigma``, ``eps``, ``z``, and ``log_density``
+    are data fields. Analog of ``HaltOutput`` / ``StageBLoss``.
     """
 
     mu: Array
