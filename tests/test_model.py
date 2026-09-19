@@ -19,6 +19,10 @@ latent_adapter: production call (shape/dtype); numerical check via forward.
 init_params / param_count: tree shapes, float32, ~10M tiny, no flagship init.
 forward: vs reference on tiny (r=1, r=2, thoughts=None vs thoughts),
   shapes, MTP length, discrete-only.
+jax.jit forward: jit(config static, r a Python int) matches eager
+  ForwardOutput at 1e-5 (thoughts=None and thoughts provided); jax.grad
+  of mean(logits) through the jitted call matches eager at 1e-4; eager
+  OOV tokens still raise ConfigError. Not marked gpu.
 gpu (V1): JAX GPU vs reference logits 1e-5; skipped without a GPU.
 
 Every test that calls a stubbed function must fail until production is filled in.
@@ -28,6 +32,8 @@ from __future__ import annotations
 
 import dataclasses
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -671,6 +677,106 @@ def test_forward_empty_thoughts_is_discrete():
     a = model.forward(tokens, params, cfg, r=1, thoughts=empty)
     b = model.forward(tokens, params, cfg, r=1, thoughts=None)
     np.testing.assert_allclose(_np(a.logits), _np(b.logits), **TOL)
+
+
+# ---------------------------------------------------------------------------
+# jax.jit(forward) — config static, r a Python int (not GPU-marked)
+# ---------------------------------------------------------------------------
+
+
+def _assert_forward_outputs_close(
+    got: model.ForwardOutput,
+    exp: model.ForwardOutput,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-5,
+) -> None:
+    """Compare ForwardOutput fields at FP32 parity; expert_ids and r_used exact."""
+    tol = dict(rtol=rtol, atol=atol)
+    np.testing.assert_allclose(_np(got.logits), _np(exp.logits), **tol)
+    np.testing.assert_allclose(_np(got.hidden), _np(exp.hidden), **tol)
+    assert len(got.mtp_logits) == len(exp.mtp_logits)
+    for a, b in zip(got.mtp_logits, exp.mtp_logits, strict=True):
+        np.testing.assert_allclose(_np(a), _np(b), **tol)
+    np.testing.assert_allclose(_np(got.router_probs), _np(exp.router_probs), **tol)
+    np.testing.assert_array_equal(_np(got.expert_ids), _np(exp.expert_ids))
+    np.testing.assert_allclose(_np(got.z_loss), _np(exp.z_loss), **tol)
+    assert int(got.r_used) == int(exp.r_used)
+
+
+def test_forward_jax_jit_matches_eager_discrete():
+    """jit(forward) with config closed over, r=1, thoughts=None matches eager at 1e-5.
+
+    Token-id range checks must not call Python int() on traced token values.
+    r=None sampling stays host-side and is not required to jit.
+    """
+    cfg = model.tiny_config()
+    rng = np.random.default_rng(40)
+    params = model.init_params(cfg, rng=40)
+    tokens = _tiny_batch(cfg, rng, seq=4)
+    eager = model.forward(tokens, params, cfg, r=1, thoughts=None)
+    jitted = jax.jit(lambda t, p: model.forward(t, p, cfg, r=1, thoughts=None))
+    got = jitted(tokens, params)
+    _assert_forward_outputs_close(got, eager)
+    assert _np(got.logits).shape == (tokens.shape[0], tokens.shape[1], cfg.vocab_size)
+    assert _np(got.logits).dtype == np.float32
+    assert _np(got.hidden).dtype == np.float32
+    assert int(got.r_used) == 1
+    exp_ref = ref.forward(tokens, params, cfg, r=1, thoughts=None)
+    np.testing.assert_allclose(_np(got.logits), exp_ref.logits, **TOL)
+
+
+def test_forward_jax_jit_matches_eager_with_thoughts():
+    """Same jit contract with thoughts of shape (batch, n_thoughts, d_model)."""
+    cfg = model.tiny_config()
+    rng = np.random.default_rng(41)
+    params = model.init_params(cfg, rng=41)
+    tokens = _tiny_batch(cfg, rng, seq=3)
+    thoughts = rng.standard_normal((tokens.shape[0], 2, cfg.d_model)).astype(np.float32)
+    eager = model.forward(tokens, params, cfg, r=1, thoughts=thoughts)
+    jitted = jax.jit(lambda t, p, th: model.forward(t, p, cfg, r=1, thoughts=th))
+    got = jitted(tokens, params, thoughts)
+    _assert_forward_outputs_close(got, eager)
+    assert _np(got.logits).shape == (tokens.shape[0], tokens.shape[1], cfg.vocab_size)
+    assert _np(got.hidden).shape == (tokens.shape[0], tokens.shape[1], cfg.d_model)
+    assert int(got.r_used) == 1
+
+
+def test_forward_jax_grad_through_jit_matches_eager():
+    """jax.grad of mean(logits) through jitted forward matches eager at 1e-4."""
+    cfg = model.tiny_config()
+    rng = np.random.default_rng(42)
+    params = model.init_params(cfg, rng=42)
+    tokens = _tiny_batch(cfg, rng, seq=2)
+
+    def mean_logits(p, t):
+        return jnp.mean(model.forward(t, p, cfg, r=1, thoughts=None).logits)
+
+    eager_g = jax.grad(mean_logits, argnums=0)(params, tokens)
+    jitted_mean = jax.jit(mean_logits)
+    jit_g = jax.grad(jitted_mean, argnums=0)(params, tokens)
+    np.testing.assert_allclose(
+        _np(jit_g["unembed"]), _np(eager_g["unembed"]), rtol=1e-4, atol=1e-4
+    )
+    np.testing.assert_allclose(
+        _np(jit_g["embed"]), _np(eager_g["embed"]), rtol=1e-4, atol=1e-4
+    )
+
+
+def test_forward_out_of_vocab_raises_eager():
+    """Eager path still raises ConfigError on OOV / negative token ids.
+
+    Under jit the raise is not required (XLA cannot raise Python exceptions
+    the same way). jit-vs-eager match tests use in-vocab tokens.
+    """
+    cfg = model.tiny_config()
+    params = model.init_params(cfg, rng=43)
+    high = np.array([[0, cfg.vocab_size]], dtype=np.int32)
+    with pytest.raises(model.ConfigError, match="token id out of vocab"):
+        model.forward(high, params, cfg, r=1)
+    neg = np.array([[-1, 0]], dtype=np.int32)
+    with pytest.raises(model.ConfigError, match="token id out of vocab"):
+        model.forward(neg, params, cfg, r=1)
 
 
 # ---------------------------------------------------------------------------
