@@ -144,22 +144,6 @@ class NoisyLatent:
     log_density: float
 
 
-def _as_float_array(value: Array) -> np.ndarray:
-    return np.asarray(value, dtype=np.float64)
-
-
-def _require_1d_finite_nonempty(value: Array, name: str) -> np.ndarray:
-    arr = _as_float_array(value)
-    if arr.ndim != 1:
-        raise LatentError(f"{name} must be 1-D")
-    if arr.size < 1:
-        raise LatentError(f"{name} empty")
-    for item in arr:
-        if not math.isfinite(float(item)):
-            raise LatentError(f"{name} non-finite")
-    return arr
-
-
 def _is_tracer(x: object) -> bool:
     return isinstance(x, jax.core.Tracer)
 
@@ -571,11 +555,12 @@ def jacobi_sweeps(
     eager result at 1e-5. Must not convert traced ``thoughts`` with
     ``numpy.asarray``.
     """
-    arr = np.asarray(thoughts)
-    if arr.ndim != 2:
+    use_jax = _is_jax(thoughts)
+    current = _as_float(thoughts, use_jax)
+    if current.ndim != 2:
         raise LatentError("thoughts rank != 2")
-    n_rows = int(arr.shape[0])
-    n_cols = int(arr.shape[1])
+    n_rows = int(current.shape[0])
+    n_cols = int(current.shape[1])
     if n_rows < 1 or n_cols < 1:
         raise LatentError("thoughts n>=1 and d>=1")
     sweeps = int(n_sweeps)
@@ -584,12 +569,15 @@ def jacobi_sweeps(
     truncated = int(truncated_sweeps)
     if truncated < 1 or truncated > sweeps:
         raise LatentError("truncated_sweeps not in 1..=n_sweeps")
-    current = np.array(arr, copy=True)
+    if not use_jax:
+        current = np.array(current, copy=True)
     shape = current.shape
     for _ in range(sweeps):
-        current = np.asarray(update(current))
-        if tuple(current.shape) != tuple(shape):
+        nxt = update(current)
+        nxt = jnp.asarray(nxt) if use_jax else np.asarray(nxt)
+        if tuple(nxt.shape) != tuple(shape):
             raise LatentError("update changed shape")
+        current = nxt
     return current
 
 
@@ -602,26 +590,21 @@ def clamp_sigma(sigma: Array, config: LatentConfig) -> Array:
     the eager result at 1e-5. Must not convert traced ``sigma`` with
     ``numpy.asarray`` or Python ``float()`` on entries.
     """
-    arr = _as_float_array(sigma)
-    if arr.size < 1:
-        raise LatentError("sigma empty")
-    for item in arr.reshape(-1):
-        if not math.isfinite(float(item)):
+    if not _is_tracer(sigma):
+        host = np.asarray(sigma, dtype=np.float64)
+        if host.size < 1:
+            raise LatentError("sigma empty")
+        if not np.all(np.isfinite(host)):
             raise LatentError("sigma non-finite")
     validate_latent_config(config)
-    lo = float(config.sigma_min)
-    hi = float(config.sigma_max)
-    out = np.empty(arr.shape, dtype=np.float64)
-    flat_in = arr.reshape(-1)
-    flat_out = out.reshape(-1)
-    for i, raw in enumerate(flat_in):
-        x = float(raw)
-        if x < lo:
-            x = lo
-        elif x > hi:
-            x = hi
-        flat_out[i] = x
-    return out
+    use_jax = _is_jax(sigma)
+    arr = _as_float(sigma, use_jax)
+    if arr.size < 1:
+        raise LatentError("sigma empty")
+    xp = _xp(use_jax)
+    lo = xp.asarray(float(config.sigma_min), dtype=arr.dtype)
+    hi = xp.asarray(float(config.sigma_max), dtype=arr.dtype)
+    return xp.clip(arr, lo, hi)
 
 
 def noisy_latent(mu: Array, sigma: Array, eps: Array, config: LatentConfig) -> NoisyLatent:
@@ -636,25 +619,26 @@ def noisy_latent(mu: Array, sigma: Array, eps: Array, config: LatentConfig) -> N
     / ``eps`` with ``numpy.asarray`` or Python ``float()`` on entries.
     ``log_density`` may be a 0-d array under jit.
     """
-    mu_a = _require_1d_finite_nonempty(mu, "mu")
-    sigma_a = _require_1d_finite_nonempty(sigma, "sigma")
-    eps_a = _require_1d_finite_nonempty(eps, "eps")
-    if mu_a.shape[0] != sigma_a.shape[0] or mu_a.shape[0] != eps_a.shape[0]:
+    mu_a = _cast_1d_finite_nonempty(mu, "mu")
+    sigma_a = _cast_1d_finite_nonempty(sigma, "sigma")
+    eps_a = _cast_1d_finite_nonempty(eps, "eps")
+    if int(mu_a.shape[0]) != int(sigma_a.shape[0]) or int(mu_a.shape[0]) != int(
+        eps_a.shape[0]
+    ):
         raise LatentError("length mismatch")
     s = clamp_sigma(sigma_a, config)
-    z = np.empty(mu_a.shape[0], dtype=np.float64)
-    for i in range(mu_a.shape[0]):
-        z[i] = float(mu_a[i]) + float(s[i]) * float(eps_a[i])
-    log_two_pi = math.log(2.0 * math.pi)
-    total = 0.0
-    for i in range(z.shape[0]):
-        si = float(s[i])
-        centered = (float(z[i]) - float(mu_a[i])) / si
-        total += centered * centered + 2.0 * math.log(si) + log_two_pi
+    use_jax = _is_jax(mu_a) or _is_jax(s) or _is_jax(eps_a)
+    xp = _xp(use_jax)
+    z = mu_a + s * eps_a
+    log_two_pi = xp.asarray(math.log(2.0 * math.pi), dtype=s.dtype)
+    two = xp.asarray(2.0, dtype=s.dtype)
+    half = xp.asarray(0.5, dtype=s.dtype)
+    centered = (z - mu_a) / s
+    total = xp.sum(centered * centered + two * xp.log(s) + log_two_pi)
     return NoisyLatent(
         mu=mu_a,
         sigma=s,
         eps=eps_a,
         z=z,
-        log_density=float(-0.5 * total),
+        log_density=-half * total,
     )
