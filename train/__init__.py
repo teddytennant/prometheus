@@ -20,10 +20,14 @@ Aux-loss-free router bias updates live here, not in the A1 forward.
 
 ``jax.jit`` of ``newton_schulz``, ``muon_update``, ``adamw_update``,
 ``qk_clip``, ``soft_cap``, ``cross_entropy``, ``mtp_loss``, ``z_loss``,
-and ``total_loss`` must match the eager call at 1e-5. Traced arrays must
-not be converted with ``numpy.asarray`` or Python ``float()`` / ``int()``
-on values. Python scalars (``steps``, ``lr``, ``ns_steps``, ``step``,
-``max_logit``, ``cap``) and ``TrainConfig`` stay host-side.
+``total_loss``, and ``train_step`` must match the eager call at 1e-5.
+Traced arrays must not be converted with ``numpy.asarray`` or Python
+``float()`` / ``int()`` on values. Python scalars (``steps``, ``lr``,
+``ns_steps``, ``step``, ``max_logit``, ``cap``) and ``TrainConfig`` /
+``ModelConfig`` stay host-side. After ``value_and_grad``, traced grads
+and losses must stay in JAX: no Python ``float()`` on the loss leaves,
+no ``numpy.asarray`` on QK-clip / router-bias updates, no Python
+branch on a traced ``grad_norm``.
 """
 
 from __future__ import annotations
@@ -678,6 +682,14 @@ def train_step(
 
     `step` is 1-based. Router bias balancing (aux-loss-free) updates inside
     `opt_state` from the forward's `router_probs`.
+
+    ``jax.jit(train_step)`` (with ``step``, ``model_config``, and
+    ``train_config`` closed over or ``static_argnums``) must match the eager
+    call at 1e-5. Traced ``params`` / ``opt_state`` / batch arrays / grads
+    must not be converted with ``numpy.asarray`` or Python ``float()``.
+    Grad clip uses a finite ``jnp.where`` (no Python ``if`` on traced
+    ``grad_norm``). ``LossBreakdown`` / ``StepOutput`` array fields stay
+    JAX types under jit.
     """
     validate_train_config(train_config)
     t = int(step)
