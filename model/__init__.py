@@ -167,6 +167,13 @@ class ForwardOutput:
     r_used: int
 
 
+jax.tree_util.register_dataclass(
+    ForwardOutput,
+    data_fields=("logits", "mtp_logits", "z_loss", "router_probs", "expert_ids", "hidden"),
+    meta_fields=("r_used",),
+)
+
+
 def _as_f32(x: Any) -> Array:
     return jnp.asarray(x, dtype=jnp.float32)
 
@@ -821,10 +828,10 @@ def forward(
     batch, seq = int(tokens.shape[0]), int(tokens.shape[1])
     if seq > config.max_context:
         raise ConfigError("sequence longer than max_context")
-    if tokens.size and (
-        int(jnp.min(tokens)) < 0 or int(jnp.max(tokens)) >= config.vocab_size
-    ):
-        raise ConfigError("token id out of vocab")
+    if tokens.size:
+        oov = jnp.any((tokens < 0) | (tokens >= config.vocab_size))
+        if not isinstance(oov, jax.core.Tracer) and bool(oov):
+            raise ConfigError("token id out of vocab")
     embed = _as_f32(params["embed"])
     h = embed[tokens]
     n_thoughts = 0
