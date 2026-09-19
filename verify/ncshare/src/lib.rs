@@ -219,8 +219,21 @@ pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 /// `--gpus-per-task` ("Invalid GRES specification (with and without type
 /// identification)"). Confirmed `sbatch --test-only` 2026-09-19: with
 /// `--gpus-per-task=1` rc=1, without it rc=0. Job 734382: `srun
-/// --gpus-per-task=1` failed ("2 requested but only 1 were found"); `srun
+/// `--gpus-per-task=1` failed ("2 requested but only 1 were found"); `srun
 /// --mpi=pmix --ntasks=2` without that flag passed, `#wrong=0`.
+///
+/// Multi-rank pmix on this cluster also needs a launch env that 734144
+/// lacked and 734353/734382 used:
+/// - `export PMIX_MCA_gds=hash` (gds_shmem default: `PMIX_ERR_FILE_OPEN_FAILURE`
+///   then SIGSEGV in `PMIx_Init`)
+/// - `unset OMPI_MCA_mca_base_component_path` (a copied OpenMPI MCA tree
+///   under a tools prefix broke PMIx)
+/// - launch the `all_reduce_perf_mpi` ELF with `srun --mpi=pmix`, not an
+///   `mpirun` wrapper
+/// - `LD_LIBRARY_PATH` includes the system OpenMPI lib dir (and the
+///   nccl-tests CUDA/NCCL libs when those live outside the default path)
+/// Override the binary with `NCCL_TESTS_ALL_REDUCE_MPI`. Do not hardcode a
+/// site path as the only way to find it.
 pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
     render::render_v0_2node(run_id, walltime)
 }
