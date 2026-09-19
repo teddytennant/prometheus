@@ -76,5 +76,10 @@ if ! command -v "$NCCL_BIN" >/dev/null 2>&1; then
   echo "nccl-tests MPI all_reduce binary not found: $NCCL_BIN" >&2
   exit 1
 fi
+# PMIx env that works on NCShare (jobs 734353 / 734382). Job 734144 SIGSEGV'd
+# in PMIx_Init (gds_shmem) after copying a tools-prefix MCA path.
+export PMIX_MCA_gds=hash
+unset OMPI_MCA_mca_base_component_path
+export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/openmpi/lib:${LD_LIBRARY_PATH:-}"
 srun --mpi=pmix "$NCCL_BIN" -b 8 -e 128M -f 2 -g 1 | tee "$NCCL_LOG"
 cp "$NCCL_LOG" "$OUT/busbw_gbps"
