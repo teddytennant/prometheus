@@ -230,8 +230,9 @@ def precision_for(name: str, config: TrainConfig) -> PrecisionKind:
     return PrecisionKind.FP8_LINEAR
 
 
-def _as_f32(x: Array) -> np.ndarray:
-    return np.asarray(x, dtype=np.float32)
+def _as_f32(x: Array) -> Array:
+    """Cast to float32 without ``numpy.asarray`` (tracer-safe under ``jax.jit``)."""
+    return jnp.asarray(x, dtype=jnp.float32)
 
 
 def _logsumexp(x: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -255,19 +256,22 @@ def newton_schulz(matrix: Array, steps: int) -> Array:
         raise ValueError(f"newton_schulz expects a 2D matrix, got shape {g.shape}")
     transposed = g.shape[0] > g.shape[1]
     x = g.T if transposed else g
-    fro = float(np.linalg.norm(x))
-    if fro <= _NS_EPS:
-        return np.zeros_like(g)
-    x = x / np.float32(fro)
-    a = np.float32(_NS_A)
-    b = np.float32(_NS_B)
-    c = np.float32(_NS_C)
+    fro = jnp.linalg.norm(x)
+    # Both branches stay in JAX: tiny / zero inputs map to zeros (no Python float()).
+    x = jnp.where(
+        fro > jnp.float32(_NS_EPS),
+        x / jnp.maximum(fro, jnp.float32(_NS_EPS)),
+        jnp.zeros_like(x),
+    )
+    a = jnp.float32(_NS_A)
+    b = jnp.float32(_NS_B)
+    c = jnp.float32(_NS_C)
     for _ in range(int(steps)):
         gram = x @ x.T
         x = a * x + (b * gram + c * (gram @ gram)) @ x
     if transposed:
         x = x.T
-    return np.asarray(x, dtype=np.float32)
+    return x.astype(jnp.float32)
 
 
 def muon_update(
@@ -291,14 +295,14 @@ def muon_update(
         raise ValueError(f"grad shape {g.shape} != momentum shape {m.shape}")
     if g.ndim != 2:
         raise ValueError(f"muon_update expects a 2D grad, got shape {g.shape}")
-    beta = np.float32(momentum_coeff)
+    beta = jnp.float32(momentum_coeff)
     new_m = beta * m + g
     nesterov = g + beta * new_m
     orth = newton_schulz(nesterov, int(ns_steps))
     rows, cols = int(orth.shape[0]), int(orth.shape[1])
-    rms = np.float32(np.sqrt(max(1.0, rows / max(cols, 1))))
-    delta = np.float32(lr) * rms * orth
-    return delta.astype(np.float32), new_m.astype(np.float32)
+    rms = jnp.float32(np.sqrt(max(1.0, rows / max(cols, 1))))
+    delta = jnp.float32(lr) * rms * orth
+    return delta.astype(jnp.float32), new_m.astype(jnp.float32)
 
 
 def qk_clip(q: Array, k: Array, max_logit: float) -> tuple[Array, Array]:
@@ -314,13 +318,16 @@ def qk_clip(q: Array, k: Array, max_logit: float) -> tuple[Array, Array]:
     k32 = _as_f32(k)
     if q32.shape[-1] != k32.shape[-1]:
         raise ValueError("q and k last dim (head dim) must match")
-    scores = np.einsum("...id,...jd->...ij", q32, k32)
-    mu = float(np.max(np.abs(scores)))
-    tau = float(max_logit)
-    if mu <= tau or mu == 0.0:
-        return q32.copy(), k32.copy()
-    scale = np.float32(np.sqrt(tau / mu))
-    return (q32 * scale).astype(np.float32), (k32 * scale).astype(np.float32)
+    scores = jnp.einsum("...id,...jd->...ij", q32, k32)
+    mu = jnp.max(jnp.abs(scores))
+    tau = jnp.float32(max_logit)
+    do_scale = (mu > tau) & (mu != jnp.float32(0.0))
+    scale = jnp.where(
+        do_scale,
+        jnp.sqrt(tau / jnp.maximum(mu, jnp.float32(_NS_EPS))),
+        jnp.float32(1.0),
+    )
+    return (q32 * scale).astype(jnp.float32), (k32 * scale).astype(jnp.float32)
 
 
 def adamw_update(
@@ -349,16 +356,17 @@ def adamw_update(
     g = _as_f32(grad)
     m32 = _as_f32(m)
     v32 = _as_f32(v)
-    b1 = np.float32(beta1)
-    b2 = np.float32(beta2)
-    m_t = b1 * m32 + (np.float32(1.0) - b1) * g
-    v_t = b2 * v32 + (np.float32(1.0) - b2) * (g * g)
+    b1 = jnp.float32(beta1)
+    b2 = jnp.float32(beta2)
+    one = jnp.float32(1.0)
+    m_t = b1 * m32 + (one - b1) * g
+    v_t = b2 * v32 + (one - b2) * (g * g)
     t = int(step)
-    m_hat = m_t / (np.float32(1.0) - b1**t)
-    v_hat = v_t / (np.float32(1.0) - b2**t)
-    adam_step = m_hat / (np.sqrt(v_hat) + np.float32(eps))
-    p_t = p * (np.float32(1.0) - np.float32(lr) * np.float32(wd)) - np.float32(lr) * adam_step
-    return p_t.astype(np.float32), m_t.astype(np.float32), v_t.astype(np.float32)
+    m_hat = m_t / (one - b1**t)
+    v_hat = v_t / (one - b2**t)
+    adam_step = m_hat / (jnp.sqrt(v_hat) + jnp.float32(eps))
+    p_t = p * (one - jnp.float32(lr) * jnp.float32(wd)) - jnp.float32(lr) * adam_step
+    return p_t.astype(jnp.float32), m_t.astype(jnp.float32), v_t.astype(jnp.float32)
 
 
 def wsd_lr(step: int, config: TrainConfig) -> float:
