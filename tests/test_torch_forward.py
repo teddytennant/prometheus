@@ -69,7 +69,8 @@ def _numpy_tree(tree: Any) -> Any:
         tree = tree.detach()
     if hasattr(tree, "cpu"):
         tree = tree.cpu()
-    return np.asarray(tree, dtype=np.float32)
+    # JAX DeviceArray views from np.asarray are read-only; FD perturbs unembed in place.
+    return np.array(tree, dtype=np.float32, copy=True)
 
 
 def _tiny_inputs() -> tuple[np.ndarray, dict[str, Any], model.ModelConfig]:
