@@ -216,6 +216,17 @@ pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 /// CPU JAX for the analog tests in `tests/test_v1_parity.py`.
 pub const V1_CUDA_EXTRA: &str = "cuda";
 
+/// Independent V1 forward stack (spec 16.2: JAX vs PyTorch).
+///
+/// Production independent logits live in `prometheus.verify._torch_forward`.
+/// `prometheus.verify._numpy_forward` is retired: that module must not exist.
+/// `templates/v1.sh` must fail-closed on `import torch` after the JAX GPU
+/// assert, the same way it fail-closes if JAX is not using a GPU. Torch is
+/// already a default CPU dep; this is not a new optional extra. `run_v1`
+/// stays callable without a GPU for the analog tests and does not count as
+/// V1 verified.
+pub const V1_INDEPENDENT_FORWARD: &str = "torch";
+
 /// Render the V0 2-node × 4 GPU job (spec 16.2).
 ///
 /// Distinct from `render_job(Stage::V0, ...)`, which is the 1-GPU first
