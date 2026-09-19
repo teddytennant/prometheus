@@ -232,6 +232,7 @@ pub const V0_2NODE_GPUS_PER_NODE: u32 = 4;
 ///   `mpirun` wrapper
 /// - `LD_LIBRARY_PATH` includes the system OpenMPI lib dir (and the
 ///   nccl-tests CUDA/NCCL libs when those live outside the default path)
+///
 /// Override the binary with `NCCL_TESTS_ALL_REDUCE_MPI`. Do not hardcode a
 /// site path as the only way to find it.
 pub fn render_v0_2node(run_id: &str, walltime: &str) -> Result<String> {
