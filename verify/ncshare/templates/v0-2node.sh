@@ -50,23 +50,29 @@ true
 EOF
 sbatch --test-only "$DUMMY" > "$OUT/sbatch_test_only.txt" 2>&1
 
-# Record /dev/kvm (Firecracker) and NVMe facts. Checker reads node_facts.txt.
-{
-  echo "hostname: $(hostname)"
-  if [[ -e /dev/kvm ]]; then
-    echo "kvm: yes"
-    ls -l /dev/kvm || true
-  else
-    echo "kvm: no"
-    ls -l /dev/kvm 2>&1 || true
-  fi
-  if ls /dev/nvme* >/dev/null 2>&1; then
-    echo "nvme: present"
-    ls -l /dev/nvme* || true
-  else
-    echo "nvme: absent"
-  fi
-} > "$OUT/node_facts.txt"
+# Record /dev/kvm (Firecracker) and NVMe facts on every allocated node.
+srun -N 2 --ntasks-per-node=1 bash -s <<'EOF' > "$OUT/node_facts.txt"
+echo "hostname: $(hostname)"
+if [[ -e /dev/kvm ]]; then
+  echo "kvm: yes"
+  ls -l /dev/kvm || true
+else
+  echo "kvm: no"
+  ls -l /dev/kvm 2>&1 || true
+fi
+if ls /dev/nvme* >/dev/null 2>&1; then
+  echo "nvme: present"
+  ls -l /dev/nvme* || true
+else
+  echo "nvme: absent"
+fi
+EOF
+
+# Intra-node all_reduce: 4 GPUs on one node, non-MPI all_reduce_perf.
+# Do not srun -N 2 the non-MPI binary. Do not write this stdout to busbw_gbps.
+NCCL_INTRA_BIN="${NCCL_TESTS_ALL_REDUCE:-all_reduce_perf}"
+NCCL_INTRA_LOG="$OUT/nccl_allreduce_intra.txt"
+"$NCCL_INTRA_BIN" -b 8 -e 128M -f 2 -g 4 | tee "$NCCL_INTRA_LOG"
 
 # 8 ranks, one per GPU. Multi-rank nccl-tests on this cluster only works as
 # srun --mpi=pmix of all_reduce_perf_mpi.
