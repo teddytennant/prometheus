@@ -17,7 +17,9 @@ Per timestep, with I the D×D identity::
     S_t = (I - β_t k_t k_t^T) S_{t-1} + β_t k_t v_t^T
     o_t = q_t S_t
 
-This is the Gated DeltaNet / KDA recurrence with decay gate 1. The A1
+This is the Gated DeltaNet / KDA recurrence with decay gate 1. The fused
+reverse-state VJP is ``gated_delta_rule_vjp``; production
+``jax.grad(chunked_delta_rule)`` must match it (spec 5.1). The A1
 ``model.linear_attention`` wrapper may L2-normalise and pass β=1 into this
 kernel; the kernel itself does not.
 
@@ -172,10 +174,13 @@ def gated_delta_rule_vjp(
     gs: Array,
     state: Array | None = None,
 ) -> tuple[Array, Array, Array, Array, Array]:
-    """Reverse-mode of ``gated_delta_rule``.
+    """Fused reverse-state VJP of ``gated_delta_rule``.
 
     ``go`` is dL/d out, ``gs`` is dL/d next_state.
     Returns ``(gq, gk, gv, gbeta, gstate0)``.
+
+    Production ``jax.grad(chunked_delta_rule)`` / ``jax.vjp`` must match this
+    kernel and ``chunked_delta_rule_bwd`` (spec 5.1).
     """
     q = _as_f32(q)
     k = _as_f32(k)

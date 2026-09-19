@@ -14,15 +14,17 @@ Groups:
 - Constants: DEFAULT_CHUNK 64, DEFAULT_FP8_BLOCK 128, MAX_RACKS 4, DType,
   LinearAttnConfig / Fp8Meta / DispatchMeta / KernelError.
 - Linear attention: vs-reference, causality, state carry, chunk-size
-  independence, shapes/dtypes, finite-difference grads, custom_vjp, goldens,
-  KernelError on bad shapes.
+  independence, shapes/dtypes, finite-difference grads, goldens,
+  KernelError on bad shapes, jax.custom_vjp / jax.grad equals
+  chunked_delta_rule_bwd and the fused reverse-state VJP (not a wrapper).
 - FP8: roundtrip bound, vs-reference, vs FP32 matmul (documented tolerance),
   backward uses forward scales (STE), jax.custom_vjp / jax.grad STE
   (matches fp8_linear_bwd residual, not scale-path autodiff), goldens,
   KernelError on bad shapes.
 - EP: combine(dispatch(x)) weighted identity, rack span > MAX_RACKS,
   padding shape, goldens, residual is opaque.
-- GPU: V1 linear-attn parity, V3 FP8 parity and jax.grad STE (pytest marker ``gpu``).
+- GPU: V1 linear-attn parity and jax.grad reverse-state VJP, V3 FP8 parity
+  and jax.grad STE (pytest marker ``gpu``). CPU tests cover jax.grad.
 """
 
 from __future__ import annotations
@@ -65,6 +67,32 @@ def _delta_inputs(rng, batch=2, seq=5, heads=2, dim=4):
     v = rng.standard_normal((batch, seq, heads, dim)).astype(np.float32)
     beta = (0.35 + 0.30 * rng.random((batch, seq, heads))).astype(np.float32)
     return q, k, v, beta
+
+
+def _naive_gated_delta_scan(q, k, v, beta, state):
+    """Default-loop ``jax.lax.scan`` of the gated delta-rule (not the fused reverse kernel)."""
+    jax, jnp = _jax()
+
+    def step(s, ins):
+        qt, kt, vt, bt = ins
+        btexp = bt[..., None, None]
+        k_s = jnp.einsum("bhd,bhde->bhe", kt, s)
+        s_new = (
+            s
+            - btexp * jnp.einsum("bhd,bhe->bhde", kt, k_s)
+            + btexp * jnp.einsum("bhd,bhe->bhde", kt, vt)
+        )
+        o = jnp.einsum("bhd,bhde->bhe", qt, s_new)
+        return s_new, o
+
+    ins = (
+        jnp.swapaxes(q, 0, 1),
+        jnp.swapaxes(k, 0, 1),
+        jnp.swapaxes(v, 0, 1),
+        jnp.swapaxes(beta, 0, 1),
+    )
+    ns, out = jax.lax.scan(step, state, ins)
+    return jnp.swapaxes(out, 0, 1), ns
 
 
 def _unit(rng, shape):
@@ -354,6 +382,175 @@ def test_chunked_delta_rule_negative_beta_raises_kernel_error():
     beta[0, 0, 0] = -0.1
     with pytest.raises(kernels.KernelError):
         kernels.chunked_delta_rule(q, k, v, beta)
+
+
+# ---------------------------------------------------------------------------
+# chunked_delta_rule jax.custom_vjp / fused reverse-state through jax.grad
+# ---------------------------------------------------------------------------
+
+
+def test_chunked_delta_rule_is_registered_jax_custom_vjp():
+    """chunked_delta_rule must be jax.custom_vjp, not a wrapper around one."""
+    jax, jnp = _jax()
+
+    @jax.custom_vjp
+    def _probe(z):
+        return z
+
+    def _probe_fwd(z):
+        return z, None
+
+    def _probe_bwd(_res, g):
+        return (g,)
+
+    _probe.defvjp(_probe_fwd, _probe_bwd)
+
+    assert type(kernels.chunked_delta_rule) is type(_probe), (
+        "chunked_delta_rule must be decorated with jax.custom_vjp so jax.grad "
+        "is the fused reverse-state kernel; a plain function wrapping an inner "
+        "custom_vjp is not enough"
+    )
+    assert hasattr(kernels.chunked_delta_rule, "defvjp")
+
+    rng = np.random.default_rng(60)
+    q, k, v, beta = _delta_inputs(rng, batch=1, seq=3, heads=1, dim=2)
+    state = rng.standard_normal((1, 1, 2, 2)).astype(np.float32) * 0.05
+    qj, kj, vj, bj, sj = (jnp.asarray(x) for x in (q, k, v, beta, state))
+    gq = jax.grad(lambda qq: jnp.sum(kernels.chunked_delta_rule(qq, kj, vj, bj, sj)[0]))(qj)
+    assert gq.shape == q.shape
+    assert gq.dtype == jnp.float32
+    assert np.isfinite(_np(gq)).all()
+
+
+def test_chunked_delta_rule_jax_grad_matches_chunked_delta_rule_bwd():
+    """jax.grad / jax.vjp through the outputs equals chunked_delta_rule_bwd.
+
+    Covers q, k, v, beta, and state. config is not differentiated.
+    """
+    jax, jnp = _jax()
+    rng = np.random.default_rng(61)
+    q, k, v, beta = _delta_inputs(rng, batch=2, seq=5, heads=2, dim=3)
+    state = rng.standard_normal((2, 2, 3, 3)).astype(np.float32) * 0.05
+    cfg = kernels.LinearAttnConfig(chunk=2)
+    (y_fwd, ns_fwd), residual = kernels.chunked_delta_rule_fwd(q, k, v, beta, state, cfg)
+    go = rng.standard_normal(_np(y_fwd).shape).astype(np.float32)
+    gs = rng.standard_normal(_np(ns_fwd).shape).astype(np.float32) * 0.05
+    bwd = kernels.chunked_delta_rule_bwd(residual, (go, gs))
+    gq_bwd, gk_bwd, gv_bwd, gbeta_bwd, gst_bwd = bwd
+
+    qj, kj, vj, bj, sj = (jnp.asarray(x) for x in (q, k, v, beta, state))
+    goj, gsj = jnp.asarray(go), jnp.asarray(gs)
+
+    def _apply(qq, kk, vv, bb, st):
+        return kernels.chunked_delta_rule(qq, kk, vv, bb, st, config=cfg)
+
+    (y_vjp, ns_vjp), vjp_fn = jax.vjp(_apply, qj, kj, vj, bj, sj)
+    gq_vjp, gk_vjp, gv_vjp, gbeta_vjp, gst_vjp = vjp_fn((goj, gsj))
+    np.testing.assert_allclose(_np(y_vjp), _np(y_fwd), **TOL)
+    np.testing.assert_allclose(_np(ns_vjp), _np(ns_fwd), **TOL)
+    np.testing.assert_allclose(_np(gq_vjp), _np(gq_bwd), **TOL)
+    np.testing.assert_allclose(_np(gk_vjp), _np(gk_bwd), **TOL)
+    np.testing.assert_allclose(_np(gv_vjp), _np(gv_bwd), **TOL)
+    np.testing.assert_allclose(_np(gbeta_vjp), _np(gbeta_bwd), **TOL)
+    np.testing.assert_allclose(_np(gst_vjp), _np(gst_bwd), **TOL)
+    assert gq_vjp.shape == q.shape and gk_vjp.shape == k.shape
+    assert gv_vjp.shape == v.shape and gbeta_vjp.shape == beta.shape
+    assert gst_vjp.shape == state.shape
+    assert gq_vjp.dtype == jnp.float32
+    assert gk_vjp.dtype == jnp.float32
+    assert gv_vjp.dtype == jnp.float32
+    assert gbeta_vjp.dtype == jnp.float32
+    assert gst_vjp.dtype == jnp.float32
+
+    def _sum_both(qq, kk, vv, bb, st):
+        out, ns = kernels.chunked_delta_rule(qq, kk, vv, bb, st, config=cfg)
+        return jnp.sum(out) + jnp.sum(ns)
+
+    ones_o = np.ones_like(_np(y_fwd), dtype=np.float32)
+    ones_s = np.ones_like(_np(ns_fwd), dtype=np.float32)
+    ones_bwd = kernels.chunked_delta_rule_bwd(residual, (ones_o, ones_s))
+    grads = jax.grad(_sum_both, argnums=(0, 1, 2, 3, 4))(qj, kj, vj, bj, sj)
+    for got, exp in zip(grads, ones_bwd):
+        np.testing.assert_allclose(_np(got), _np(exp), **TOL)
+
+    for i, expected in enumerate(ones_bwd):
+        gi = jax.grad(_sum_both, argnums=i)(qj, kj, vj, bj, sj)
+        np.testing.assert_allclose(_np(gi), _np(expected), **TOL)
+
+    def _apply_none_state(qq, kk, vv, bb):
+        return kernels.chunked_delta_rule(qq, kk, vv, bb, state=None, config=cfg)
+
+    (y_ns, ns_ns), residual_ns = kernels.chunked_delta_rule_fwd(q, k, v, beta, None, cfg)
+    bwd_ns = kernels.chunked_delta_rule_bwd(residual_ns, (go, gs))
+    (y_none, ns_none), vjp_none = jax.vjp(_apply_none_state, qj, kj, vj, bj)
+    gq_n, gk_n, gv_n, gbeta_n = vjp_none((goj, gsj))
+    np.testing.assert_allclose(_np(y_none), _np(y_ns), **TOL)
+    np.testing.assert_allclose(_np(ns_none), _np(ns_ns), **TOL)
+    np.testing.assert_allclose(_np(gq_n), _np(bwd_ns[0]), **TOL)
+    np.testing.assert_allclose(_np(gk_n), _np(bwd_ns[1]), **TOL)
+    np.testing.assert_allclose(_np(gv_n), _np(bwd_ns[2]), **TOL)
+    np.testing.assert_allclose(_np(gbeta_n), _np(bwd_ns[3]), **TOL)
+
+
+def test_chunked_delta_rule_jax_grad_matches_fused_reverse_state_vjp():
+    """Backward is the fused reverse-state kernel, not default loop autodiff.
+
+    jax.grad(chunked_delta_rule) must match ``gated_delta_rule_vjp`` and
+    ``chunked_delta_rule_bwd``. A naive ``jax.lax.scan`` autodiff of the same
+    recurrence is compared; if it disagrees with the reverse-state kernel,
+    production must follow the reverse-state kernel.
+    """
+    jax, jnp = _jax()
+    rng = np.random.default_rng(62)
+    q, k, v, beta = _delta_inputs(rng, batch=2, seq=4, heads=2, dim=3)
+    state = rng.standard_normal((2, 2, 3, 3)).astype(np.float32) * 0.05
+    cfg = kernels.LinearAttnConfig(chunk=3)
+    (y_fwd, ns_fwd), residual = kernels.chunked_delta_rule_fwd(q, k, v, beta, state, cfg)
+    go = rng.standard_normal(_np(y_fwd).shape).astype(np.float32)
+    gs = rng.standard_normal(_np(ns_fwd).shape).astype(np.float32) * 0.05
+    bwd = kernels.chunked_delta_rule_bwd(residual, (go, gs))
+    ref_grads = ref.gated_delta_rule_vjp(q, k, v, beta, go, gs, state)
+
+    qj, kj, vj, bj, sj = (jnp.asarray(x) for x in (q, k, v, beta, state))
+    goj, gsj = jnp.asarray(go), jnp.asarray(gs)
+
+    def _apply(qq, kk, vv, bb, st):
+        return kernels.chunked_delta_rule(qq, kk, vv, bb, st, config=cfg)
+
+    _, vjp_fn = jax.vjp(_apply, qj, kj, vj, bj, sj)
+    prod_grads = vjp_fn((goj, gsj))
+    for got, exp_bwd, exp_ref in zip(prod_grads, bwd, ref_grads):
+        np.testing.assert_allclose(_np(got), _np(exp_bwd), **TOL)
+        np.testing.assert_allclose(_np(got), exp_ref, **TOL)
+
+    _, naive_vjp = jax.vjp(_naive_gated_delta_scan, qj, kj, vj, bj, sj)
+    naive_grads = naive_vjp((goj, gsj))
+    naive_agrees = all(
+        np.allclose(_np(n), r, **TOL) for n, r in zip(naive_grads, ref_grads)
+    )
+    if not naive_agrees:
+        disagreed = [
+            not np.allclose(_np(p), _np(n), **TOL) for p, n in zip(prod_grads, naive_grads)
+        ]
+        assert any(disagreed), (
+            "naive jax.lax.scan autodiff disagrees with the fused reverse-state "
+            "VJP; jax.grad(chunked_delta_rule) must follow the fused kernel"
+        )
+
+
+def test_chunked_delta_rule_jax_array_bad_shapes_raise_kernel_error():
+    """KernelError on bad shapes still holds when calling the public name with jax arrays."""
+    _, jnp = _jax()
+    rng = np.random.default_rng(63)
+    q, k, v, beta = _delta_inputs(rng, batch=1, seq=3, heads=1, dim=4)
+    qj, kj, vj, bj = (jnp.asarray(x) for x in (q, k, v, beta))
+    with pytest.raises(kernels.KernelError):
+        kernels.chunked_delta_rule(qj[:, :, :, :3], kj, vj, bj)
+    with pytest.raises(kernels.KernelError):
+        kernels.chunked_delta_rule(qj, kj, vj, bj[:, :2])
+    bad_state = jnp.asarray(np.zeros((1, 1, 3, 3), dtype=np.float32))
+    with pytest.raises(kernels.KernelError):
+        kernels.chunked_delta_rule(qj, kj, vj, bj, state=bad_state)
 
 
 # ---------------------------------------------------------------------------
@@ -862,6 +1059,38 @@ def test_v1_gpu_chunked_delta_rule_matches_reference():
     exp_out, exp_st = ref.gated_delta_rule(q, k, v, beta)
     np.testing.assert_allclose(_np(out), exp_out, **TOL)
     np.testing.assert_allclose(_np(state), exp_st, **TOL)
+
+
+@pytest.mark.gpu
+def test_v1_gpu_chunked_delta_rule_jax_grad_matches_bwd():
+    """V1: GPU jax.grad(chunked_delta_rule) matches reverse-state VJP / bwd."""
+    jax = _require_gpu()
+    jnp = jax.numpy
+    rng = np.random.default_rng(64)
+    q, k, v, beta = _delta_inputs(rng, batch=2, seq=8, heads=2, dim=4)
+    state = rng.standard_normal((2, 2, 4, 4)).astype(np.float32) * 0.05
+    cfg = kernels.LinearAttnConfig(chunk=64)
+    (y_fwd, ns_fwd), residual = kernels.chunked_delta_rule_fwd(q, k, v, beta, state, cfg)
+    go = rng.standard_normal(_np(y_fwd).shape).astype(np.float32)
+    gs = rng.standard_normal(_np(ns_fwd).shape).astype(np.float32) * 0.05
+    bwd = kernels.chunked_delta_rule_bwd(residual, (go, gs))
+    ref_grads = ref.gated_delta_rule_vjp(q, k, v, beta, go, gs, state)
+
+    def _apply(qq, kk, vv, bb, st):
+        return kernels.chunked_delta_rule(qq, kk, vv, bb, st, config=cfg)
+
+    _, vjp_fn = jax.vjp(
+        _apply,
+        jnp.asarray(q),
+        jnp.asarray(k),
+        jnp.asarray(v),
+        jnp.asarray(beta),
+        jnp.asarray(state),
+    )
+    prod_grads = vjp_fn((jnp.asarray(go), jnp.asarray(gs)))
+    for got, exp_bwd, exp_ref in zip(prod_grads, bwd, ref_grads):
+        np.testing.assert_allclose(_np(got), _np(exp_bwd), **TOL)
+        np.testing.assert_allclose(_np(got), exp_ref, **TOL)
 
 
 @pytest.mark.gpu
