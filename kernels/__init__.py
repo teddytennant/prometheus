@@ -49,7 +49,7 @@ reference the oracle writes; the GPU path is the V1 / V3 gate.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
 from typing import Any
@@ -164,6 +164,8 @@ class _DispatchResidual:
     token_index: Array  # (n_experts, max_per_expert), -1 padded
     k_index: Array
     max_per_expert: int
+    # Python-int meta so ep_dispatch_bwd can size grad_tokens under jit.
+    n_tokens: int | None = None
 
 
 jax.tree_util.register_dataclass(
@@ -179,7 +181,7 @@ jax.tree_util.register_dataclass(
 jax.tree_util.register_dataclass(
     _DispatchResidual,
     data_fields=("token_index", "k_index"),
-    meta_fields=("max_per_expert",),
+    meta_fields=("max_per_expert", "n_tokens"),
 )
 jax.tree_util.register_dataclass(
     _DeltaResidual,
@@ -1267,9 +1269,7 @@ def _ep_combine_bwd(res: tuple[jax.Array, ...], g: jax.Array):
 ep_combine.defvjp(_ep_combine_fwd, _ep_combine_bwd)
 
 
-def ep_dispatch_fwd(
-    tokens: Array, meta: DispatchMeta
-) -> tuple[Array, _DispatchResidual]:
+def ep_dispatch_fwd(tokens: Array, meta: DispatchMeta) -> tuple[Array, _DispatchResidual]:
     """Custom VJP forward. Residual is a pytree `_DispatchResidual`.
 
     `jax.jit(ep_dispatch_fwd)(tokens, meta)` must match eager at 1e-5 and
@@ -1277,7 +1277,8 @@ def ep_dispatch_fwd(
     Traced arrays must not be converted with `numpy.asarray`.
     Public `ep_dispatch` custom_vjp stays.
     """
-    raise NotImplementedError("A3-ep-fwd-jit")
+    (dispatched, residual), (_, n_tokens) = _ep_dispatch_fwd(tokens, meta)
+    return dispatched, replace(residual, n_tokens=int(n_tokens))
 
 
 def ep_dispatch_bwd(residual: _DispatchResidual, g: Array) -> Array:
@@ -1287,7 +1288,11 @@ def ep_dispatch_bwd(residual: _DispatchResidual, g: Array) -> Array:
     `residual` is the pytree `_DispatchResidual` from `ep_dispatch_fwd`.
     Traced arrays must not be converted with `numpy.asarray`.
     """
-    raise NotImplementedError("A3-ep-fwd-jit")
+    n_tokens = residual.n_tokens
+    if n_tokens is None:
+        raise KernelError("ep_dispatch_bwd residual missing n_tokens")
+    grad_tokens, _meta_grad = _ep_dispatch_bwd((residual.token_index, int(n_tokens)), (g, None))
+    return grad_tokens
 
 
 def ep_combine_fwd(
@@ -1300,7 +1305,8 @@ def ep_combine_fwd(
     dataclass. Traced arrays must not be converted with `numpy.asarray`.
     Public `ep_combine` custom_vjp stays.
     """
-    raise NotImplementedError("A3-ep-fwd-jit")
+    combined, bwd_residual = _ep_combine_fwd(expert_out, meta, residual)
+    return combined, bwd_residual
 
 
 def ep_combine_bwd(residual: Any, g: Array) -> Array:
@@ -1310,4 +1316,5 @@ def ep_combine_bwd(residual: Any, g: Array) -> Array:
     `residual` is the pytree from `ep_combine_fwd`. Traced arrays must
     not be converted with `numpy.asarray`.
     """
-    raise NotImplementedError("A3-ep-fwd-jit")
+    grad_expert_out, _meta_grad, _res_grad = _ep_combine_bwd(residual, g)
+    return grad_expert_out
