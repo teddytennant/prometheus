@@ -31,7 +31,19 @@ two pytree `Fp8Meta` values. `jax.jit(fp8_linear_fwd, static_argnames=('block',)
 must match eager at 1e-5 and return that pytree residual.
 `jax.jit(fp8_linear_bwd)(residual, g)` must match eager at 1e-5. `block` is a
 Python int (static). Traced arrays must not be converted with `numpy.asarray`.
-Public `fp8_linear` custom_vjp stays. The CPU tests compare against a slow
+Public `fp8_linear` custom_vjp stays.
+
+The explicit EP VJP pair is the same analog. Residual for dispatch is a
+pytree `_DispatchResidual` (`token_index` and `k_index` data; `max_per_expert`
+meta, Python int). `jax.jit(ep_dispatch_fwd)(tokens, meta)` must match eager
+at 1e-5 and return that pytree residual.
+`jax.jit(ep_dispatch_bwd)(residual, g)` must match eager at 1e-5.
+`jax.jit(ep_combine_fwd)(expert_out, meta, residual)` must match eager at 1e-5
+and return a pytree residual.
+`jax.jit(ep_combine_bwd)(residual, g)` must match eager at 1e-5.
+DispatchMeta is a registered dataclass (static meta fields). Traced arrays
+must not be converted with `numpy.asarray`. Public `ep_dispatch` /
+`ep_combine` custom_vjp stay. The CPU tests compare against a slow
 reference the oracle writes; the GPU path is the V1 / V3 gate.
 """
 
@@ -1253,3 +1265,49 @@ def _ep_combine_bwd(res: tuple[jax.Array, ...], g: jax.Array):
 
 
 ep_combine.defvjp(_ep_combine_fwd, _ep_combine_bwd)
+
+
+def ep_dispatch_fwd(
+    tokens: Array, meta: DispatchMeta
+) -> tuple[Array, _DispatchResidual]:
+    """Custom VJP forward. Residual is a pytree `_DispatchResidual`.
+
+    `jax.jit(ep_dispatch_fwd)(tokens, meta)` must match eager at 1e-5 and
+    return a pytree residual. DispatchMeta is a registered dataclass.
+    Traced arrays must not be converted with `numpy.asarray`.
+    Public `ep_dispatch` custom_vjp stays.
+    """
+    raise NotImplementedError("A3-ep-fwd-jit")
+
+
+def ep_dispatch_bwd(residual: _DispatchResidual, g: Array) -> Array:
+    """Returns grad_tokens. residual is not differentiated.
+
+    `jax.jit(ep_dispatch_bwd)(residual, g)` must match eager at 1e-5.
+    `residual` is the pytree `_DispatchResidual` from `ep_dispatch_fwd`.
+    Traced arrays must not be converted with `numpy.asarray`.
+    """
+    raise NotImplementedError("A3-ep-fwd-jit")
+
+
+def ep_combine_fwd(
+    expert_out: Array, meta: DispatchMeta, residual: _DispatchResidual
+) -> tuple[Array, Any]:
+    """Custom VJP forward. Residual is a pytree for `ep_combine_bwd`.
+
+    `jax.jit(ep_combine_fwd)(expert_out, meta, residual)` must match eager
+    at 1e-5 and return a pytree residual. DispatchMeta is a registered
+    dataclass. Traced arrays must not be converted with `numpy.asarray`.
+    Public `ep_combine` custom_vjp stays.
+    """
+    raise NotImplementedError("A3-ep-fwd-jit")
+
+
+def ep_combine_bwd(residual: Any, g: Array) -> Array:
+    """Returns grad_expert_out. residual is not differentiated.
+
+    `jax.jit(ep_combine_bwd)(residual, g)` must match eager at 1e-5.
+    `residual` is the pytree from `ep_combine_fwd`. Traced arrays must
+    not be converted with `numpy.asarray`.
+    """
+    raise NotImplementedError("A3-ep-fwd-jit")
