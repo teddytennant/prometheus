@@ -28,6 +28,18 @@ Traced arrays must not be converted with ``numpy.asarray`` or Python
 and losses must stay in JAX: no Python ``float()`` on the loss leaves,
 no ``numpy.asarray`` on QK-clip / router-bias updates, no Python
 branch on a traced ``grad_norm``.
+
+``Batch``, ``LossBreakdown``, and ``StepOutput`` must be jax.tree_util
+registered dataclasses so ``jax.jit`` can take a ``Batch`` and return a
+``StepOutput`` without unpacking fields to tuples. Analog of ``Fp8Meta``
+/ ``NoisyLatent`` / ``DispatchMeta``. ``Batch`` fields ``tokens``,
+``loss_mask``, ``positions`` are data (arrays). ``LossBreakdown`` fields
+``ce``, ``mtp``, ``z``, ``total`` are data (arrays). ``StepOutput``
+fields ``params``, ``opt_state``, ``loss``, ``grad_norm`` are data
+(dicts of arrays, nested ``LossBreakdown``, array). ``lr`` (Python
+float) and ``step`` (Python int) are meta. Do not register
+``TrainConfig``. Do not jit ``apply_precision`` / ``init_opt_state`` /
+``wsd_lr`` as entry points. Analog math unchanged.
 """
 
 from __future__ import annotations
@@ -171,7 +183,12 @@ def tiny_train_config() -> TrainConfig:
 
 @dataclass(frozen=True)
 class Batch:
-    """One packed training batch. Tokens are int32; loss_mask is 0/1 float."""
+    """One packed training batch. Tokens are int32; loss_mask is 0/1 float.
+
+    Must be a jax.tree_util registered dataclass so jax.jit can take it.
+    tokens, loss_mask, positions are data fields (arrays). No meta fields.
+    Analog of Fp8Meta (arrays as data).
+    """
 
     tokens: Array
     loss_mask: Array
@@ -180,7 +197,12 @@ class Batch:
 
 @dataclass(frozen=True)
 class LossBreakdown:
-    """CE on the next token, MTP heads, router z-loss, and the weighted sum."""
+    """CE on the next token, MTP heads, router z-loss, and the weighted sum.
+
+    Must be a jax.tree_util registered dataclass so jax.jit(train_step) can
+    return it nested in StepOutput. ce, mtp, z, total are data fields
+    (arrays). No meta fields. Analog of NoisyLatent.
+    """
 
     ce: Array
     mtp: Array
@@ -190,7 +212,14 @@ class LossBreakdown:
 
 @dataclass(frozen=True)
 class StepOutput:
-    """One optimizer step. `params` are the new FP32 master weights."""
+    """One optimizer step. `params` are the new FP32 master weights.
+
+    Must be a jax.tree_util registered dataclass so jax.jit(train_step) can
+    return it without unpacking. params, opt_state, loss, grad_norm are data
+    fields (dicts of arrays, nested LossBreakdown, array). lr (Python float)
+    and step (Python int) are meta. Analog of DispatchMeta (arrays data,
+    Python scalars meta).
+    """
 
     params: dict[str, Any]
     opt_state: dict[str, Any]
@@ -198,6 +227,23 @@ class StepOutput:
     lr: float
     grad_norm: Array
     step: int
+
+
+jax.tree_util.register_dataclass(
+    Batch,
+    data_fields=("tokens", "loss_mask", "positions"),
+    meta_fields=(),
+)
+jax.tree_util.register_dataclass(
+    LossBreakdown,
+    data_fields=("ce", "mtp", "z", "total"),
+    meta_fields=(),
+)
+jax.tree_util.register_dataclass(
+    StepOutput,
+    data_fields=("params", "opt_state", "loss", "grad_norm"),
+    meta_fields=("lr", "step"),
+)
 
 
 def validate_train_config(config: TrainConfig) -> None:
@@ -683,7 +729,8 @@ def train_step(
 
     ``jax.jit(train_step)`` (with ``step``, ``model_config``, and
     ``train_config`` closed over or ``static_argnums``) must match the eager
-    call at 1e-5. Traced ``params`` / ``opt_state`` / batch arrays / grads
+    call at 1e-5 and return a pytree ``StepOutput`` (``Batch`` in, no field
+    unpack). Traced ``params`` / ``opt_state`` / batch arrays / grads
     must not be converted with ``numpy.asarray`` or Python ``float()``.
     Grad clip uses a finite ``jnp.where`` (no Python ``if`` on traced
     ``grad_norm``). ``LossBreakdown`` / ``StepOutput`` array fields stay
