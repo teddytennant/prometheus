@@ -30,6 +30,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import jax
+import jax.numpy as jnp
+
 
 class LossError(ValueError):
     """A group, ratio, routing table, or config violates a spec 9/4.4 invariant."""
@@ -166,6 +169,10 @@ def make_config(
     )
 
 
+def _is_jax(x: object) -> bool:
+    return isinstance(x, jax.core.Tracer) or isinstance(x, jax.Array)
+
+
 def mean_center(rewards: tuple[float, ...]) -> tuple[float, ...]:
     """Dr. GRPO advantages: subtract the group mean. No std divide.
 
@@ -175,6 +182,11 @@ def mean_center(rewards: tuple[float, ...]) -> tuple[float, ...]:
     Must not convert traced ``rewards`` with ``numpy.asarray`` or Python
     ``float()``. Tuple length is static.
     """
+    if _is_jax(rewards):
+        if len(rewards) == 0:
+            raise LossError("empty rewards")
+        arr = jnp.asarray(rewards)
+        return arr - jnp.mean(arr)
     if len(rewards) == 0:
         raise LossError("empty rewards")
     total = 0.0
@@ -229,6 +241,14 @@ def sequence_ratio(
     ``float()``, and must not call ``math.exp`` / ``math.isfinite`` on a
     tracer. Tuple length is static.
     """
+    if _is_jax(logp_new) or _is_jax(logp_old):
+        if len(logp_new) == 0 or len(logp_old) == 0:
+            raise LossError("empty log-probs")
+        if len(logp_new) != len(logp_old):
+            raise LossError("length mismatch")
+        new = jnp.asarray(logp_new)
+        old = jnp.asarray(logp_old)
+        return jnp.exp(jnp.sum(new - old))
     if len(logp_new) == 0 or len(logp_old) == 0:
         raise LossError("empty log-probs")
     if len(logp_new) != len(logp_old):
@@ -251,6 +271,10 @@ def clip_higher(ratio: float, eps_low: float, eps_high: float) -> float:
     result at 1e-5. Must not convert a traced ``ratio`` with
     ``numpy.asarray`` or Python ``float()``.
     """
+    if _is_jax(ratio):
+        if eps_low < 0.0 or eps_high < 0.0:
+            raise LossError("epsilon must not be negative")
+        return jnp.clip(ratio, 1.0 - eps_low, 1.0 + eps_high)
     if not math.isfinite(ratio):
         raise LossError("non-finite ratio")
     if eps_low < 0.0 or eps_high < 0.0:
@@ -294,6 +318,10 @@ def truncated_is(
         raise LossError("negative staleness k")
     if tis_clip < 1.0:
         raise LossError("tis_clip must be >= 1")
+    if _is_jax(logp_trainer) or _is_jax(logp_rollout):
+        if k == 0:
+            return jnp.asarray(1.0, dtype=jnp.asarray(logp_trainer).dtype)
+        return jnp.minimum(sequence_ratio(logp_trainer, logp_rollout), tis_clip)
     if k == 0:
         return 1.0
     ratio = sequence_ratio(logp_trainer, logp_rollout)
@@ -329,6 +357,19 @@ def gaussian_log_density(
     ``numpy.asarray`` or Python ``float()``, and must not call
     ``math.log`` / ``math.isfinite`` on a tracer. Tuple length is static.
     """
+    if _is_jax(z) or _is_jax(mu) or _is_jax(sigma):
+        if len(z) == 0 or len(mu) == 0 or len(sigma) == 0:
+            raise LossError("empty gaussian inputs")
+        if len(z) != len(mu) or len(z) != len(sigma):
+            raise LossError("length mismatch")
+        z_a = jnp.asarray(z)
+        mu_a = jnp.asarray(mu)
+        sigma_a = jnp.asarray(sigma)
+        log_two_pi = jnp.log(2.0 * jnp.pi)
+        total = jnp.sum(
+            ((z_a - mu_a) / sigma_a) ** 2 + 2.0 * jnp.log(sigma_a) + log_two_pi
+        )
+        return -0.5 * total
     if len(z) == 0 or len(mu) == 0 or len(sigma) == 0:
         raise LossError("empty gaussian inputs")
     if len(z) != len(mu) or len(z) != len(sigma):
@@ -359,6 +400,12 @@ def latent_ratio(
     both sides is a Python (static) length check, not a traced branch.
     Tuple length is static.
     """
+    if _is_jax(logp_new) or _is_jax(logp_old):
+        if len(logp_new) == 0 and len(logp_old) == 0:
+            return jnp.asarray(1.0, dtype=jnp.asarray(logp_new).dtype)
+        if len(logp_new) == 0 or len(logp_old) == 0:
+            raise LossError("one latent side empty")
+        return sequence_ratio(logp_new, logp_old)
     if len(logp_new) == 0 and len(logp_old) == 0:
         return 1.0
     if len(logp_new) == 0 or len(logp_old) == 0:
