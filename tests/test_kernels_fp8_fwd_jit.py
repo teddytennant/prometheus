@@ -326,13 +326,21 @@ def test_fp8_linear_bwd_jit_ste_frozen_scales() -> None:
     y_e, residual = kernels.fp8_linear_fwd(x, w, block)
     g = rng.standard_normal(_np(y_e).shape).astype(np.float32)
     x_meta, w_meta = residual
+    # STE: gx = g @ w_hat, gw = g.T @ x_hat. Doubling only x scale leaves gx
+    # equal to live fp8_linear_vjp (maxdiff 0.0); both scales must move.
     frozen_x = kernels.Fp8Meta(
         q=x_meta.q,
         scale=_np(x_meta.scale) * np.float32(2.0),
         block=int(x_meta.block),
         dtype=x_meta.dtype,
     )
-    frozen = (frozen_x, w_meta)
+    frozen_w = kernels.Fp8Meta(
+        q=w_meta.q,
+        scale=_np(w_meta.scale) * np.float32(2.0),
+        block=int(w_meta.block),
+        dtype=w_meta.dtype,
+    )
+    frozen = (frozen_x, frozen_w)
     gx_j, gw_j = _jbwd()(frozen, _j32(g))
     gx_e, gw_e = kernels.fp8_linear_bwd(frozen, g)
     gx_r, gw_r = ref.fp8_linear_bwd(frozen, g)
