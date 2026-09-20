@@ -24,7 +24,14 @@ return and take it. `q` and `scale` are data fields (arrays). `block` and
 must match eager at 1e-5 and return a pytree residual.
 `jax.jit(chunked_delta_rule_bwd)(residual, grads)` must match eager at 1e-5.
 `config` is a host `LinearAttnConfig` (static). Traced arrays must not be
-converted with `numpy.asarray`. The CPU tests compare against a slow
+converted with `numpy.asarray`.
+
+The explicit FP8 VJP pair is the same analog: residual is `(x_meta, w_meta)`,
+two pytree `Fp8Meta` values. `jax.jit(fp8_linear_fwd, static_argnames=('block',))`
+must match eager at 1e-5 and return that pytree residual.
+`jax.jit(fp8_linear_bwd)(residual, g)` must match eager at 1e-5. `block` is a
+Python int (static). Traced arrays must not be converted with `numpy.asarray`.
+Public `fp8_linear` custom_vjp stays. The CPU tests compare against a slow
 reference the oracle writes; the GPU path is the V1 / V3 gate.
 """
 
@@ -852,6 +859,12 @@ fp8_linear.defvjp(_fp8_linear_fwd, _fp8_linear_bwd)
 
 
 def fp8_linear_fwd(x: Array, weight: Array, block: int) -> tuple[Array, Any]:
+    """Custom VJP forward. Residual is `(x_meta, w_meta)`, two pytree `Fp8Meta`.
+
+    `jax.jit(fp8_linear_fwd, static_argnames=('block',))` must match eager at
+    1e-5 and return a pytree residual. `block` is a Python int (static).
+    Traced arrays must not be converted with `numpy.asarray`.
+    """
     if block < 1:
         raise KernelError(f"fp8 block must be >= 1, got {block}")
     jax_out = _is_jax(x, weight)
@@ -875,7 +888,12 @@ def fp8_linear_fwd(x: Array, weight: Array, block: int) -> tuple[Array, Any]:
 
 
 def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
-    """Returns (grad_x, grad_weight). Scales are not differentiated."""
+    """Returns (grad_x, grad_weight). Scales are not differentiated (STE).
+
+    `jax.jit(fp8_linear_bwd)(residual, g)` must match eager at 1e-5.
+    `residual` is the pytree pair from `fp8_linear_fwd`. Traced arrays must
+    not be converted with `numpy.asarray`.
+    """
     x_meta, w_meta = residual
     x_hat = fp8_dequantize(x_meta)
     w_hat = fp8_dequantize(w_meta)
