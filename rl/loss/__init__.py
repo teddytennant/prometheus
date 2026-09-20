@@ -7,7 +7,20 @@ ratio, and a routing table the trainer can force. Log-probs are inputs;
 this module does not run the model, import ``sglang_fork``, import
 ``model``, or talk to a coordinator. Weight sync, parity halt, and the
 65/35 rack split are the rest of I2 (coordinator), not this package.
-No reference-model KL (spec 9.1 default). JAX is a later GPU path.
+No reference-model KL (spec 9.1 default).
+
+``jax.jit`` of ``gaussian_log_density``, ``sequence_ratio``,
+``latent_ratio``, ``truncated_is``, ``clip_higher``, and ``mean_center``
+must match the eager call at 1e-5. Traced arrays must not be converted
+with ``numpy.asarray`` or Python ``float()`` / ``int()`` on values, and
+must not call ``math.log`` / ``math.exp`` / ``math.isfinite`` on a
+tracer. Python scalars (``k``, ``tis_clip``, ``eps_low``, ``eps_high``)
+stay host-side. Tuple length of log-probs, rewards, and Gaussian vectors
+is static (a pytree of scalars) or a 1-D array. Do not jit
+``gspo_dapo_loss`` as an entry point (``Group`` / ``Sample`` stay
+Python). Do not jit ``make_config``, ``drop_zero_advantage_groups``,
+``all_equal_reward``, ``staleness``, ``routing_table``, or
+``overlong_soft_penalty`` as entry points.
 
 Efficiency reward (9.3) stays in the rewards crate.
 """
@@ -157,6 +170,10 @@ def mean_center(rewards: tuple[float, ...]) -> tuple[float, ...]:
     """Dr. GRPO advantages: subtract the group mean. No std divide.
 
     Empty or a non-finite reward raises LossError.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``rewards`` with ``numpy.asarray`` or Python
+    ``float()``. Tuple length is static.
     """
     if len(rewards) == 0:
         raise LossError("empty rewards")
@@ -206,6 +223,11 @@ def sequence_ratio(
 
     No divide by length (Dr. GRPO). Length mismatch, empty sequences, or
     a non-finite log-prob raises LossError.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced log-probs with ``numpy.asarray`` or Python
+    ``float()``, and must not call ``math.exp`` / ``math.isfinite`` on a
+    tracer. Tuple length is static.
     """
     if len(logp_new) == 0 or len(logp_old) == 0:
         raise LossError("empty log-probs")
@@ -223,6 +245,11 @@ def clip_higher(ratio: float, eps_low: float, eps_high: float) -> float:
     """DAPO clip-higher: clip ``ratio`` to ``[1 - eps_low, 1 + eps_high]``.
 
     Non-finite ratio or negative epsilons raise LossError.
+
+    ``jax.jit`` of this function, with ``eps_low`` and ``eps_high`` Python
+    floats (closed over or ``static_argnums``), must match the eager
+    result at 1e-5. Must not convert a traced ``ratio`` with
+    ``numpy.asarray`` or Python ``float()``.
     """
     if not math.isfinite(ratio):
         raise LossError("non-finite ratio")
@@ -256,6 +283,12 @@ def truncated_is(
     ``k == 0`` returns 1.0 (on-policy; rollout log-probs unused).
     ``k > 0`` returns ``min(sequence_ratio(trainer, rollout), tis_clip)``.
     Negative ``k`` or ``tis_clip < 1`` raises LossError.
+
+    ``jax.jit`` of this function, with ``k`` a Python int and ``tis_clip``
+    a Python float (closed over or ``static_argnums``), must match the
+    eager result at 1e-5. Must not convert traced log-probs with
+    ``numpy.asarray`` or Python ``float()``. Do not Python-branch on a
+    traced ratio when applying the TIS clip.
     """
     if k < 0:
         raise LossError("negative staleness k")
@@ -290,6 +323,11 @@ def gaussian_log_density(
 
     ``log N(z; μ, σ) = -0.5 * Σ[((z-μ)/σ)^2 + 2 log σ + log(2π)]``.
     Length mismatch, empty, non-finite, or non-positive sigma raises LossError.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced ``z`` / ``mu`` / ``sigma`` with
+    ``numpy.asarray`` or Python ``float()``, and must not call
+    ``math.log`` / ``math.isfinite`` on a tracer. Tuple length is static.
     """
     if len(z) == 0 or len(mu) == 0 or len(sigma) == 0:
         raise LossError("empty gaussian inputs")
@@ -314,6 +352,12 @@ def latent_ratio(
 
     Empty on both sides is 1.0 (discrete-only). One empty and one not,
     length mismatch, or a non-finite log-prob raises LossError.
+
+    ``jax.jit`` of this function must match the eager result at 1e-5.
+    Must not convert traced log-probs with ``numpy.asarray`` or Python
+    ``float()``, and must not call ``math.exp`` on a tracer. Empty on
+    both sides is a Python (static) length check, not a traced branch.
+    Tuple length is static.
     """
     if len(logp_new) == 0 and len(logp_old) == 0:
         return 1.0
