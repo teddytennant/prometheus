@@ -867,7 +867,21 @@ def fp8_linear_fwd(x: Array, weight: Array, block: int) -> tuple[Array, Any]:
     """
     if block < 1:
         raise KernelError(f"fp8 block must be >= 1, got {block}")
-    jax_out = _is_jax(x, weight)
+    if _is_jax(x, weight) or _is_tracer(x, weight):
+        x_j = jnp.asarray(x, dtype=jnp.float32)
+        w_j = jnp.asarray(weight, dtype=jnp.float32)
+        if w_j.ndim != 2:
+            raise KernelError(f"weight must be 2-D (out, in), got {w_j.shape}")
+        if x_j.shape[-1] != w_j.shape[-1]:
+            raise KernelError(
+                f"contracting dim mismatch: x[..., {x_j.shape[-1]}] vs weight[..., {w_j.shape[-1]}]"
+            )
+        x_meta = fp8_quantize(x_j, block=block)
+        w_meta = fp8_quantize(w_j, block=block)
+        x_hat = fp8_dequantize(x_meta)
+        w_hat = fp8_dequantize(w_meta)
+        y = jnp.matmul(x_hat, jnp.swapaxes(w_hat, -1, -2)).astype(jnp.float32)
+        return y, (x_meta, w_meta)
     x_np = _f32(x)
     w_np = _f32(weight)
     if w_np.ndim != 2:
@@ -881,10 +895,7 @@ def fp8_linear_fwd(x: Array, weight: Array, block: int) -> tuple[Array, Any]:
     x_hat = fp8_dequantize(x_meta)
     w_hat = fp8_dequantize(w_meta)
     y = np.matmul(x_hat, np.swapaxes(w_hat, -1, -2)).astype(np.float32, copy=False)
-    residual = (x_meta, w_meta)
-    if jax_out:
-        return jnp.asarray(y), residual
-    return y, residual
+    return y, (x_meta, w_meta)
 
 
 def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
@@ -895,6 +906,12 @@ def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
     not be converted with `numpy.asarray`.
     """
     x_meta, w_meta = residual
+    if _is_jax(x_meta.q, x_meta.scale, w_meta.q, w_meta.scale, g) or _is_tracer(
+        x_meta.q, x_meta.scale, w_meta.q, w_meta.scale, g
+    ):
+        x_hat = fp8_dequantize(x_meta)
+        w_hat = fp8_dequantize(w_meta)
+        return _fp8_linear_ste_bwd_jax(x_hat, w_hat, g)
     x_hat = fp8_dequantize(x_meta)
     w_hat = fp8_dequantize(w_meta)
     x_hat = np.asarray(x_hat, dtype=np.float32)
@@ -906,8 +923,6 @@ def fp8_linear_bwd(residual: Any, g: Array) -> tuple[Array, Array]:
     x_f = x_hat.reshape(-1, in_f)
     grad_x = np.matmul(g_f, w_hat).reshape(x_hat.shape).astype(np.float32, copy=False)
     grad_w = np.matmul(g_f.T, x_f).astype(np.float32, copy=False)
-    if _is_jax(g):
-        return jnp.asarray(grad_x), jnp.asarray(grad_w)
     return grad_x, grad_w
 
 
