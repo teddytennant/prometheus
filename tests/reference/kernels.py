@@ -566,3 +566,99 @@ def ep_combine_vjp(expert_out: Array, meta: Any, residual: Any, g_combined: Arra
             k = int(k_index[e, slot])
             grad[e, slot] = probs[t, k] * g_combined[t]
     return grad.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Explicit EP VJP pair (A3-ep-fwd-jit). Slow Python loops, not production _ep_*.
+# ---------------------------------------------------------------------------
+
+
+class _CombineResidual:
+    """Bwd residual for ``ep_combine``: weighted gather needs probs and slot indices."""
+
+    def __init__(self, probs: Array, token_index: Array, k_index: Array) -> None:
+        self.probs = np.asarray(probs, dtype=np.float32)
+        self.token_index = np.asarray(token_index)
+        self.k_index = np.asarray(k_index)
+
+
+def ep_dispatch_fwd(tokens: Array, meta: Any) -> tuple[Array, _DispatchResidual]:
+    """Explicit VJP forward. Residual carries ``token_index`` / ``k_index`` / ``max_per_expert``."""
+    return ep_dispatch(tokens, meta)
+
+
+def ep_dispatch_bwd(residual: Any, g: Array) -> Array:
+    """Scatter-add ``g`` (dispatched cotangent) into ``grad_tokens`` via ``residual.token_index``.
+
+    Padded slots (``token_index < 0``) contribute nothing. ``n_tokens`` is
+    inferred as ``max(token_index) + 1`` because every token is routed.
+    """
+    g = _as_f32(g)
+    token_index = np.asarray(residual.token_index)
+    if g.ndim != 3:
+        raise ValueError(f"g must be (n_experts, max_per_expert, d_model), got {g.shape}")
+    n_experts, max_per = int(token_index.shape[0]), int(token_index.shape[1])
+    d_model = int(g.shape[-1])
+    occupied = token_index[token_index >= 0]
+    n_tokens = int(occupied.max()) + 1 if occupied.size else 0
+    grad = np.zeros((n_tokens, d_model), dtype=np.float32)
+    for e in range(n_experts):
+        for slot in range(max_per):
+            t = int(token_index[e, slot])
+            if t < 0:
+                continue
+            grad[t] += g[e, slot]
+    return grad.astype(np.float32)
+
+
+def ep_combine_fwd(
+    expert_out: Array, meta: Any, residual: Any
+) -> tuple[Array, _CombineResidual]:
+    """Explicit VJP forward. Residual is probs + slot indices for the weighted gather."""
+    combined = ep_combine(expert_out, meta, residual)
+    _, probs, _, _, _ = _meta_fields(meta)
+    bwd = _CombineResidual(
+        probs=probs,
+        token_index=np.asarray(residual.token_index),
+        k_index=np.asarray(residual.k_index),
+    )
+    return combined, bwd
+
+
+def _unpack_combine_residual(residual: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if isinstance(residual, (tuple, list)) and len(residual) >= 3:
+        probs, token_index, k_index = residual[0], residual[1], residual[2]
+        return _as_f32(probs), np.asarray(token_index), np.asarray(k_index)
+    if hasattr(residual, "probs") and hasattr(residual, "token_index"):
+        return (
+            _as_f32(residual.probs),
+            np.asarray(residual.token_index),
+            np.asarray(residual.k_index),
+        )
+    raise TypeError(
+        "combine residual must be a pytree with probs/token_index/k_index "
+        f"(attributes or a 3-tuple); got {type(residual)!r}"
+    )
+
+
+def ep_combine_bwd(residual: Any, g: Array) -> Array:
+    """Weighted gather: ``grad_expert_out[e,s] = probs[t,k] * g[t]`` for occupied slots.
+
+    Padded slots stay zero. Duck-types a 3-tuple or an object with
+    ``probs`` / ``token_index`` / ``k_index``.
+    """
+    g = _as_f32(g)
+    if g.ndim != 2:
+        raise ValueError(f"g must be (n_tokens, d_model), got {g.shape}")
+    probs, token_index, k_index = _unpack_combine_residual(residual)
+    n_experts, max_per = int(token_index.shape[0]), int(token_index.shape[1])
+    d_model = int(g.shape[-1])
+    grad = np.zeros((n_experts, max_per, d_model), dtype=np.float32)
+    for e in range(n_experts):
+        for slot in range(max_per):
+            t = int(token_index[e, slot])
+            if t < 0:
+                continue
+            k = int(k_index[e, slot])
+            grad[e, slot] = probs[t, k] * g[t]
+    return grad.astype(np.float32)
