@@ -51,6 +51,23 @@
 //!   `NotSpare`. Unknown: `ReplicaNotFound`.
 //! - `NotStepBoundary` is otherwise unused (iface gap: there is no mid-step
 //!   flag). Tests do not invent a clock/step API to trigger it.
+//! - Weight copy (CPU analog; real IB is S3), see `tests/heal_copy.rs`:
+//!   `heal_spare` records `source` (no bytes). `heal_source` returns it while
+//!   `Healing`; unknown `ReplicaNotFound`; otherwise `NoHealInProgress`.
+//!   `offer_weight_copy` order: spare exists, spare is `Healing`, source
+//!   liveness (same error `heal_spare` would return for that source), source
+//!   identity (`HealSourceMismatch { spare, expected, got }`), then shards.
+//!   Empty name `EmptyWeightShardName`; duplicate in the call or already
+//!   staged `DuplicateWeightShard`; first shard error wins; a failed call
+//!   stages nothing. Empty slice still runs spare/source checks, then stages
+//!   nothing. Bytes are copied. Offers append (offer order, then shard order)
+//!   and do not change state, `n_live`, accum, or the installed copy.
+//!   `rejoin` installs the staged vec (empty if none — `Ok`, not
+//!   `WeightCopyNotInstalled`) and records `step` without a clock compare.
+//!   `healed_weight_shards` before any completed heal is
+//!   `WeightCopyNotInstalled`; the vec is an owned clone. A later heal
+//!   replaces an install only at that later rejoin. Existing `NotSpare` /
+//!   source-not-live rules are unchanged.
 //!
 //! # SDC
 //! - Hashes are opaque case-sensitive strings, keyed by `(replica, shard,
