@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Any
 
 import kernels
+import parallel.schedule as _schedule
 
 Array = Any
 
@@ -196,3 +197,7 @@ def ep_dispatch(tokens: Array, meta: Any) -> tuple[Array, Any]:
 def ep_combine(expert_out: Array, meta: Any, residual: Any) -> Array:
     """Weighted sum back to token order. Wraps A3 ``kernels.ep_combine``."""
     return kernels.ep_combine(expert_out, meta, residual)
+
+
+circular_pipeline = _schedule.circular_pipeline
+pipeline_forward_schedule = _schedule.pipeline_forward_schedule
