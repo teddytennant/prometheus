@@ -13,10 +13,33 @@ is not this contract.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
+import jax.numpy as jnp
+import numpy as np
+
 Array = Any
+
+# Same sentinels as model._softmax / mla_attention. Float32 bits, not Python floats,
+# so the n==1 fold matches one-shot attention bitwise.
+_CAUSAL_MASK = np.float32(-1e9)
+_SOFTMAX_FLOOR = np.float32(1e-12)
+
+
+def _raise_mesh(message: str) -> None:
+    # Lazy: parallel/__init__.py imports this module before MeshError exists.
+    from parallel import MeshError
+
+    raise MeshError(message)
+
+
+def _static_int(value: int, name: str) -> int:
+    """Reject tracers and bools. n/rank/axis are static under jit."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        _raise_mesh(f"{name} must be a Python int")
+    return value
 
 
 def cp_split_seq(x: Array, n: int, rank: int, *, axis: int = 1) -> Array:
@@ -40,7 +63,30 @@ def cp_split_seq(x: Array, n: int, rank: int, *, axis: int = 1) -> Array:
     ``jax.jit``: traced values must not be turned into NumPy or Python
     scalars, and the jitted result must match eager bitwise.
     """
-    raise NotImplementedError("cp_split_seq")
+    n = _static_int(n, "n")
+    rank = _static_int(rank, "rank")
+    axis = _static_int(axis, "axis")
+    if n < 1:
+        _raise_mesh(f"n must be >= 1, got {n}")
+    if rank < 0 or rank >= n:
+        _raise_mesh(f"rank {rank} out of range for n={n}")
+    arr = jnp.asarray(x)
+    ax = axis + arr.ndim if axis < 0 else axis
+    if ax < 0 or ax >= arr.ndim:
+        _raise_mesh(f"axis {axis} out of range for ndim={arr.ndim}")
+    # Shape ints are static under jit; do not int() a traced value.
+    dim = arr.shape[ax]
+    if dim < n:
+        _raise_mesh(f"dimension {dim} is smaller than n={n}")
+    if dim % n != 0:
+        _raise_mesh(f"dimension {dim} is not divisible by n={n}")
+    if n == 1:
+        return arr
+    chunk = dim // n
+    start = rank * chunk
+    slices = [slice(None)] * arr.ndim
+    slices[ax] = slice(start, start + chunk)
+    return arr[tuple(slices)]
 
 
 def cp_ring_schedule(n: int, rank: int) -> tuple[int, ...]:
@@ -53,7 +99,86 @@ def cp_ring_schedule(n: int, rank: int) -> tuple[int, ...]:
     ``[0, n)``. Both arguments are Python ints. ``n == 1`` returns
     ``(0,)`` for rank 0.
     """
-    raise NotImplementedError("cp_ring_schedule")
+    n = _static_int(n, "n")
+    rank = _static_int(rank, "rank")
+    if n < 1:
+        _raise_mesh(f"n must be >= 1, got {n}")
+    if rank < 0 or rank >= n:
+        _raise_mesh(f"rank {rank} out of range for n={n}")
+    return tuple((rank - t) % n for t in range(n))
+
+
+def _as_f32(x: Array, name: str) -> Array:
+    arr = jnp.asarray(x)
+    if not jnp.issubdtype(arr.dtype, jnp.floating):
+        _raise_mesh(f"{name} must be a floating dtype, got {arr.dtype}")
+    return jnp.asarray(arr, dtype=jnp.float32)
+
+
+def _scale_factor(dim: int, scale: float | None) -> np.float32:
+    if scale is None:
+        return np.float32(1.0 / math.sqrt(dim))
+    return np.float32(scale)
+
+
+def _check_block(
+    block: Array,
+    name: str,
+    batch: int,
+    chunk: int,
+    heads: int,
+    feat: int | None,
+) -> Array:
+    arr = _as_f32(block, name)
+    if arr.ndim != 4:
+        _raise_mesh(f"{name} must be rank 4, got {arr.ndim}")
+    b, seq, h, d = arr.shape
+    if b != batch:
+        _raise_mesh(f"{name} batch {b} != {batch}")
+    if seq != chunk:
+        _raise_mesh(f"{name} sequence {seq} != chunk {chunk}")
+    if h != heads:
+        _raise_mesh(f"{name} heads {h} != {heads}")
+    if feat is not None and d != feat:
+        _raise_mesh(f"{name} feature dim {d} != {feat}")
+    return arr
+
+
+def _online_fold(
+    q: Array,
+    ks: tuple[Array, ...],
+    vs: tuple[Array, ...],
+    schedule: tuple[int, ...],
+    *,
+    rank: int,
+    causal: bool,
+    scale_f: np.float32,
+) -> Array:
+    """Online softmax in ring order. n==1 is one step of this fold."""
+    batch, chunk, heads, _dim = q.shape
+    dim_v = vs[0].shape[-1]
+    # (B, H, Q, ...) matches the score einsum. Init is the spec state:
+    # m=-inf, l=0, acc=0. The first step's alpha is exp(-inf)=0, so it is
+    # the one-shot softmax bitwise (no extra dense softmax).
+    m = jnp.full((batch, heads, chunk, 1), -jnp.inf, dtype=jnp.float32)
+    ell = jnp.zeros((batch, heads, chunk, 1), dtype=jnp.float32)
+    acc = jnp.zeros((batch, heads, chunk, dim_v), dtype=jnp.float32)
+    q_index = rank * chunk + jnp.arange(chunk)
+    mask_score = jnp.asarray(_CAUSAL_MASK)
+    for owner in schedule:
+        scores = jnp.einsum("bqhd,bkhd->bhqk", q, ks[owner]) * scale_f
+        if causal:
+            k_index = owner * chunk + jnp.arange(chunk)
+            scores = jnp.where(k_index[None, :] > q_index[:, None], mask_score, scores)
+        rowmax = jnp.max(scores, axis=-1, keepdims=True)
+        m_new = jnp.maximum(m, rowmax)
+        alpha = jnp.exp(m - m_new)
+        p = jnp.exp(scores - m_new)
+        ell = alpha * ell + jnp.sum(p, axis=-1, keepdims=True)
+        acc = alpha * acc + jnp.einsum("bhqk,bkhd->bhqd", p, vs[owner])
+        m = m_new
+    out = acc / jnp.maximum(ell, jnp.asarray(_SOFTMAX_FLOOR))
+    return jnp.transpose(out, (0, 2, 1, 3))
 
 
 def ring_attention_rank(
@@ -107,7 +232,38 @@ def ring_attention_rank(
     must not be turned into NumPy or Python scalars. The jitted result
     must match eager within ``1e-6`` max abs.
     """
-    raise NotImplementedError("ring_attention_rank")
+    rank = _static_int(rank, "rank")
+    if len(k_by_owner) != len(v_by_owner):
+        _raise_mesh("K and V owner sequences differ in length")
+    n = len(k_by_owner)
+    if n < 1 or rank < 0 or rank >= n:
+        _raise_mesh(f"rank {rank} out of range for n={n}")
+    q = _as_f32(q_local, "q")
+    if q.ndim != 4:
+        _raise_mesh(f"q must be rank 4, got {q.ndim}")
+    batch, chunk, heads, dim = q.shape
+    ks = tuple(
+        _check_block(block, f"k[{i}]", batch, chunk, heads, dim)
+        for i, block in enumerate(k_by_owner)
+    )
+    vs = tuple(
+        _check_block(block, f"v[{i}]", batch, chunk, heads, None)
+        for i, block in enumerate(v_by_owner)
+    )
+    dim_v = vs[0].shape[-1]
+    for i, block in enumerate(vs):
+        if block.shape[-1] != dim_v:
+            _raise_mesh(f"v[{i}] feature dim {block.shape[-1]} != {dim_v}")
+    scale_f = _scale_factor(dim, scale)
+    return _online_fold(
+        q,
+        ks,
+        vs,
+        cp_ring_schedule(n, rank),
+        rank=rank,
+        causal=causal,
+        scale_f=scale_f,
+    )
 
 
 def ring_attention(
@@ -136,4 +292,33 @@ def ring_attention(
     sequence lengths differ. ``n`` and ``causal`` are static under
     ``jax.jit``.
     """
-    raise NotImplementedError("ring_attention")
+    n = _static_int(n, "n")
+    if n < 1:
+        _raise_mesh(f"n must be >= 1, got {n}")
+    q_arr = jnp.asarray(q)
+    k_arr = jnp.asarray(k)
+    v_arr = jnp.asarray(v)
+    for name, arr in (("q", q_arr), ("k", k_arr), ("v", v_arr)):
+        if arr.ndim != 4:
+            _raise_mesh(f"{name} must be rank 4, got {arr.ndim}")
+    if q_arr.shape[1] != k_arr.shape[1]:
+        _raise_mesh(
+            f"q and k sequence lengths differ ({q_arr.shape[1]} vs {k_arr.shape[1]})"
+        )
+    q_parts = tuple(cp_split_seq(q_arr, n, r) for r in range(n))
+    k_parts = tuple(cp_split_seq(k_arr, n, r) for r in range(n))
+    v_parts = tuple(cp_split_seq(v_arr, n, r) for r in range(n))
+    outs = [
+        ring_attention_rank(
+            q_parts[r],
+            k_parts,
+            v_parts,
+            rank=r,
+            causal=causal,
+            scale=scale,
+        )
+        for r in range(n)
+    ]
+    if n == 1:
+        return outs[0]
+    return jnp.concatenate(outs, axis=1)
