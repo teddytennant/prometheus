@@ -34,7 +34,23 @@ def pipeline_forward_schedule(
     Raises ``parallel.MeshError`` if ``n_microbatches < 1`` or
     ``n_stages < 1``. Both arguments are Python ints.
     """
-    raise NotImplementedError("pipeline_forward_schedule")
+    # Local import: parallel/__init__.py imports this module before MeshError exists.
+    from parallel import MeshError
+
+    if n_microbatches < 1 or n_stages < 1:
+        raise MeshError(
+            "n_microbatches and n_stages must be >= 1, "
+            f"got n_microbatches={n_microbatches}, n_stages={n_stages}"
+        )
+    n_ticks = n_microbatches + n_stages - 1
+    ticks: list[tuple[int | None, ...]] = []
+    for t in range(n_ticks):
+        row: list[int | None] = []
+        for s in range(n_stages):
+            mb = t - s
+            row.append(mb if 0 <= mb < n_microbatches else None)
+        ticks.append(tuple(row))
+    return tuple(ticks)
 
 
 def circular_pipeline(
@@ -66,4 +82,22 @@ def circular_pipeline(
     Returns a tuple in microbatch order, not tick order. Elements are
     whatever the last stage returned (not re-wrapped).
     """
-    raise NotImplementedError("circular_pipeline")
+    from parallel import MeshError
+
+    activations = list(microbatches)
+    fns = tuple(stage_fns)
+    n_mb = len(activations)
+    n_st = len(fns)
+    if n_mb < 1 or n_st < 1:
+        raise MeshError(
+            "microbatches and stage_fns must be non-empty, "
+            f"got {n_mb} microbatches and {n_st} stages"
+        )
+    # Schedule order guarantees stage s sees the output of stage s-1 for that
+    # microbatch (or the microbatch itself when s == 0). One slot per microbatch.
+    for tick in pipeline_forward_schedule(n_mb, n_st):
+        for s, m in enumerate(tick):
+            if m is None:
+                continue
+            activations[m] = fns[s](activations[m])
+    return tuple(activations)
