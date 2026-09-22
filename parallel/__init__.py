@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Any
 
 import kernels
+import parallel.fsdp as _fsdp
 
 Array = Any
 
@@ -196,3 +197,9 @@ def ep_dispatch(tokens: Array, meta: Any) -> tuple[Array, Any]:
 def ep_combine(expert_out: Array, meta: Any, residual: Any) -> Array:
     """Weighted sum back to token order. Wraps A3 ``kernels.ep_combine``."""
     return kernels.ep_combine(expert_out, meta, residual)
+
+
+fsdp_shard = _fsdp.fsdp_shard
+fsdp_all_gather = _fsdp.fsdp_all_gather
+fsdp_reduce_scatter = _fsdp.fsdp_reduce_scatter
+zero3_views = _fsdp.zero3_views
