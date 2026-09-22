@@ -44,6 +44,7 @@ float) and ``step`` (Python int) are meta. Do not register
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -286,6 +287,23 @@ def _as_f32(x: Array) -> Array:
     return jnp.asarray(x, dtype=jnp.float32)
 
 
+def _positive_int(name: str, value: object) -> int:
+    """Host-side integer >= 1. Rejects bool (an ``int`` subclass) and floats."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be an integer >= 1")
+    return value
+
+
+def _finite_real(name: str, value: object) -> float:
+    """Host-side finite real. Not for traced arrays (no ``float()`` on tracers)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.floating)):
+        raise ValueError(f"{name} must be a finite real number")
+    out = float(value)
+    if not math.isfinite(out):
+        raise ValueError(f"{name} must be a finite real number")
+    return out
+
+
 def _logsumexp(x: Array, axis: int = -1) -> Array:
     x = _as_f32(x)
     m = jnp.max(x, axis=axis, keepdims=True)
@@ -354,6 +372,107 @@ def muon_update(
     rms = jnp.float32(np.sqrt(max(1.0, rows / max(cols, 1))))
     delta = jnp.float32(lr) * rms * orth
     return delta.astype(jnp.float32), new_m.astype(jnp.float32)
+
+
+# Moonlight adjusted-LR constant (arXiv 2502.16982 eq. 4). AdamW update RMS
+# they matched. Not Jordan's sqrt(max(1, rows/cols)) scale.
+MOONLIGHT_UPDATE_RMS = 0.2
+
+
+def muon_rms_scale(rows: int, cols: int) -> float:
+    """Shape scale that makes a Muon update RMS match AdamW (spec 5.4).
+
+    arXiv 2502.16982 Lemma 1: a full-rank orthogonal update of shape
+    ``(rows, cols)`` has RMS ``1/sqrt(max(rows, cols))``. Equation 4
+    multiplies that update by ``0.2 * sqrt(max(rows, cols))``, so the
+    RMS is ``MOONLIGHT_UPDATE_RMS`` for every shape. The same learning
+    rate then transfers across widths (μP-for-Muon). ``rows`` and
+    ``cols`` must be integers >= 1.
+
+    Does not change ``muon_update``. That function stays on Jordan's
+    ``sqrt(max(1, rows/cols))`` scale.
+    """
+    rows_i = _positive_int("rows", rows)
+    cols_i = _positive_int("cols", cols)
+    # Lemma 1: orthogonal RMS is 1/sqrt(max(A, B)); eq. 4 cancels that factor.
+    return MOONLIGHT_UPDATE_RMS * math.sqrt(max(rows_i, cols_i))
+
+
+def muon_transfer_step(
+    param: Array,
+    grad: Array,
+    momentum: Array,
+    *,
+    lr: float,
+    momentum_coeff: float,
+    ns_steps: int,
+    weight_decay: float,
+) -> tuple[Array, Array]:
+    """One Muon step with Moonlight weight decay and RMS match.
+
+    Same Nesterov momentum and Newton-Schulz as ``muon_update``. The
+    parameter update is equation 4 of arXiv 2502.16982:
+
+        new = param - lr * (muon_rms_scale(A, B) * O + weight_decay * param)
+
+    ``O`` is the orthogonalized Nesterov momentum. ``(A, B)`` is
+    ``param.shape``. Returns ``(new_param, new_momentum)``.
+
+    ``weight_decay`` must be >= 0. ``lr`` must be finite. ``param``,
+    ``grad``, and ``momentum`` must be 2D and the same shape.
+    ``jax.jit`` with the scalar kwargs closed over or static must match
+    the eager pair at 1e-5. Must not call ``numpy.asarray`` or Python
+    ``float()`` on traced arrays.
+
+    ``muon_update`` and ``train_step`` stay on the old scale. This
+    function is the transfer rule; it is not wired into the step yet.
+    """
+    lr_f = _finite_real("lr", lr)
+    wd_f = _finite_real("weight_decay", weight_decay)
+    if wd_f < 0.0:
+        raise ValueError("weight_decay must be >= 0")
+    odd = isinstance(ns_steps, int) and not isinstance(ns_steps, bool)
+    if not odd or ns_steps < 1 or ns_steps % 2 == 0:
+        raise ValueError("ns_steps must be a positive odd integer")
+
+    p = _as_f32(param)
+    g = _as_f32(grad)
+    m = _as_f32(momentum)
+    same = p.ndim == 2 and g.ndim == 2 and m.ndim == 2 and p.shape == g.shape == m.shape
+    if not same:
+        raise ValueError(
+            f"muon_transfer_step expects matching 2D matrices, got {p.shape}, {g.shape}, {m.shape}"
+        )
+    # Shape is static under jit; the scale is a host float, not a traced reduction.
+    rows, cols = int(p.shape[0]), int(p.shape[1])
+    if rows < 1 or cols < 1:
+        raise ValueError(f"muon_transfer_step expects a non-empty matrix, got {p.shape}")
+
+    beta = jnp.float32(momentum_coeff)
+    new_m = beta * m + g
+    nesterov = g + beta * new_m
+    orth = newton_schulz(nesterov, ns_steps)
+    scale = jnp.float32(muon_rms_scale(rows, cols))
+    # Eq. 4: decay is decoupled (applied to param, outside Newton-Schulz).
+    new_p = p - jnp.float32(lr_f) * (scale * orth + jnp.float32(wd_f) * p)
+    return new_p.astype(jnp.float32), new_m.astype(jnp.float32)
+
+
+def transferred_muon_lr(base_lr: float, *, width: int, base_width: int) -> float:
+    """Learning rate to reuse at ``width`` after tuning at ``base_width``.
+
+    Spec 5.4 μP-for-Muon, under the Moonlight RMS match: update RMS does
+    not depend on width, so the transferred rate is ``base_lr`` itself.
+    The shape scale lives in ``muon_rms_scale``, not here. ``width`` and
+    ``base_width`` must be integers >= 1. ``base_lr`` must be finite
+    and >= 0.
+    """
+    lr = _finite_real("base_lr", base_lr)
+    if lr < 0.0:
+        raise ValueError("base_lr must be finite and >= 0")
+    _positive_int("width", width)
+    _positive_int("base_width", base_width)
+    return lr
 
 
 def qk_clip(q: Array, k: Array, max_logit: float) -> tuple[Array, Array]:

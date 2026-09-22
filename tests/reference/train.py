@@ -30,6 +30,23 @@ Muon Nesterov then Newton–Schulz::
     Δ = lr * √max(1, rows/cols) * NS(g_nesterov)
     # caller does param ← param − Δ
 
+μP-for-Muon (Moonlight arXiv 2502.16982 Lemma 1, equations 4 and 7).
+This does not replace the Jordan scale inside ``muon_update``.
+
+Lemma 1: a full-rank semi-orthogonal matrix of shape (A, B) has
+RMS √(1 / max(A, B)), where RMS is √mean(square). Equation 4 multiplies
+that factor by 0.2 so every shape has update RMS 0.2::
+
+    scale = 0.2 * √max(A, B)
+    m_t = β m + g                         # same Nesterov as muon_update
+    O = NS(g + β m_t)
+    new = param − lr * (scale * O + λ param)
+
+Weight decay is decoupled: it hits ``param``, never the matrix that
+Newton–Schulz sees. Equation 7 is the same per-matrix factor, described
+as an adjusted learning rate. It is not a width ratio. Under this RMS
+match the rate tuned at ``base_width`` is reused unchanged at ``width``.
+
 QK-clip (Kimi K2, α = 1/2)::
 
     μ = max |q k^T|
@@ -65,6 +82,7 @@ t+i+1 (one extra step per head index). z-loss is mean over tokens of
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -307,3 +325,297 @@ def total_loss(ce: Array, mtp: Array, z: Array, config: Any) -> Array:
     """ce + mtp + z_loss_weight * z."""
     w = np.float32(float(config.z_loss_weight))
     return (_as_f32(ce) + _as_f32(mtp) + w * _as_f32(z)).astype(np.float32)
+
+
+# Moonlight update RMS (arXiv 2502.16982 eq. 4). Duplicated so this file
+# does not import production ``train``.
+MOONLIGHT_UPDATE_RMS = 0.2
+
+
+def _require_pos_int(name: str, value: object) -> int:
+    """Integer >= 1. Bool is rejected (it is a subclass of int, not a width)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be an integer >= 1, got {value!r}")
+    return value
+
+
+def _require_finite_real(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return float(value)
+
+
+def muon_rms_scale(rows: int, cols: int) -> float:
+    """``0.2 * sqrt(max(rows, cols))``. Lemma 1 × equation 4.
+
+    ``rows`` and ``cols`` must be integers >= 1.
+    """
+    rows_i = _require_pos_int("rows", rows)
+    cols_i = _require_pos_int("cols", cols)
+    return float(MOONLIGHT_UPDATE_RMS * math.sqrt(max(rows_i, cols_i)))
+
+
+def transferred_muon_lr(base_lr: float, *, width: int, base_width: int) -> float:
+    """μP-for-Muon: the transferred rate is ``base_lr`` at every width.
+
+    The shape factor lives in ``muon_rms_scale``, not here. ``width`` and
+    ``base_width`` must be integers >= 1. ``base_lr`` must be finite and >= 0.
+    """
+    _require_pos_int("width", width)
+    _require_pos_int("base_width", base_width)
+    lr = _require_finite_real("base_lr", base_lr)
+    if lr < 0.0:
+        raise ValueError(f"base_lr must be >= 0, got {base_lr!r}")
+    return float(base_lr)
+
+
+def _as_matrix(name: str, value: Array) -> np.ndarray:
+    try:
+        arr = np.asarray(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a 2D array") from exc
+    if arr.ndim != 2:
+        raise ValueError(f"{name} must be 2D, got ndim {arr.ndim}")
+    if arr.shape[0] < 1 or arr.shape[1] < 1:
+        raise ValueError(f"{name} dimensions must be >= 1, got {arr.shape}")
+    if not np.issubdtype(arr.dtype, np.number) or np.issubdtype(arr.dtype, np.complexfloating):
+        raise ValueError(f"{name} must be a real array, got dtype {arr.dtype}")
+    return arr.astype(np.float32, copy=False)
+
+
+def muon_transfer_step(
+    param: Array,
+    grad: Array,
+    momentum: Array,
+    *,
+    lr: float,
+    momentum_coeff: float,
+    ns_steps: int,
+    weight_decay: float,
+) -> tuple[Array, Array]:
+    """One Moonlight Muon step. Slow NumPy, same Nesterov and NS as ``muon_update``.
+
+    Equation 4::
+
+        new = param − lr * (muon_rms_scale(A, B) * O + weight_decay * param)
+
+    ``O`` is Newton–Schulz of the Nesterov momentum. Weight decay is applied
+    to ``param`` after orthogonalization, never inside Newton–Schulz.
+    ``weight_decay`` must be >= 0. ``lr`` must be finite. The three matrices
+    must be 2D and the same shape. Returns float32 ``(new_param, new_momentum)``.
+    """
+    lr_f = _require_finite_real("lr", lr)
+    if isinstance(weight_decay, bool) or not isinstance(weight_decay, (int, float)):
+        raise ValueError(f"weight_decay must be >= 0, got {weight_decay!r}")
+    # NaN fails ``>= 0``. +inf is finite-checked so the reference stays defined;
+    # the spec only requires ``weight_decay >= 0``.
+    if not (weight_decay >= 0) or not math.isfinite(float(weight_decay)):
+        raise ValueError(f"weight_decay must be >= 0, got {weight_decay!r}")
+    wd_f = float(weight_decay)
+    p = _as_matrix("param", param)
+    g = _as_matrix("grad", grad)
+    m = _as_matrix("momentum", momentum)
+    if p.shape != g.shape or p.shape != m.shape:
+        raise ValueError(
+            f"param, grad, and momentum must share a shape, got {p.shape}, {g.shape}, {m.shape}"
+        )
+    rows, cols = int(p.shape[0]), int(p.shape[1])
+    beta = np.float32(momentum_coeff)
+    # Same Nesterov buffer as reference ``muon_update``.
+    new_m = beta * m + g
+    nesterov = g + beta * new_m
+    orth = newton_schulz(nesterov, ns_steps)
+    scale = np.float32(muon_rms_scale(rows, cols))
+    lr32 = np.float32(lr_f)
+    wd32 = np.float32(wd_f)
+    new_p = p - lr32 * (scale * orth + wd32 * p)
+    return new_p.astype(np.float32), new_m.astype(np.float32)
+
+
+def check_mup_muon_reference() -> None:
+    """Identity self-check for the Moonlight oracle. Not a pytest.
+
+    Raises AssertionError if Lemma 1, equation 4, or the width-independent
+    learning rate fails on this reference.
+    """
+    shapes = (
+        (1, 1),
+        (1, 2),
+        (2, 1),
+        (3, 5),
+        (8, 3),
+        (3, 8),
+        (4, 4),
+        (7, 13),
+        (16, 9),
+        (32, 1),
+        (1, 32),
+        (64, 64),
+        (2, 100),
+        (100, 2),
+        (9, 2),
+        (6, 6),
+    )
+    for rows, cols in shapes:
+        scale = muon_rms_scale(rows, cols)
+        root = math.sqrt(max(rows, cols))
+        assert scale == MOONLIGHT_UPDATE_RMS * root
+        # 1 ulp: x * (1/x) is not always exact.
+        assert abs(scale * (1.0 / root) - MOONLIGHT_UPDATE_RMS) < 1e-12
+        assert muon_rms_scale(rows, cols) == muon_rms_scale(cols, rows)
+        # Lemma 1 on an exact semi-orthogonal matrix, not on Newton–Schulz.
+        rng = np.random.default_rng(1000 + rows * 100 + cols)
+        draw = rng.standard_normal((rows, cols))
+        if rows >= cols:
+            q, _ = np.linalg.qr(draw)
+            orth = q[:, :cols]
+        else:
+            q, _ = np.linalg.qr(draw.T)
+            orth = q[:, :rows].T
+        rms_orth = float(np.sqrt(np.mean(np.square(orth))))
+        assert abs(rms_orth - 1.0 / root) < 1e-6
+        rms_scaled = float(np.sqrt(np.mean(np.square(scale * orth))))
+        assert abs(rms_scaled - MOONLIGHT_UPDATE_RMS) < 1e-6
+
+    for base in (0.0, 0.02, 1.0, 1e-12, 100.0):
+        for width, base_width in ((1, 1), (128, 2048), (2048, 128), (7, 13), (10**6, 3)):
+            got = transferred_muon_lr(base, width=width, base_width=base_width)
+            assert got == base
+            assert got == transferred_muon_lr(base, width=base_width, base_width=width)
+
+    rng = np.random.default_rng(15)
+    for shape in ((1, 1), (3, 2), (2, 5), (4, 4), (8, 1), (1, 8)):
+        param = rng.standard_normal(shape).astype(np.float32)
+        grad = rng.standard_normal(shape).astype(np.float32)
+        momentum = rng.standard_normal(shape).astype(np.float32)
+        lr = 0.02
+        beta = 0.95
+        steps = 5
+        wd = 0.1
+        p_copy = param.copy()
+        g_copy = grad.copy()
+        m_copy = momentum.copy()
+        new_p, new_m = muon_transfer_step(
+            param, grad, momentum, lr=lr, momentum_coeff=beta, ns_steps=steps, weight_decay=wd
+        )
+        assert np.array_equal(param, p_copy)
+        assert np.array_equal(grad, g_copy)
+        assert np.array_equal(momentum, m_copy)
+        assert new_p.shape == shape and new_m.shape == shape
+        assert new_p.dtype == np.float32 and new_m.dtype == np.float32
+        beta32 = np.float32(beta)
+        expect_m = beta32 * momentum + grad
+        assert np.allclose(new_m, expect_m, rtol=0.0, atol=0.0)
+        new_m_ref = beta32 * momentum + grad
+        nesterov = grad + beta32 * new_m_ref
+        orth = newton_schulz(nesterov, steps)
+        scale = np.float32(muon_rms_scale(*shape))
+        expect_p = param - np.float32(lr) * (scale * orth + np.float32(wd) * param)
+        assert np.allclose(new_p, expect_p, rtol=1e-6, atol=1e-6)
+        # Weight decay is outside Newton–Schulz: the two calls share O.
+        bare_p, bare_m = muon_transfer_step(
+            param, grad, momentum, lr=lr, momentum_coeff=beta, ns_steps=steps, weight_decay=0.0
+        )
+        assert np.array_equal(bare_m, new_m)
+        decay = bare_p - new_p
+        assert np.allclose(decay, np.float32(lr) * np.float32(wd) * param, rtol=1e-5, atol=1e-5)
+        jordan = np.float32(math.sqrt(max(1.0, shape[0] / max(shape[1], 1))))
+        if abs(float(scale) - float(jordan)) > 1e-3:
+            wrong = param - np.float32(lr) * jordan * orth
+            assert not np.allclose(bare_p, wrong, rtol=1e-4, atol=1e-4)
+        # Zero gradient and zero momentum: NS input is 0, update is pure decay.
+        zeros = np.zeros(shape, dtype=np.float32)
+        decay_p, decay_m = muon_transfer_step(
+            param, zeros, zeros, lr=lr, momentum_coeff=beta, ns_steps=steps, weight_decay=wd
+        )
+        assert np.allclose(decay_m, 0.0, atol=0.0)
+        assert np.allclose(decay_p, param * np.float32(1.0 - lr * wd), rtol=1e-5, atol=1e-5)
+        # lr = 0 leaves the parameter alone and still writes momentum.
+        held_p, held_m = muon_transfer_step(
+            param, grad, momentum, lr=0.0, momentum_coeff=beta, ns_steps=steps, weight_decay=wd
+        )
+        assert np.array_equal(held_p, param)
+        assert np.array_equal(held_m, expect_m)
+
+    # Frozen scalars shared with tests/test_mup_muon.py. Computed here, not
+    # from production.
+    frozen_p = np.array([[0.5, -0.25], [0.1, 0.8], [-0.3, 0.4]], dtype=np.float32)
+    frozen_g = np.array([[0.2, -0.1], [0.0, 0.3], [-0.4, 0.05]], dtype=np.float32)
+    frozen_m = np.array([[0.1, 0.2], [-0.3, 0.0], [0.4, -0.2]], dtype=np.float32)
+    frozen_new_p, frozen_new_m = muon_transfer_step(
+        frozen_p,
+        frozen_g,
+        frozen_m,
+        lr=0.02,
+        momentum_coeff=0.95,
+        ns_steps=5,
+        weight_decay=0.1,
+    )
+    assert abs(float(frozen_new_p[0, 0]) - 0.4941366910934448) < 1e-6
+    assert abs(float(frozen_new_p.sum()) - 1.2451510429382324) < 1e-6
+    assert abs(float(frozen_new_m[0, 0]) - 0.29500001668930054) < 1e-6
+    assert abs(float(frozen_new_m.sum()) - 0.24) < 1e-6
+    bare_p, _bare_m = muon_transfer_step(
+        frozen_p,
+        frozen_g,
+        frozen_m,
+        lr=0.02,
+        momentum_coeff=0.95,
+        ns_steps=5,
+        weight_decay=0.0,
+    )
+    assert abs(float(bare_p[0, 0]) - 0.49513667821884155) < 1e-6
+    assert abs(float(bare_p.sum()) - 1.2476511001586914) < 1e-6
+
+    for bad in (0, -1, 1.0, 1.5, None, "4"):
+        try:
+            muon_rms_scale(bad, 2)  # type: ignore[arg-type]
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"rows {bad!r} should raise")
+        try:
+            muon_rms_scale(2, bad)  # type: ignore[arg-type]
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"cols {bad!r} should raise")
+    for bad_lr in (-0.1, float("nan"), float("inf"), float("-inf")):
+        try:
+            transferred_muon_lr(bad_lr, width=4, base_width=4)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"base_lr {bad_lr!r} should raise")
+    try:
+        transferred_muon_lr(0.02, width=0, base_width=4)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("width 0 should raise")
+    p = np.ones((2, 3), dtype=np.float32)
+    try:
+        muon_transfer_step(
+            p, p, p, lr=float("nan"), momentum_coeff=0.9, ns_steps=1, weight_decay=0.0
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-finite lr should raise")
+    try:
+        muon_transfer_step(p, p, p, lr=0.02, momentum_coeff=0.9, ns_steps=1, weight_decay=-1e-4)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("negative weight decay should raise")
+    try:
+        muon_transfer_step(
+            p, p.reshape(-1), p, lr=0.02, momentum_coeff=0.9, ns_steps=1, weight_decay=0.0
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("1D grad should raise")
+    print("mup-muon reference identities: ok")
