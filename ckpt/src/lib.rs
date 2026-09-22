@@ -44,8 +44,42 @@ pub enum CkptError {
     MultipleReplicas,
     #[error("in-memory replica {0} missing")]
     ReplicaLost(usize),
+    #[error("persistent save already in flight")]
+    SaveInFlight,
     #[error("{0}")]
     Message(String),
+}
+
+/// Handle for a persistent save that has not finished.
+///
+/// Spec 5.5: the train step must not stall on the object-store write.
+/// `Checkpointer::save_persistent_async` returns this before the store's
+/// `put` calls finish.
+pub struct PendingSave {
+    checkpoint_id: String,
+}
+
+impl PendingSave {
+    /// Id `restore` will accept after `wait` returns Ok.
+    pub fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    /// True once every shard and the manifest are durable in the store.
+    pub fn is_finished(&self) -> bool {
+        unimplemented!("async persistent save")
+    }
+
+    /// Block until the save finishes.
+    ///
+    /// Store errors surface here, not from `save_persistent_async`. After
+    /// Ok, `Checkpointer::restore` of `checkpoint_id` matches the checkpoint
+    /// a synchronous `save_persistent` would have written: same hashes, same
+    /// bytes.
+    pub fn wait(self) -> Result<()> {
+        let _ = self.checkpoint_id;
+        unimplemented!("async persistent save")
+    }
 }
 
 /// Lowercase hex SHA-256 of raw bytes. F1 `content_hash`.
@@ -201,7 +235,8 @@ pub struct Checkpoint {
 
 /// Persistent or in-memory blob backend. CPU tests use [`MemoryStore`] and
 /// [`DirStore`]. Production persistent store is an object bucket.
-pub trait Store {
+/// `Send` so a persistent save can run on another thread (spec 5.5).
+pub trait Store: Send {
     fn put(&mut self, key: &str, bytes: &[u8]) -> Result<()>;
     fn get(&self, key: &str) -> Result<Vec<u8>>;
     fn contains(&self, key: &str) -> Result<bool>;
@@ -465,9 +500,8 @@ impl Checkpointer {
         Ok(id)
     }
 
-    /// Write `ckpt` through the persistent store. Spec 5.5 is async (does not
-    /// stall the train step); a CPU implementation may finish the write before
-    /// returning.
+    /// Write `ckpt` through the persistent store and return after the write
+    /// finishes. Existing callers keep this synchronous path.
     pub fn save_persistent(&mut self, ckpt: &Checkpoint) -> Result<String> {
         let prepared = prepare_checkpoint(ckpt)?;
         let id = prepared.manifest.checkpoint_id.clone();
@@ -480,6 +514,24 @@ impl Checkpointer {
             serde_json::to_vec(&envelope).map_err(|err| CkptError::Schema(err.to_string()))?;
         self.store.put(&id, &bytes)?;
         Ok(id)
+    }
+
+    /// Start a persistent save and return before the store finishes.
+    ///
+    /// Preparation failures (schema, hash, multiple replicas) return Err and
+    /// start no write. A store whose `put` blocks cannot delay this return:
+    /// the call returns while the first `put` is still blocked. At most one
+    /// async save is in flight on this checkpointer; a second call before
+    /// `PendingSave::wait` returns `CkptError::SaveInFlight` and starts
+    /// nothing. Dropping the handle does not cancel the write. `wait` is how
+    /// the caller observes completion and store errors.
+    ///
+    /// `restore` during the write may return `NotFound`. After `wait` returns
+    /// Ok, `restore` of the id matches `save_persistent` of the same
+    /// checkpoint.
+    pub fn save_persistent_async(&mut self, ckpt: &Checkpoint) -> Result<PendingSave> {
+        let _ = ckpt;
+        unimplemented!("async persistent save")
     }
 
     pub fn restore(&self, checkpoint_id: &str) -> Result<Checkpoint> {

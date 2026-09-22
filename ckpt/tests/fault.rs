@@ -24,7 +24,7 @@ fn flip_stored_blob_byte_then_restore_is_hash_mismatch() {
     let id = prod.save_persistent(&src).expect("save_persistent");
 
     {
-        let mut guard = map.borrow_mut();
+        let mut guard = map.lock().expect("map lock");
         assert!(
             corrupt_first_blob(&mut guard, &src.weights[0].bytes),
             "save_persistent must write the weight shard bytes into the Store"
@@ -98,7 +98,7 @@ fn flip_optimizer_blob_is_hash_mismatch() {
     let mut prod = Checkpointer::new(Box::new(store));
     let id = prod.save_persistent(&src).expect("save");
     {
-        let mut guard = map.borrow_mut();
+        let mut guard = map.lock().expect("map lock");
         assert!(
             corrupt_first_blob(&mut guard, &src.optimizer[0].bytes),
             "save_persistent must write optimizer shard bytes into the Store"
