@@ -58,6 +58,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from kernels.compile_cache import CacheError as CacheError
+from kernels.compile_cache import CompileCache as CompileCache
+from kernels.compile_cache import program_hash as program_hash
+
 Array = Any  # numpy.ndarray or jax.Array
 
 
