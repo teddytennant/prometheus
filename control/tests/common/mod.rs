@@ -403,6 +403,11 @@ pub fn err_tag(err: &ControlError) -> &'static str {
         ControlError::Quarantined(_) => "Quarantined",
         ControlError::NotLive(_) => "NotLive",
         ControlError::MissingHash { .. } => "MissingHash",
+        ControlError::HealSourceMismatch { .. } => "HealSourceMismatch",
+        ControlError::NoHealInProgress(_) => "NoHealInProgress",
+        ControlError::WeightCopyNotInstalled(_) => "WeightCopyNotInstalled",
+        ControlError::DuplicateWeightShard(_) => "DuplicateWeightShard",
+        ControlError::EmptyWeightShardName => "EmptyWeightShardName",
         ControlError::Message(_) => "Message",
     }
 }
@@ -452,6 +457,32 @@ pub fn assert_err_eq(prod: &ControlError, refer: &ControlError) {
             assert_eq!(s1, s2);
         }
         (ControlError::Message(_), ControlError::Message(_)) => {}
+        (
+            ControlError::HealSourceMismatch {
+                spare: s1,
+                expected: e1,
+                got: g1,
+            },
+            ControlError::HealSourceMismatch {
+                spare: s2,
+                expected: e2,
+                got: g2,
+            },
+        ) => {
+            assert_eq!(s1, s2);
+            assert_eq!(e1, e2);
+            assert_eq!(g1, g2);
+        }
+        (ControlError::NoHealInProgress(a), ControlError::NoHealInProgress(b)) => {
+            assert_eq!(a, b)
+        }
+        (ControlError::WeightCopyNotInstalled(a), ControlError::WeightCopyNotInstalled(b)) => {
+            assert_eq!(a, b)
+        }
+        (ControlError::DuplicateWeightShard(a), ControlError::DuplicateWeightShard(b)) => {
+            assert_eq!(a, b)
+        }
+        (ControlError::EmptyWeightShardName, ControlError::EmptyWeightShardName) => {}
         (a, b) => panic!(
             "prod error {a:?} != ref error {b:?} ({} vs {})",
             err_tag(a),
