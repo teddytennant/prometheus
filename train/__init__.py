@@ -356,6 +356,71 @@ def muon_update(
     return delta.astype(jnp.float32), new_m.astype(jnp.float32)
 
 
+# Moonlight adjusted-LR constant (arXiv 2502.16982 eq. 4). AdamW update RMS
+# they matched. Not Jordan's sqrt(max(1, rows/cols)) scale.
+MOONLIGHT_UPDATE_RMS = 0.2
+
+
+def muon_rms_scale(rows: int, cols: int) -> float:
+    """Shape scale that makes a Muon update RMS match AdamW (spec 5.4).
+
+    arXiv 2502.16982 Lemma 1: a full-rank orthogonal update of shape
+    ``(rows, cols)`` has RMS ``1/sqrt(max(rows, cols))``. Equation 4
+    multiplies that update by ``0.2 * sqrt(max(rows, cols))``, so the
+    RMS is ``MOONLIGHT_UPDATE_RMS`` for every shape. The same learning
+    rate then transfers across widths (μP-for-Muon). ``rows`` and
+    ``cols`` must be integers >= 1.
+
+    Does not change ``muon_update``. That function stays on Jordan's
+    ``sqrt(max(1, rows/cols))`` scale.
+    """
+    raise NotImplementedError
+
+
+def muon_transfer_step(
+    param: Array,
+    grad: Array,
+    momentum: Array,
+    *,
+    lr: float,
+    momentum_coeff: float,
+    ns_steps: int,
+    weight_decay: float,
+) -> tuple[Array, Array]:
+    """One Muon step with Moonlight weight decay and RMS match.
+
+    Same Nesterov momentum and Newton-Schulz as ``muon_update``. The
+    parameter update is equation 4 of arXiv 2502.16982:
+
+        new = param - lr * (muon_rms_scale(A, B) * O + weight_decay * param)
+
+    ``O`` is the orthogonalized Nesterov momentum. ``(A, B)`` is
+    ``param.shape``. Returns ``(new_param, new_momentum)``.
+
+    ``weight_decay`` must be >= 0. ``lr`` must be finite. ``param``,
+    ``grad``, and ``momentum`` must be 2D and the same shape.
+    ``jax.jit`` with the scalar kwargs closed over or static must match
+    the eager pair at 1e-5. Must not call ``numpy.asarray`` or Python
+    ``float()`` on traced arrays.
+
+    ``muon_update`` and ``train_step`` stay on the old scale. This
+    function is the transfer rule; it is not wired into the step yet.
+    """
+    raise NotImplementedError
+
+
+def transferred_muon_lr(base_lr: float, *, width: int, base_width: int) -> float:
+    """Learning rate to reuse at ``width`` after tuning at ``base_width``.
+
+    Spec 5.4 μP-for-Muon, under the Moonlight RMS match: update RMS does
+    not depend on width, so the transferred rate is ``base_lr`` itself.
+    The shape scale lives in ``muon_rms_scale``, not here. ``width`` and
+    ``base_width`` must be integers >= 1. ``base_lr`` must be finite
+    and >= 0.
+    """
+    raise NotImplementedError
+
+
 def qk_clip(q: Array, k: Array, max_logit: float) -> tuple[Array, Array]:
     """Scale Q or K so max |q k^T| does not exceed `max_logit` (Kimi K2).
 
