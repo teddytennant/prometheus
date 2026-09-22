@@ -19,7 +19,7 @@ use tempfile::TempDir;
 
 pub static LOCK: Mutex<()> = Mutex::new(());
 
-pub const FAKE_SSH: &str = include_str!("fake_ssh.py");
+pub const FAKE_SSH: &str = include_str!("fake_ssh.sh");
 pub const FAKE_RSYNC: &str = include_str!("fake_rsync.py");
 
 pub struct EnvGuard {
