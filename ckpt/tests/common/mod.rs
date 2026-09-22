@@ -43,10 +43,9 @@ use prometheus_ckpt::{
     RngState, ShardBlob, Store, WeightMeta,
 };
 use serde_json::{json, Value};
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub const GOLDEN_JSON: &str = include_str!("../../../contracts/goldens/v1/checkpoint.default.json");
 
@@ -288,13 +287,13 @@ fn blob_bytes(ckpt: &Checkpoint, weights: bool, name: &str, shard_rank: u64) -> 
 /// injection without changing `lib.rs`.
 #[derive(Clone)]
 pub struct MapStore {
-    pub map: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+    pub map: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 impl MapStore {
     pub fn new() -> Self {
         Self {
-            map: Rc::new(RefCell::new(HashMap::new())),
+            map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -302,21 +301,23 @@ impl MapStore {
 impl Store for MapStore {
     fn put(&mut self, key: &str, bytes: &[u8]) -> prometheus_ckpt::Result<()> {
         self.map
-            .borrow_mut()
+            .lock()
+            .expect("map lock")
             .insert(key.to_string(), bytes.to_vec());
         Ok(())
     }
 
     fn get(&self, key: &str) -> prometheus_ckpt::Result<Vec<u8>> {
         self.map
-            .borrow()
+            .lock()
+            .expect("map lock")
             .get(key)
             .cloned()
             .ok_or_else(|| CkptError::NotFound(key.to_string()))
     }
 
     fn contains(&self, key: &str) -> prometheus_ckpt::Result<bool> {
-        Ok(self.map.borrow().contains_key(key))
+        Ok(self.map.lock().expect("map lock").contains_key(key))
     }
 }
 

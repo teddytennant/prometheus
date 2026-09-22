@@ -21,6 +21,9 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread;
 
 pub const SCHEMA_ID: &str = "prometheus.checkpoint";
 pub const SCHEMA_VERSION: u32 = 1;
@@ -44,8 +47,84 @@ pub enum CkptError {
     MultipleReplicas,
     #[error("in-memory replica {0} missing")]
     ReplicaLost(usize),
+    #[error("persistent save already in flight")]
+    SaveInFlight,
     #[error("{0}")]
     Message(String),
+}
+
+/// Shared by [`Checkpointer`] and the in-flight [`PendingSave`].
+///
+/// The in-flight flag has to live here, not only on the handle: a second
+/// `save_persistent_async` must see a save that has already returned. One
+/// worker, one finished flag, one error slot — no job channel.
+struct SaveState {
+    in_flight: AtomicBool,
+    finished: AtomicBool,
+    error: Mutex<Option<CkptError>>,
+    cv: Condvar,
+}
+
+impl SaveState {
+    fn new() -> Self {
+        Self {
+            in_flight: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            error: Mutex::new(None),
+            cv: Condvar::new(),
+        }
+    }
+}
+
+/// Handle for a persistent save that has not finished.
+///
+/// Spec 5.5: the train step must not stall on the object-store write.
+/// `Checkpointer::save_persistent_async` returns this before the store's
+/// `put` calls finish. Drop detaches; it does not join the worker, so a
+/// blocked `put` cannot stall `Drop`.
+pub struct PendingSave {
+    checkpoint_id: String,
+    state: Arc<SaveState>,
+}
+
+impl PendingSave {
+    /// Id `restore` will accept after `wait` returns Ok.
+    pub fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    /// True once every shard and the manifest are durable in the store.
+    pub fn is_finished(&self) -> bool {
+        // Finished is stored with Release after the error slot is published,
+        // so Acquire here sees that write. A store error is not durable.
+        self.state.finished.load(Ordering::Acquire) && lock_error(&self.state.error).is_none()
+    }
+
+    /// Block until the save finishes.
+    ///
+    /// Store errors surface here, not from `save_persistent_async`. After
+    /// Ok, `Checkpointer::restore` of `checkpoint_id` matches the checkpoint
+    /// a synchronous `save_persistent` would have written: same hashes, same
+    /// bytes.
+    pub fn wait(self) -> Result<()> {
+        let mut slot = lock_error(&self.state.error);
+        while !self.state.finished.load(Ordering::Acquire) {
+            slot = self
+                .state
+                .cv
+                .wait(slot)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        let err = slot.take();
+        drop(slot);
+        // Cleared only once this call observes completion, so a second save
+        // before `wait` returns still sees the in-flight flag.
+        self.state.in_flight.store(false, Ordering::Release);
+        match err {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Lowercase hex SHA-256 of raw bytes. F1 `content_hash`.
@@ -201,7 +280,8 @@ pub struct Checkpoint {
 
 /// Persistent or in-memory blob backend. CPU tests use [`MemoryStore`] and
 /// [`DirStore`]. Production persistent store is an object bucket.
-pub trait Store {
+/// `Send` so a persistent save can run on another thread (spec 5.5).
+pub trait Store: Send {
     fn put(&mut self, key: &str, bytes: &[u8]) -> Result<()>;
     fn get(&self, key: &str) -> Result<Vec<u8>>;
     fn contains(&self, key: &str) -> Result<bool>;
@@ -440,18 +520,44 @@ fn load_shard(
     })
 }
 
+fn lock_store(store: &Mutex<Box<dyn Store>>) -> MutexGuard<'_, Box<dyn Store>> {
+    store.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn lock_error(slot: &Mutex<Option<CkptError>>) -> MutexGuard<'_, Option<CkptError>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Same puts as the synchronous path: shard bytes under their sha256, then the
+/// manifest under `checkpoint_id`. The prepared checkpoint is borrowed, not
+/// cloned — `prepare_checkpoint` already copied shard bytes once.
+fn persist(store: &Mutex<Box<dyn Store>>, prepared: &Checkpoint) -> Result<()> {
+    for blob in prepared.weights.iter().chain(prepared.optimizer.iter()) {
+        let key = sha256_hex(&blob.bytes);
+        lock_store(store).put(&key, &blob.bytes)?;
+    }
+    let envelope = prepared.manifest.to_json()?;
+    let bytes = serde_json::to_vec(&envelope).map_err(|err| CkptError::Schema(err.to_string()))?;
+    lock_store(store).put(&prepared.manifest.checkpoint_id, &bytes)?;
+    Ok(())
+}
+
 /// Save and restore. In-memory path keeps [`MEMORY_REPLICAS`] copies. Persistent
 /// path writes one DP replica's shards through [`Store`].
 pub struct Checkpointer {
-    store: Box<dyn Store>,
+    /// Shared with the save worker. `put` takes `&mut self`, and `restore`
+    /// after `wait` must see those puts, so the store is not moved out.
+    store: Arc<Mutex<Box<dyn Store>>>,
     replicas: Vec<Option<Checkpoint>>,
+    save: Arc<SaveState>,
 }
 
 impl Checkpointer {
     pub fn new(persistent: Box<dyn Store>) -> Self {
         Self {
-            store: persistent,
+            store: Arc::new(Mutex::new(persistent)),
             replicas: vec![None; MEMORY_REPLICAS],
+            save: Arc::new(SaveState::new()),
         }
     }
 
@@ -465,25 +571,88 @@ impl Checkpointer {
         Ok(id)
     }
 
-    /// Write `ckpt` through the persistent store. Spec 5.5 is async (does not
-    /// stall the train step); a CPU implementation may finish the write before
-    /// returning.
+    /// Write `ckpt` through the persistent store and return after the write
+    /// finishes. Existing callers keep this synchronous path.
     pub fn save_persistent(&mut self, ckpt: &Checkpoint) -> Result<String> {
         let prepared = prepare_checkpoint(ckpt)?;
         let id = prepared.manifest.checkpoint_id.clone();
-        for blob in prepared.weights.iter().chain(prepared.optimizer.iter()) {
-            let key = sha256_hex(&blob.bytes);
-            self.store.put(&key, &blob.bytes)?;
-        }
-        let envelope = prepared.manifest.to_json()?;
-        let bytes =
-            serde_json::to_vec(&envelope).map_err(|err| CkptError::Schema(err.to_string()))?;
-        self.store.put(&id, &bytes)?;
+        persist(&self.store, &prepared)?;
         Ok(id)
     }
 
+    /// Start a persistent save and return before the store finishes.
+    ///
+    /// Preparation failures (schema, hash, multiple replicas) return Err and
+    /// start no write. A store whose `put` blocks cannot delay this return:
+    /// the call returns while the first `put` is still blocked. At most one
+    /// async save is in flight on this checkpointer; a second call before
+    /// `PendingSave::wait` returns `CkptError::SaveInFlight` and starts
+    /// nothing. Dropping the handle does not cancel the write. `wait` is how
+    /// the caller observes completion and store errors.
+    ///
+    /// `restore` during the write may return `NotFound`. After `wait` returns
+    /// Ok, `restore` of the id matches `save_persistent` of the same
+    /// checkpoint.
+    pub fn save_persistent_async(&mut self, ckpt: &Checkpoint) -> Result<PendingSave> {
+        // Claim the slot before prepare so a second call starts nothing — no
+        // hash, no put. Prepare still runs on this thread, before any put.
+        if self.save.in_flight.swap(true, Ordering::AcqRel) {
+            return Err(CkptError::SaveInFlight);
+        }
+        let prepared = match prepare_checkpoint(ckpt) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                self.save.in_flight.store(false, Ordering::Release);
+                return Err(err);
+            }
+        };
+        let id = prepared.manifest.checkpoint_id.clone();
+        {
+            let mut slot = lock_error(&self.save.error);
+            *slot = None;
+        }
+        self.save.finished.store(false, Ordering::Release);
+
+        let store = Arc::clone(&self.store);
+        let state = Arc::clone(&self.save);
+        // Detach on purpose: `PendingSave` does not hold the `JoinHandle`, so
+        // its Drop cannot join a worker blocked inside `put`. One thread does
+        // every put; the caller never enters `put`.
+        let spawned = thread::Builder::new()
+            .name("ckpt-save".into())
+            .spawn(move || {
+                let write = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    persist(&store, &prepared)
+                }));
+                let mut slot = lock_error(&state.error);
+                match write {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => *slot = Some(err),
+                    Err(_) => {
+                        *slot = Some(CkptError::Message(
+                            "persistent save worker panicked".to_string(),
+                        ));
+                    }
+                }
+                state.finished.store(true, Ordering::Release);
+                state.cv.notify_all();
+            });
+        if let Err(err) = spawned {
+            self.save.in_flight.store(false, Ordering::Release);
+            return Err(CkptError::Message(format!(
+                "failed to start save worker: {err}"
+            )));
+        }
+        Ok(PendingSave {
+            checkpoint_id: id,
+            state: Arc::clone(&self.save),
+        })
+    }
+
     pub fn restore(&self, checkpoint_id: &str) -> Result<Checkpoint> {
-        let bytes = match self.store.get(checkpoint_id) {
+        let guard = lock_store(&self.store);
+        let store: &dyn Store = &**guard;
+        let bytes = match store.get(checkpoint_id) {
             Ok(bytes) => bytes,
             Err(CkptError::NotFound(_)) => {
                 return Err(CkptError::NotFound(checkpoint_id.to_string()));
@@ -496,7 +665,7 @@ impl Checkpointer {
         let mut weights = Vec::with_capacity(manifest.weights.len());
         for meta in &manifest.weights {
             weights.push(load_shard(
-                self.store.as_ref(),
+                store,
                 &meta.name,
                 meta.shard_rank,
                 &meta.content_hash,
@@ -505,7 +674,7 @@ impl Checkpointer {
         let mut optimizer = Vec::with_capacity(manifest.optimizer.len());
         for meta in &manifest.optimizer {
             optimizer.push(load_shard(
-                self.store.as_ref(),
+                store,
                 &meta.name,
                 meta.shard_rank,
                 &meta.content_hash,
