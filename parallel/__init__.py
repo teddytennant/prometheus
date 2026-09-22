@@ -17,6 +17,7 @@ from typing import Any
 
 import kernels
 import parallel.fsdp as _fsdp
+import parallel.schedule as _schedule
 
 Array = Any
 
@@ -203,3 +204,5 @@ fsdp_shard = _fsdp.fsdp_shard
 fsdp_all_gather = _fsdp.fsdp_all_gather
 fsdp_reduce_scatter = _fsdp.fsdp_reduce_scatter
 zero3_views = _fsdp.zero3_views
+circular_pipeline = _schedule.circular_pipeline
+pipeline_forward_schedule = _schedule.pipeline_forward_schedule
