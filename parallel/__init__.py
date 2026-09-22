@@ -16,6 +16,7 @@ from enum import StrEnum
 from typing import Any
 
 import kernels
+import parallel.cp as _cp
 
 Array = Any
 
@@ -196,3 +197,9 @@ def ep_dispatch(tokens: Array, meta: Any) -> tuple[Array, Any]:
 def ep_combine(expert_out: Array, meta: Any, residual: Any) -> Array:
     """Weighted sum back to token order. Wraps A3 ``kernels.ep_combine``."""
     return kernels.ep_combine(expert_out, meta, residual)
+
+
+cp_split_seq = _cp.cp_split_seq
+cp_ring_schedule = _cp.cp_ring_schedule
+ring_attention_rank = _cp.ring_attention_rank
+ring_attention = _cp.ring_attention
