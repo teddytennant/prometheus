@@ -1,12 +1,14 @@
 //! Elastic scheduler, health, stragglers, SDC, spike rollback (spec 5.5, 15.5 A6).
 //!
 //! CPU analog of V4: simulated DP replicas, no GPUs, no wall clock (`NowMs` is
-//! injected). Elastic control at 220k GPUs, 90 TB checkpoints, EP=72, and real
-//! IB weight copies are S3 (spec 15.6) and out of scope.
+//! injected). Elastic control at 220k GPUs, 90 TB checkpoints, and EP=72 are S3
+//! (spec 15.6) and out of scope. Real IB is also S3. The in-memory copy in
+//! [`Controller::offer_weight_copy`] is the S1 analog of spec 5.5 "weights copied
+//! from a live replica".
 //!
 //! A failed replica drops out. Survivors keep going. [`Controller::grad_accumulation`]
 //! rises so [`ElasticConfig::tokens_per_step`] stays held. A spare heals in and
-//! rejoins at the next step boundary.
+//! rejoins at the next step boundary, holding a copy of the source weights.
 //!
 //! Silent Data Corruption: replicas report per-shard hashes every
 //! [`ElasticConfig::sdc_period_steps`]. A mismatch quarantines the rack and
@@ -53,6 +55,16 @@ pub struct RankId(pub String);
 /// Data-shard id (loader / skip list), not a weight-shard name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ShardId(pub String);
+
+/// One named weight shard copied from a live replica onto a healing spare.
+///
+/// CPU analog of spec 5.5 "weights copied from a live replica over IB". `bytes`
+/// are opaque. Real IB is S3 (spec 15.6) and is not this type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeightShard {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,6 +154,20 @@ pub enum ControlError {
     NotLive(ReplicaId),
     #[error("missing SDC hash replica={replica:?} shard={shard}")]
     MissingHash { replica: ReplicaId, shard: String },
+    #[error("heal source mismatch spare={spare:?} expected={expected:?} got={got:?}")]
+    HealSourceMismatch {
+        spare: ReplicaId,
+        expected: ReplicaId,
+        got: ReplicaId,
+    },
+    #[error("no heal in progress: {0:?}")]
+    NoHealInProgress(ReplicaId),
+    #[error("weight copy not installed: {0:?}")]
+    WeightCopyNotInstalled(ReplicaId),
+    #[error("duplicate weight shard name: {0}")]
+    DuplicateWeightShard(String),
+    #[error("empty weight shard name")]
+    EmptyWeightShardName,
     #[error("{0}")]
     Message(String),
 }
@@ -151,6 +177,14 @@ pub type Result<T> = std::result::Result<T, ControlError>;
 struct ReplicaRec {
     rack: RackId,
     state: ReplicaState,
+    /// Source recorded by the in-progress heal. `Some` only while `Healing`.
+    heal_source: Option<ReplicaId>,
+    /// Shards staged by [`Controller::offer_weight_copy`] for the current heal.
+    /// Cleared when the heal starts and moved into `installed` at rejoin.
+    staged: Vec<WeightShard>,
+    /// Copy installed by the last successful rejoin: `(step, shards)`.
+    /// `step` is recorded and not compared to a clock. `None` until a heal completes.
+    installed: Option<(Step, Vec<WeightShard>)>,
 }
 
 struct OpenCollective {
@@ -222,6 +256,9 @@ impl Controller {
                 ReplicaRec {
                     rack: spec.rack,
                     state,
+                    heal_source: None,
+                    staged: Vec::new(),
+                    installed: None,
                 },
             );
         }
@@ -296,7 +333,8 @@ impl Controller {
         }
     }
 
-    /// Start copying weights onto a spare from a live source. Completes at
+    /// Start a heal of `spare` from `source`. Records `source` for
+    /// [`Self::offer_weight_copy`]. Does not copy bytes. Completes at
     /// [`Self::rejoin`].
     pub fn heal_spare(&mut self, spare: &ReplicaId, source: &ReplicaId) -> Result<()> {
         let spare_state = self.lookup(spare)?.state;
@@ -305,7 +343,12 @@ impl Controller {
         }
         self.require_live(source)?;
         match self.replicas.get_mut(spare) {
-            Some(rec) => rec.state = ReplicaState::Healing,
+            Some(rec) => {
+                rec.state = ReplicaState::Healing;
+                rec.heal_source = Some(source.clone());
+                // Previous install stays until the next successful rejoin.
+                rec.staged.clear();
+            }
             None => return Err(ControlError::ReplicaNotFound(spare.clone())),
         }
         Ok(())
@@ -313,16 +356,127 @@ impl Controller {
 
     /// Finish a heal at a step boundary. The spare becomes live and
     /// accumulation falls to hold `tokens_per_step` without dropping below it.
-    pub fn rejoin(&mut self, id: &ReplicaId, _step: Step) -> Result<()> {
+    ///
+    /// Installs the shards staged by [`Self::offer_weight_copy`] for this heal.
+    /// No staged shards installs an empty copy, not an error. `step` is recorded
+    /// on that copy and is not compared to a clock (`rejoin` itself is the
+    /// step-boundary API).
+    pub fn rejoin(&mut self, id: &ReplicaId, step: Step) -> Result<()> {
         let state = self.lookup(id)?.state;
         if state != ReplicaState::Healing {
             return Err(ControlError::NotSpare(id.clone()));
         }
         match self.replicas.get_mut(id) {
-            Some(rec) => rec.state = ReplicaState::Live,
+            Some(rec) => {
+                let staged = std::mem::take(&mut rec.staged);
+                rec.installed = Some((step, staged));
+                rec.heal_source = None;
+                rec.state = ReplicaState::Live;
+            }
             None => return Err(ControlError::ReplicaNotFound(id.clone())),
         }
         Ok(())
+    }
+
+    /// Source recorded by the last successful [`Self::heal_spare`] for `spare`.
+    ///
+    /// `ReplicaNotFound` if unknown. `NoHealInProgress` if `spare` is not
+    /// `Healing`, including before heal and after rejoin.
+    pub fn heal_source(&self, spare: &ReplicaId) -> Result<ReplicaId> {
+        let rec = self.lookup(spare)?;
+        if rec.state != ReplicaState::Healing {
+            return Err(ControlError::NoHealInProgress(spare.clone()));
+        }
+        match &rec.heal_source {
+            Some(source) => Ok(source.clone()),
+            None => Err(ControlError::NoHealInProgress(spare.clone())),
+        }
+    }
+
+    /// Stage an in-memory copy of `shards` from `source` onto a spare that is
+    /// `Healing`. Completes at [`Self::rejoin`].
+    ///
+    /// - Spare unknown: `ReplicaNotFound`. Spare not `Healing`: `NoHealInProgress`.
+    /// - `source` must equal the source passed to `heal_spare`, else
+    ///   `HealSourceMismatch`. Source must still be `Live`, else `NotLive`,
+    ///   `Quarantined`, or `ReplicaNotFound` (same rules as `heal_spare`).
+    /// - Shard `name` must be non-empty, else `EmptyWeightShardName`. A duplicate
+    ///   name in this call, or already staged for this heal, is
+    ///   `DuplicateWeightShard`. The first error in shard order wins. A failed
+    ///   call stages nothing.
+    /// - Bytes are copied. Mutating the caller's buffers after return must not
+    ///   change what [`Self::healed_weight_shards`] returns after rejoin.
+    /// - A later offer of a new name appends. Order is offer order, then shard
+    ///   order within each offer.
+    /// - Does not change replica state, `n_live`, or grad accumulation.
+    /// - Empty `shards` is `Ok` and stages nothing.
+    pub fn offer_weight_copy(
+        &mut self,
+        spare: &ReplicaId,
+        source: &ReplicaId,
+        shards: &[WeightShard],
+    ) -> Result<()> {
+        let spare_state = self.lookup(spare)?.state;
+        if spare_state != ReplicaState::Healing {
+            return Err(ControlError::NoHealInProgress(spare.clone()));
+        }
+        // Same liveness error `heal_spare` would return, before identity.
+        self.require_live(source)?;
+        let expected = match self.lookup(spare)?.heal_source.clone() {
+            Some(id) => id,
+            None => return Err(ControlError::NoHealInProgress(spare.clone())),
+        };
+        if source != &expected {
+            return Err(ControlError::HealSourceMismatch {
+                spare: spare.clone(),
+                expected,
+                got: source.clone(),
+            });
+        }
+        let already: Vec<String> = self
+            .lookup(spare)?
+            .staged
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let mut accepted = Vec::with_capacity(shards.len());
+        for shard in shards {
+            if shard.name.is_empty() {
+                return Err(ControlError::EmptyWeightShardName);
+            }
+            if already.iter().any(|n| n == &shard.name)
+                || accepted.iter().any(|s: &WeightShard| s.name == shard.name)
+            {
+                return Err(ControlError::DuplicateWeightShard(shard.name.clone()));
+            }
+            accepted.push(WeightShard {
+                name: shard.name.clone(),
+                bytes: shard.bytes.clone(),
+            });
+        }
+        match self.replicas.get_mut(spare) {
+            Some(rec) => rec.staged.extend(accepted),
+            None => return Err(ControlError::ReplicaNotFound(spare.clone())),
+        }
+        Ok(())
+    }
+
+    /// Weight shards installed on `id` by the rejoin that finished its heal.
+    ///
+    /// `ReplicaNotFound` if unknown. `WeightCopyNotInstalled` if `id` has never
+    /// completed a heal (still `Spare` or `Healing`, or was never a spare). A
+    /// rejoin with no staged shards installs an empty vec: `Ok` of an empty
+    /// vec, not `WeightCopyNotInstalled`.
+    ///
+    /// The returned vec is an owned copy. A later heal must not mutate a vec
+    /// the caller already received. A second heal replaces the installed copy
+    /// only at that second rejoin.
+    pub fn healed_weight_shards(&self, id: &ReplicaId) -> Result<Vec<WeightShard>> {
+        let rec = self.lookup(id)?;
+        match &rec.installed {
+            Some((_step, shards)) => Ok(shards.clone()),
+            None => Err(ControlError::WeightCopyNotInstalled(id.clone())),
+        }
     }
 
     /// Report a weight-shard content hash from one replica at `step`.

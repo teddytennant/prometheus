@@ -2,17 +2,25 @@
 //!
 //! Production (`prometheus_control`) must never import this module. Tests
 //! compare `Controller` membership, accumulation, SDC, health, collectives,
-//! and spike bookkeeping against these functions. Integer policy is written
-//! out as loops and ceil-division, not clever bit tricks.
+//! spike bookkeeping, and heal weight-copy against these functions. Integer
+//! policy is written out as loops and ceil-division, not clever bit tricks.
 //!
 //! There is no tensor math in A6 (no NumPy/PyTorch). The "reference" is this
 //! state machine plus [`min_grad_accumulation`].
+//!
+//! # Heal weight copy
+//! CPU analog only (real IB is S3). `heal_spare` records the source and does
+//! not copy bytes. `offer_weight_copy` appends an owned copy of the shards
+//! into a staging vec. `rejoin` installs that vec (empty if nothing was
+//! staged) and records `step` without comparing it to a clock. A later heal
+//! replaces the installed copy only at that later rejoin, not at offer.
+//! Membership errors of `heal_spare` / `rejoin` are unchanged.
 
 #![allow(dead_code)]
 
 use prometheus_control::{
     ControlError, ElasticConfig, HealthEvent, ReplicaId, ReplicaSpec, ReplicaState, Result,
-    ShardId, SpikeReport, Step,
+    ShardId, SpikeReport, Step, WeightShard,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -64,6 +72,14 @@ pub struct RefController {
     skipped: Vec<ShardId>,
     pages: u64,
     last_spike_step: Option<Step>,
+    /// Source recorded by the in-progress heal. Present while state is Healing.
+    heal_source: HashMap<ReplicaId, ReplicaId>,
+    /// Shards staged by `offer_weight_copy`, not yet installed.
+    staged: HashMap<ReplicaId, Vec<WeightShard>>,
+    /// Copy installed by a successful rejoin. Absent means never completed a heal.
+    installed: HashMap<ReplicaId, Vec<WeightShard>>,
+    /// `step` argument of the rejoin that installed `installed`. Not a clock.
+    installed_step: HashMap<ReplicaId, Step>,
 }
 
 impl RefController {
@@ -113,6 +129,10 @@ impl RefController {
             skipped: Vec::new(),
             pages: 0,
             last_spike_step: None,
+            heal_source: HashMap::new(),
+            staged: HashMap::new(),
+            installed: HashMap::new(),
+            installed_step: HashMap::new(),
         })
     }
 
@@ -181,16 +201,117 @@ impl RefController {
         }
         self.require_live(source)?;
         self.replicas.get_mut(spare).unwrap().state = ReplicaState::Healing;
+        self.heal_source.insert(spare.clone(), source.clone());
+        // Fresh staging area. A previous install (only reachable if this id
+        // is Spare again) stays until the next successful rejoin.
+        self.staged.insert(spare.clone(), Vec::new());
         Ok(())
     }
 
-    pub fn rejoin(&mut self, id: &ReplicaId, _step: Step) -> Result<()> {
+    pub fn rejoin(&mut self, id: &ReplicaId, step: Step) -> Result<()> {
         let state = self.lookup(id)?.state;
         if state != ReplicaState::Healing {
             return Err(ControlError::NotSpare(id.clone()));
         }
+        // No staged shards (offer never called, or only empty slices) installs
+        // an empty vec. That is Ok, not WeightCopyNotInstalled.
+        let staged = self.staged.remove(id).unwrap_or_default();
+        self.installed.insert(id.clone(), staged);
+        self.installed_step.insert(id.clone(), step);
+        self.heal_source.remove(id);
         self.replicas.get_mut(id).unwrap().state = ReplicaState::Live;
         Ok(())
+    }
+
+    /// Source recorded by the last successful `heal_spare` while `spare` is Healing.
+    pub fn heal_source(&self, spare: &ReplicaId) -> Result<ReplicaId> {
+        let state = self.lookup(spare)?.state;
+        if state != ReplicaState::Healing {
+            return Err(ControlError::NoHealInProgress(spare.clone()));
+        }
+        Ok(self
+            .heal_source
+            .get(spare)
+            .cloned()
+            .expect("Healing replica has a recorded source"))
+    }
+
+    /// Stage an owned copy of `shards`. See module docs for check order.
+    ///
+    /// Check order (first failure wins, and a failure stages nothing):
+    /// 1. Spare unknown: `ReplicaNotFound`.
+    /// 2. Spare not `Healing`: `NoHealInProgress` (before source or shard checks).
+    /// 3. Source liveness, same function as `heal_spare`: unknown
+    ///    `ReplicaNotFound`, `Quarantined`, otherwise `NotLive`. A non-live
+    ///    source yields that error even if it also mismatches the recorded source.
+    /// 4. Source != recorded source: `HealSourceMismatch { spare, expected, got }`.
+    /// 5. Shards in order: empty name, then duplicate against already-staged
+    ///    names and earlier names in this call.
+    ///
+    /// Empty `shards` still runs steps 1–4, then stages nothing. Bytes are
+    /// cloned. Does not change replica state, `n_live`, or accumulation, and
+    /// does not write the installed copy.
+    pub fn offer_weight_copy(
+        &mut self,
+        spare: &ReplicaId,
+        source: &ReplicaId,
+        shards: &[WeightShard],
+    ) -> Result<()> {
+        let spare_state = self.lookup(spare)?.state;
+        if spare_state != ReplicaState::Healing {
+            return Err(ControlError::NoHealInProgress(spare.clone()));
+        }
+        self.require_live(source)?;
+        let expected = self
+            .heal_source
+            .get(spare)
+            .cloned()
+            .expect("Healing replica has a recorded source");
+        if source != &expected {
+            return Err(ControlError::HealSourceMismatch {
+                spare: spare.clone(),
+                expected,
+                got: source.clone(),
+            });
+        }
+        let mut names: HashSet<String> = self
+            .staged
+            .get(spare)
+            .map(|v| v.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default();
+        let mut accepted = Vec::with_capacity(shards.len());
+        for shard in shards {
+            if shard.name.is_empty() {
+                return Err(ControlError::EmptyWeightShardName);
+            }
+            if !names.insert(shard.name.clone()) {
+                return Err(ControlError::DuplicateWeightShard(shard.name.clone()));
+            }
+            accepted.push(WeightShard {
+                name: shard.name.clone(),
+                bytes: shard.bytes.clone(),
+            });
+        }
+        self.staged
+            .entry(spare.clone())
+            .or_default()
+            .extend(accepted);
+        Ok(())
+    }
+
+    /// Owned clone of the copy installed by the last successful rejoin of `id`.
+    pub fn healed_weight_shards(&self, id: &ReplicaId) -> Result<Vec<WeightShard>> {
+        self.lookup(id)?;
+        match self.installed.get(id) {
+            Some(shards) => Ok(shards.clone()),
+            None => Err(ControlError::WeightCopyNotInstalled(id.clone())),
+        }
+    }
+
+    /// Step recorded by the rejoin that installed `id`'s copy. Reference-only
+    /// (production has no getter). `None` if `id` has never completed a heal.
+    pub fn recorded_rejoin_step(&self, id: &ReplicaId) -> Option<Step> {
+        self.installed_step.get(id).copied()
     }
 
     pub fn report_shard_hash(
