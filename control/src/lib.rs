@@ -177,6 +177,14 @@ pub type Result<T> = std::result::Result<T, ControlError>;
 struct ReplicaRec {
     rack: RackId,
     state: ReplicaState,
+    /// Source recorded by the in-progress heal. `Some` only while `Healing`.
+    heal_source: Option<ReplicaId>,
+    /// Shards staged by [`Controller::offer_weight_copy`] for the current heal.
+    /// Cleared when the heal starts and moved into `installed` at rejoin.
+    staged: Vec<WeightShard>,
+    /// Copy installed by the last successful rejoin: `(step, shards)`.
+    /// `step` is recorded and not compared to a clock. `None` until a heal completes.
+    installed: Option<(Step, Vec<WeightShard>)>,
 }
 
 struct OpenCollective {
@@ -248,6 +256,9 @@ impl Controller {
                 ReplicaRec {
                     rack: spec.rack,
                     state,
+                    heal_source: None,
+                    staged: Vec::new(),
+                    installed: None,
                 },
             );
         }
@@ -332,7 +343,12 @@ impl Controller {
         }
         self.require_live(source)?;
         match self.replicas.get_mut(spare) {
-            Some(rec) => rec.state = ReplicaState::Healing,
+            Some(rec) => {
+                rec.state = ReplicaState::Healing;
+                rec.heal_source = Some(source.clone());
+                // Previous install stays until the next successful rejoin.
+                rec.staged.clear();
+            }
             None => return Err(ControlError::ReplicaNotFound(spare.clone())),
         }
         Ok(())
@@ -345,13 +361,18 @@ impl Controller {
     /// No staged shards installs an empty copy, not an error. `step` is recorded
     /// on that copy and is not compared to a clock (`rejoin` itself is the
     /// step-boundary API).
-    pub fn rejoin(&mut self, id: &ReplicaId, _step: Step) -> Result<()> {
+    pub fn rejoin(&mut self, id: &ReplicaId, step: Step) -> Result<()> {
         let state = self.lookup(id)?.state;
         if state != ReplicaState::Healing {
             return Err(ControlError::NotSpare(id.clone()));
         }
         match self.replicas.get_mut(id) {
-            Some(rec) => rec.state = ReplicaState::Live,
+            Some(rec) => {
+                let staged = std::mem::take(&mut rec.staged);
+                rec.installed = Some((step, staged));
+                rec.heal_source = None;
+                rec.state = ReplicaState::Live;
+            }
             None => return Err(ControlError::ReplicaNotFound(id.clone())),
         }
         Ok(())
@@ -362,8 +383,14 @@ impl Controller {
     /// `ReplicaNotFound` if unknown. `NoHealInProgress` if `spare` is not
     /// `Healing`, including before heal and after rejoin.
     pub fn heal_source(&self, spare: &ReplicaId) -> Result<ReplicaId> {
-        let _ = spare;
-        unimplemented!("a6 heal weight copy")
+        let rec = self.lookup(spare)?;
+        if rec.state != ReplicaState::Healing {
+            return Err(ControlError::NoHealInProgress(spare.clone()));
+        }
+        match &rec.heal_source {
+            Some(source) => Ok(source.clone()),
+            None => Err(ControlError::NoHealInProgress(spare.clone())),
+        }
     }
 
     /// Stage an in-memory copy of `shards` from `source` onto a spare that is
@@ -389,8 +416,49 @@ impl Controller {
         source: &ReplicaId,
         shards: &[WeightShard],
     ) -> Result<()> {
-        let _ = (spare, source, shards);
-        unimplemented!("a6 heal weight copy")
+        let spare_state = self.lookup(spare)?.state;
+        if spare_state != ReplicaState::Healing {
+            return Err(ControlError::NoHealInProgress(spare.clone()));
+        }
+        // Same liveness error `heal_spare` would return, before identity.
+        self.require_live(source)?;
+        let expected = match self.lookup(spare)?.heal_source.clone() {
+            Some(id) => id,
+            None => return Err(ControlError::NoHealInProgress(spare.clone())),
+        };
+        if source != &expected {
+            return Err(ControlError::HealSourceMismatch {
+                spare: spare.clone(),
+                expected,
+                got: source.clone(),
+            });
+        }
+        let already: Vec<String> = self
+            .lookup(spare)?
+            .staged
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let mut accepted = Vec::with_capacity(shards.len());
+        for shard in shards {
+            if shard.name.is_empty() {
+                return Err(ControlError::EmptyWeightShardName);
+            }
+            if already.iter().any(|n| n == &shard.name)
+                || accepted.iter().any(|s: &WeightShard| s.name == shard.name)
+            {
+                return Err(ControlError::DuplicateWeightShard(shard.name.clone()));
+            }
+            accepted.push(WeightShard {
+                name: shard.name.clone(),
+                bytes: shard.bytes.clone(),
+            });
+        }
+        match self.replicas.get_mut(spare) {
+            Some(rec) => rec.staged.extend(accepted),
+            None => return Err(ControlError::ReplicaNotFound(spare.clone())),
+        }
+        Ok(())
     }
 
     /// Weight shards installed on `id` by the rejoin that finished its heal.
@@ -404,8 +472,11 @@ impl Controller {
     /// the caller already received. A second heal replaces the installed copy
     /// only at that second rejoin.
     pub fn healed_weight_shards(&self, id: &ReplicaId) -> Result<Vec<WeightShard>> {
-        let _ = id;
-        unimplemented!("a6 heal weight copy")
+        let rec = self.lookup(id)?;
+        match &rec.installed {
+            Some((_step, shards)) => Ok(shards.clone()),
+            None => Err(ControlError::WeightCopyNotInstalled(id.clone())),
+        }
     }
 
     /// Report a weight-shard content hash from one replica at `step`.
