@@ -592,7 +592,11 @@ def jacobi_sweeps(
     if not use_jax:
         current = np.array(current, copy=True)
     shape = current.shape
-    for _ in range(sweeps):
+    # cut == 0 is the full unroll: the entrance is the differentiated input.
+    cut = sweeps - truncated
+    for i in range(sweeps):
+        if use_jax and cut > 0 and i == cut:
+            current = jax.lax.stop_gradient(current)
         nxt = update(current)
         nxt = jnp.asarray(nxt) if use_jax else np.asarray(nxt)
         if tuple(nxt.shape) != tuple(shape):
