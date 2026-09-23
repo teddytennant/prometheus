@@ -10,7 +10,8 @@ training (I5: halt, thought-decode loss, Jacobi, noisy latents) come later.
 The adapter module is part of the V1 shape and lives here.
 
 ``jax.jit`` of ``forward`` with ``config`` static and ``r`` a Python int
-must match the eager call. Token-id range checks must not convert traced
+must match the eager call. ``truncated_recurrence`` is a Python int too,
+static the same way. Token-id range checks must not convert traced
 token values with Python ``int()``.
 """
 
@@ -29,6 +30,10 @@ Array = Any  # numpy.ndarray or jax.Array; FP32 reference dtype
 ROPE_BASE = 10000.0
 RMS_NORM_EPS = 1e-6
 INIT_SCALE = 0.02
+
+# spec 4.3: truncated backprop through the last 4 core iterations (Huginn).
+# Same number as model.latent.TRUNCATED_RECURRENCE. Not imported from there.
+TRUNCATED_RECURRENCE = 4
 
 
 class AttentionKind(StrEnum):
@@ -802,6 +807,7 @@ def forward(
     *,
     r: int | None = None,
     thoughts: Array | None = None,
+    truncated_recurrence: int = TRUNCATED_RECURRENCE,
 ) -> ForwardOutput:
     """FP32 forward.
 
@@ -812,16 +818,39 @@ def forward(
     `thoughts` is an optional (batch, n_thoughts, d_model) tensor inserted via
     the latent adapter before the discrete tokens. Empty/None is discrete-only.
 
-    ``jax.jit`` of this function, with ``config`` static and ``r`` a Python int
-    (closed over or ``static_argnames``), must match the eager logits, hidden,
-    mtp_logits, router_probs, expert_ids, z_loss, and r_used at 1e-5. Token-id
-    range checks must not call Python ``int()`` on traced token values.
-    ``r=None`` sampling stays host-side and is not required to jit. Traced ``r``
-    is not required (scan length is static). ``jax.grad`` through the jitted
-    call must match eager ``jax.grad``. FP32 math, recurrence, adapter, and MTP
-    stay the same.
+    `truncated_recurrence` is the Huginn window (spec 4.3): backprop through
+    the last that many core iterations. Default is `TRUNCATED_RECURRENCE` (4).
+    It is a Python `int` (`type(x) is int`), not a bool and not a tracer,
+    static for `jax.jit` the same way `r` is. `truncated_recurrence < 1` is
+    `ConfigError`. A value larger than `r_used` is legal: the effective window
+    is `min(truncated_recurrence, r_used)`, not an error.
+
+    Core iterations are 0-based and there are `r_used` of them. The first runs
+    the core block on the prelude output. Each later iteration adds that same
+    prelude output (`injected`) and runs the core block again. Coda runs once
+    after the last core iteration.
+
+    The forward value does not depend on `truncated_recurrence`. Backward flows
+    only through the last `effective` core iterations. The carry entering that
+    window (`h`, `z_sum`, `z_n`, `last_probs`, `last_ids`) is `stop_gradient`.
+    Cut index is `r_used - effective`. Cut index 0 is the full unroll: no
+    stop. `injected` is not stopped, so prelude still receives gradient from
+    live iterations. Coda always receives gradient. Core iterations before the
+    cut receive none, including through `z_loss`.
+
+    ``jax.jit`` of this function, with ``config`` static and ``r`` and
+    ``truncated_recurrence`` Python ints (closed over or ``static_argnames``),
+    must match the eager logits, hidden, mtp_logits, router_probs, expert_ids,
+    z_loss, and r_used at 1e-5, and eager ``jax.grad``. Token-id range checks
+    must not call Python ``int()`` on traced token values. ``r=None`` sampling
+    stays host-side and is not required to jit. Traced ``r`` is not required
+    (scan length is static). When the effective window is shorter than
+    `r_used`, the gradient must not match the full unroll, and the jaxpr must
+    contain `stop_gradient`. The full-window jaxpr must not.
     """
     validate_config(config)
+    if type(truncated_recurrence) is not int or truncated_recurrence < 1:
+        raise ConfigError("truncated_recurrence must be an int >= 1")
     tokens = jnp.asarray(tokens)
     if tokens.ndim != 2:
         raise ValueError("tokens must be (batch, seq)")
@@ -899,7 +928,9 @@ def forward(
     h, z_sum, z_n, last_probs, last_ids = apply_range(
         h, 0, prelude, z_sum, z_n, last_probs, last_ids
     )
+    # Prelude output, before iteration 0. Not stopped: live steps add it back.
     injected = h
+    # Iteration 0 runs the core on the prelude output and does not add injected.
     h, z_sum, z_n, last_probs, last_ids = apply_range(
         h, prelude, core, z_sum, z_n, last_probs, last_ids
     )
@@ -915,14 +946,28 @@ def forward(
             0, dtype=jnp.int32
         )
 
-    if r_used > 1:
-        carry, _ = jax.lax.scan(
-            core_body,
-            (h, z_sum, z_n, last_probs, last_ids),
-            xs=None,
-            length=r_used - 1,
-        )
-        h, z_sum, z_n, last_probs, last_ids = carry
+    def scan_core(
+        carry: tuple[Array, Array, Array, Array, Array], length: int
+    ) -> tuple[Array, Array, Array, Array, Array]:
+        scanned, _ = jax.lax.scan(core_body, carry, xs=None, length=length)
+        return scanned
+
+    # Both are host ints, so this branch is not traced when the window is full.
+    # A traced cond would still put stop_gradient in the full-window jaxpr.
+    effective = min(truncated_recurrence, r_used)
+    cut = r_used - effective
+    carry = (h, z_sum, z_n, last_probs, last_ids)
+    if cut == 0:
+        if r_used > 1:
+            carry = scan_core(carry, r_used - 1)
+    else:
+        # Iterations 1..cut-1, then stop the carry entering iteration `cut`.
+        prefix = cut - 1
+        if prefix > 0:
+            carry = scan_core(carry, prefix)
+        carry = jax.lax.stop_gradient(carry)
+        carry = scan_core(carry, r_used - cut)
+    h, z_sum, z_n, last_probs, last_ids = carry
     h, z_sum, z_n, last_probs, last_ids = apply_range(
         h, prelude + core, coda, z_sum, z_n, last_probs, last_ids
     )
