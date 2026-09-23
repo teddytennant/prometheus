@@ -31,6 +31,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Spec 5.5: in-memory copy on two other racks. Host RAM stands in for Grace.
 pub const MEMORY_REPLICAS: usize = 2;
 
+/// Spec 5.5: copies live on this many racks other than the source.
+pub const CROSS_RACK_COPIES: usize = 2;
+
 pub type Result<T> = std::result::Result<T, CkptError>;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -49,6 +52,8 @@ pub enum CkptError {
     ReplicaLost(usize),
     #[error("persistent save already in flight")]
     SaveInFlight,
+    #[error("rack placement: {0}")]
+    Rack(String),
     #[error("{0}")]
     Message(String),
 }
@@ -711,4 +716,101 @@ impl Checkpointer {
             None => Err(CkptError::ReplicaLost(index)),
         }
     }
+
+    /// Place `ckpt` in host RAM on two racks other than `source`.
+    ///
+    /// Spec 5.5: in-memory checkpoints go to Grace RAM on two other racks.
+    /// Host RAM and the caller-supplied rack list stand in for that. This
+    /// does not write the [`Store`], and it does not touch
+    /// [`Self::save_in_memory`] or [`MEMORY_REPLICAS`].
+    ///
+    /// `racks` is the fleet list, in order. Each id is a non-empty opaque
+    /// string (no trimming: `"a"` and `"a "` differ). `source` must occur in
+    /// `racks`. Destinations are [`plan_cross_rack`]: the next two distinct
+    /// racks after the first occurrence of `source`, wrapping, skipping
+    /// `source`. Fewer than three distinct racks is [`CkptError::Rack`].
+    ///
+    /// The stored value is the prepared checkpoint, the same bytes
+    /// [`Self::save_in_memory`] would keep for this input. Both destinations
+    /// hold independent clones. Mutating one copy, or the value returned by
+    /// [`Self::restore_from_rack`], must not change the other.
+    ///
+    /// A re-save from the same source replaces that source's copies and drops
+    /// a previous destination that is no longer in the pair, but only if that
+    /// rack still holds this source. A destination that already holds a
+    /// different source is [`CkptError::Rack`], and the call changes nothing.
+    /// Two sources whose pairs do not overlap both remain restorable.
+    ///
+    /// `restore_from_rack(source)` is [`CkptError::NotFound`] after a
+    /// successful save: the source rack has no copy.
+    ///
+    /// On a checkpoint that fails `prepare` / `verify`, the error is the same
+    /// one [`Self::save_in_memory`] would return, and no rack is written.
+    pub fn save_cross_rack(
+        &mut self,
+        ckpt: &Checkpoint,
+        source: &str,
+        racks: &[String],
+    ) -> Result<(String, String)> {
+        let _ = (ckpt, source, racks);
+        unimplemented!("save_cross_rack")
+    }
+
+    /// Clone the copy on `rack` and verify it.
+    ///
+    /// [`CkptError::NotFound`] if that rack holds nothing (never written, or
+    /// [`Self::lose_rack`]). [`CkptError::HashMismatch`] if the bytes were
+    /// corrupted. Does not consult the other rack.
+    pub fn restore_from_rack(&self, rack: &str) -> Result<Checkpoint> {
+        let _ = rack;
+        unimplemented!("restore_from_rack")
+    }
+
+    /// Drop the copy on `rack`. The other destination of the same save stays.
+    ///
+    /// [`CkptError::NotFound`] if `rack` holds nothing. After both
+    /// destinations are lost, both restores fail and
+    /// [`Self::cross_rack_destinations`] still returns the last pair.
+    pub fn lose_rack(&mut self, rack: &str) -> Result<()> {
+        let _ = rack;
+        unimplemented!("lose_rack")
+    }
+
+    /// Flip one byte of the copy on `rack` only.
+    ///
+    /// The other destination still restores to the original prepared
+    /// checkpoint. Restoring `rack` then returns [`CkptError::HashMismatch`].
+    /// [`CkptError::NotFound`] if `rack` holds nothing. [`CkptError::Rack`]
+    /// if the stored checkpoint has no shard bytes to flip.
+    pub fn corrupt_rack(&mut self, rack: &str) -> Result<()> {
+        let _ = rack;
+        unimplemented!("corrupt_rack")
+    }
+
+    /// Last successful destination pair for `source`, in walk order.
+    ///
+    /// Still returns that pair after [`Self::lose_rack`] or
+    /// [`Self::corrupt_rack`]. [`CkptError::NotFound`] if `source` has never
+    /// saved. Not a recompute from a fleet list.
+    pub fn cross_rack_destinations(&self, source: &str) -> Result<(String, String)> {
+        let _ = source;
+        unimplemented!("cross_rack_destinations")
+    }
+}
+
+/// Next two distinct racks after `source`, wrapping.
+///
+/// Walk starts at the index after the first occurrence of `source`. Skip
+/// ids equal to `source` and ids already chosen. Return those two, in walk
+/// order, not sorted.
+///
+/// [`CkptError::Rack`] when `source` is empty, any rack id is empty,
+/// `source` is absent, or fewer than three distinct ids exist.
+///
+/// Examples: `["a","b","c","d"]` with source `"b"` is `("c","d")`; source
+/// `"d"` is `("a","b")`; source `"c"` is `("d","a")`. `["a","b","a","c"]`
+/// with source `"b"` is `("a","c")`.
+pub fn plan_cross_rack(racks: &[String], source: &str) -> Result<(String, String)> {
+    let _ = (racks, source);
+    unimplemented!("plan_cross_rack")
 }
