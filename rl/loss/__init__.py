@@ -254,7 +254,7 @@ def sequence_ratio(
     if len(logp_new) != len(logp_old):
         raise LossError("length mismatch")
     total = 0.0
-    for new, old in zip(logp_new, logp_old):
+    for new, old in zip(logp_new, logp_old, strict=True):
         if not math.isfinite(new) or not math.isfinite(old):
             raise LossError("non-finite log-prob")
         total += new - old
@@ -376,7 +376,7 @@ def gaussian_log_density(
         raise LossError("length mismatch")
     log_two_pi = math.log(2.0 * math.pi)
     total = 0.0
-    for zi, mui, si in zip(z, mu, sigma):
+    for zi, mui, si in zip(z, mu, sigma, strict=True):
         if not math.isfinite(zi) or not math.isfinite(mui) or not math.isfinite(si):
             raise LossError("non-finite gaussian input")
         if si <= 0.0:
@@ -496,7 +496,7 @@ def gspo_dapo_loss(
     latent_sum = 0.0
     overlong_sum = 0.0
     tis_sum = 0.0
-    for sample, advantage, gap in zip(group.samples, advantages, gaps):
+    for sample, advantage, gap in zip(group.samples, advantages, gaps, strict=True):
         r_disc = sequence_ratio(sample.token_logp_trainer, sample.token_logp_rollout)
         c_disc = clip_higher(r_disc, config.clip_eps_low, config.clip_eps_high)
         if sample.latent_logp_trainer or sample.latent_logp_rollout:

@@ -186,7 +186,7 @@ fn monitors_public_methods_are_exactly_the_kill_switch_surface() {
         let t = line.trim();
         if t.starts_with("pub fn ") {
             let after = t.trim_start_matches("pub fn ");
-            let name = after.split(|c: char| c == '<' || c == '(').next().unwrap();
+            let name = after.split(['<', '(']).next().unwrap();
             names.push(name.to_string());
         }
         if t.starts_with("impl ") && !t.starts_with("impl Monitors") {

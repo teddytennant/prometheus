@@ -35,7 +35,7 @@ fn pull_claims_attempt_one_worker_is_node_id() {
     let lease = mesh.pull(&mut queue, T0).expect("pull").expect("claimed");
     assert_lease(&lease, "job-a", "n7", 1, T0 + short_ttl());
     let task = queue.get(&task_id("job-a")).expect("get");
-    assert_leased(&task, "job-a", "n7", 1);
+    assert_leased(task, "job-a", "n7", 1);
 
     let mut refer = RefMesh::new(trusted_config("n7", "key-n7"));
     refer.advertise(caps_cpu(), T0).expect("ref adv");
@@ -69,7 +69,7 @@ fn requires_gpus_one_skipped_by_zero_gpu_claimed_by_one_gpu() {
         "0-gpu node must skip requires.gpus=1 with Ok(None), got {skip:?}"
     );
     let still = queue.get(&task_id("need-gpu")).expect("still there");
-    assert_queued(&still, "need-gpu");
+    assert_queued(still, "need-gpu");
 
     let lease = gpu
         .pull(&mut queue, T0)
@@ -77,7 +77,7 @@ fn requires_gpus_one_skipped_by_zero_gpu_claimed_by_one_gpu() {
         .expect("gpu claimed");
     assert_lease(&lease, "need-gpu", "1", 1, T0 + short_ttl());
     let taken = queue.get(&task_id("need-gpu")).expect("leased");
-    assert_leased(&taken, "need-gpu", "1", 1);
+    assert_leased(taken, "need-gpu", "1", 1);
     assert_eq!(taken.state, TaskState::Leased);
 }
 

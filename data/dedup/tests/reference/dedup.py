@@ -196,7 +196,7 @@ def dedup_near(docs: list[Document], config: DedupConfig) -> dict:
                 continue
             buckets[k[b]].append(i)
         for idxs in buckets.values():
-            for x, y in zip(idxs, idxs[1:]):
+            for x, y in zip(idxs, idxs[1:], strict=False):
                 union(x, y)
 
     comps: dict[int, list[int]] = defaultdict(list)

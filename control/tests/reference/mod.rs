@@ -334,7 +334,7 @@ impl RefController {
         if period == 0 {
             return Ok(());
         }
-        if step % period != 0 {
+        if !step.is_multiple_of(period) {
             return Ok(());
         }
         let live = self.live_replicas()?;
@@ -344,7 +344,7 @@ impl RefController {
         let mut shards: BTreeSet<String> = BTreeSet::new();
         for id in &live {
             let prefix = (step, id.0.clone());
-            for ((s, rid, shard), _) in &self.hashes {
+            for (s, rid, shard) in self.hashes.keys() {
                 if *s == prefix.0 && *rid == prefix.1 {
                     shards.insert(shard.clone());
                 }

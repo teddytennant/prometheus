@@ -19,13 +19,10 @@ fn put_get_contains_match_reference() {
 
     assert_eq!(prod.get(key).expect("get"), bytes);
     assert_eq!(refer.get(key).expect("ref get"), prod.get(key).unwrap());
-    assert_eq!(prod.contains(key).expect("contains"), true);
-    assert_eq!(refer.contains(key).expect("ref contains"), true);
-    assert_eq!(prod.contains("missing").expect("contains missing"), false);
-    assert_eq!(
-        refer.contains("missing").expect("ref contains missing"),
-        false
-    );
+    assert!(prod.contains(key).expect("contains"));
+    assert!(refer.contains(key).expect("ref contains"));
+    assert!(!prod.contains("missing").expect("contains missing"));
+    assert!(!refer.contains("missing").expect("ref contains missing"));
 }
 
 #[test]

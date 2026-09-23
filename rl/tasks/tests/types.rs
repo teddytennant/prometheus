@@ -36,10 +36,10 @@ fn constants_match_spec() {
     assert_eq!(reference::OPEN_ENDED_HORIZON_S, 30);
     assert_eq!(reference::OPEN_ENDED_MAX_TOOL_CALLS, START_TOOL_CALLS);
     assert_eq!(reference::RESEARCH_HORIZON_S, 600);
-    assert!(reference::RESEARCH_HORIZON_S > reference::MATH_HORIZON_S);
+    const { assert!(reference::RESEARCH_HORIZON_S > reference::MATH_HORIZON_S) };
     assert_eq!(reference::RESEARCH_MAX_TOOL_CALLS, START_TOOL_CALLS);
     assert_eq!(reference::LONG_HORIZON_S, 3600);
-    assert!(reference::LONG_HORIZON_S >= 3600);
+    const { assert!(reference::LONG_HORIZON_S >= 3600) };
     assert_eq!(reference::LONG_HORIZON_MAX_TOOL_CALLS, 2000);
     assert_ne!(reference::ARC_HORIZON_S, reference::SWE_HORIZON_S);
     assert_ne!(reference::FORECAST_HORIZON_S, reference::SWE_HORIZON_S);

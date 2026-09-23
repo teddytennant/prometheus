@@ -15,22 +15,22 @@ use reference::{FACTS_KVM_ABSENT, FACTS_KVM_CHAR, FACTS_KVM_NO, FACTS_KVM_YES, F
 
 #[test]
 fn ref_kvm_available_char_device_true() {
-    assert_eq!(reference::kvm_available(FACTS_KVM_CHAR).unwrap(), true);
+    assert!(reference::kvm_available(FACTS_KVM_CHAR).unwrap());
 }
 
 #[test]
 fn ref_kvm_available_explicit_yes_true() {
-    assert_eq!(reference::kvm_available(FACTS_KVM_YES).unwrap(), true);
+    assert!(reference::kvm_available(FACTS_KVM_YES).unwrap());
 }
 
 #[test]
 fn ref_kvm_available_explicit_no_false() {
-    assert_eq!(reference::kvm_available(FACTS_KVM_NO).unwrap(), false);
+    assert!(!reference::kvm_available(FACTS_KVM_NO).unwrap());
 }
 
 #[test]
 fn ref_kvm_available_absent_false() {
-    assert_eq!(reference::kvm_available(FACTS_KVM_ABSENT).unwrap(), false);
+    assert!(!reference::kvm_available(FACTS_KVM_ABSENT).unwrap());
 }
 
 #[test]
@@ -46,21 +46,21 @@ fn ref_kvm_available_no_mention_errors() {
 
 #[test]
 fn ref_kvm_available_case_insensitive_yes() {
-    assert_eq!(reference::kvm_available("KVM: YES\n").unwrap(), true);
-    assert_eq!(reference::kvm_available("kvm: True\n").unwrap(), true);
-    assert_eq!(reference::kvm_available("kvm: present\n").unwrap(), true);
+    assert!(reference::kvm_available("KVM: YES\n").unwrap());
+    assert!(reference::kvm_available("kvm: True\n").unwrap());
+    assert!(reference::kvm_available("kvm: present\n").unwrap());
 }
 
 #[test]
 fn ref_kvm_available_explicit_wins_over_absence_line() {
     let facts = "stat: cannot stat '/dev/kvm': No such file or directory\nkvm: yes\n";
-    assert_eq!(reference::kvm_available(facts).unwrap(), true);
+    assert!(reference::kvm_available(facts).unwrap());
 }
 
 #[test]
 fn ref_kvm_available_character_device_phrase() {
     let facts = "/dev/kvm: character device\n";
-    assert_eq!(reference::kvm_available(facts).unwrap(), true);
+    assert!(reference::kvm_available(facts).unwrap());
 }
 
 #[test]
@@ -74,22 +74,22 @@ fn ref_kvm_available_unrecognized_value_errors() {
 
 #[test]
 fn prod_kvm_available_char_device_true() {
-    assert_eq!(kvm_available(FACTS_KVM_CHAR).unwrap(), true);
+    assert!(kvm_available(FACTS_KVM_CHAR).unwrap());
 }
 
 #[test]
 fn prod_kvm_available_explicit_yes_true() {
-    assert_eq!(kvm_available(FACTS_KVM_YES).unwrap(), true);
+    assert!(kvm_available(FACTS_KVM_YES).unwrap());
 }
 
 #[test]
 fn prod_kvm_available_explicit_no_false() {
-    assert_eq!(kvm_available(FACTS_KVM_NO).unwrap(), false);
+    assert!(!kvm_available(FACTS_KVM_NO).unwrap());
 }
 
 #[test]
 fn prod_kvm_available_absent_false() {
-    assert_eq!(kvm_available(FACTS_KVM_ABSENT).unwrap(), false);
+    assert!(!kvm_available(FACTS_KVM_ABSENT).unwrap());
 }
 
 #[test]

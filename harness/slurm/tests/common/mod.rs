@@ -229,7 +229,7 @@ pub fn scancel_has_user_flag(line: &str) -> bool {
         t == "-u"
             || t == "--user"
             || t.starts_with("--user=")
-            || t.starts_with("-u") && t != "-u" && t.chars().nth(2).is_some_and(|c| c != '-')
+            || t.starts_with("-u") && t.chars().nth(2).is_some_and(|c| c != '-')
     })
 }
 

@@ -179,7 +179,7 @@ fn verifier_kinds_and_payloads() {
     assert_eq!(f.verifier_id.0, reference::FORECAST_VERIFIER_ID);
     assert!(f.market.is_some());
     assert!(f.grid.is_none());
-    assert_eq!(f.market.as_ref().unwrap().outcome, true);
+    assert!(f.market.as_ref().unwrap().outcome);
     assert_eq!(f.market.as_ref().unwrap().market_p, 0.4);
 
     let r = ResearchFactory::new(RESEARCH_ID, vec![research_kaggle_row()])
@@ -236,7 +236,7 @@ fn research_kinds_speedrun_paper_kaggle() {
     let pt = p.research.unwrap();
     assert_eq!(pt.kind, ResearchKind::PaperRepro);
     assert!(pt.rubric.is_some());
-    assert_eq!(pt.target, 3.14);
+    assert_eq!(pt.target, 3.25);
     pin_research(vec![research_speedrun_row()], NOW, CREATED);
     pin_research(vec![research_paper_row()], NOW, CREATED);
 }

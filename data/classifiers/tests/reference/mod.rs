@@ -181,7 +181,7 @@ impl RefOrchestrator {
         if self.docs.is_empty() {
             return Vec::new();
         }
-        let n = self.config.shard_size as usize;
+        let n = self.config.shard_size;
         self.docs.chunks(n).map(|c| c.to_vec()).collect()
     }
 
@@ -200,7 +200,7 @@ impl RefOrchestrator {
                     shard.len()
                 )));
             }
-            for (doc, sc) in shard.iter().zip(scores.into_iter()) {
+            for (doc, sc) in shard.iter().zip(scores) {
                 out.push(Prediction {
                     content_hash: doc.content_hash.clone(),
                     scores: sc,

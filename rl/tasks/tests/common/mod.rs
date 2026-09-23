@@ -187,7 +187,7 @@ pub fn research_paper_row() -> ResearchSource {
         "p1",
         "Reproduce table 2 numeric match.",
         ResearchKind::PaperRepro,
-        3.14,
+        3.25,
         None,
         Some(sample_rubric()),
     )

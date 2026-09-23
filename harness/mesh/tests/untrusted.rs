@@ -24,7 +24,7 @@ fn untrusted_create_then_pull_is_untrusted() {
     let task = queue
         .get(&prometheus_leases::TaskId("t1".into()))
         .expect("t1");
-    assert_queued(&task, "t1");
+    assert_queued(task, "t1");
     assert_eq!(task.state, TaskState::Queued);
 
     let mut refer = RefMesh::new(cfg);

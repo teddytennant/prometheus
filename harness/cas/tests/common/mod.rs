@@ -221,6 +221,8 @@ impl RestoreReadonly {
 }
 
 impl Drop for RestoreReadonly {
+    // Undoes a test's chmod so the tempdir can be removed.
+    #[allow(clippy::permissions_set_readonly_false)]
     fn drop(&mut self) {
         if let Ok(meta) = fs::metadata(&self.path) {
             let mut perms = meta.permissions();

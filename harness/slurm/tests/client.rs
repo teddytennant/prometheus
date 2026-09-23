@@ -265,12 +265,11 @@ fn wait_on_timeout_cancels_the_job() {
         cancelled.iter().any(|id| id == "88") || lines.iter().any(|l| l.contains("88")),
         "wait must cancel the job on local budget expiry; cancelled={cancelled:?} lines={lines:?} result={result:?}"
     );
-    match result {
-        Ok(st) => assert!(
+    if let Ok(st) = result {
+        assert!(
             st.is_terminal() || st == JobState::Unknown,
             "wait after budget should not return a live state, got {st:?}"
-        ),
-        Err(_) => {}
+        )
     }
 }
 

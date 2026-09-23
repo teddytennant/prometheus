@@ -94,7 +94,7 @@ pub fn ephemeral(id: &str, addr: &str, trusted: bool) -> NodeInfo {
         id: node_id(id),
         addr: Addr(addr.to_string()),
         kind: NodeKind::Ephemeral,
-        trusted: trusted,
+        trusted,
     }
 }
 

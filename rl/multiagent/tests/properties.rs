@@ -52,7 +52,7 @@ fn histogram(n: u64, mut f: impl FnMut(u64) -> Topology) -> [u64; 5] {
 
 #[test]
 fn production_cdf_histogram_10000_exact_counts() {
-    let h = histogram(10_000, |d| draw_both(d));
+    let h = histogram(10_000, draw_both);
     assert_eq!(h[0], WEIGHT_SINGLE as u64 * 100);
     assert_eq!(h[1], WEIGHT_ORCHESTRATOR as u64 * 100);
     assert_eq!(h[2], WEIGHT_PARALLEL as u64 * 100);

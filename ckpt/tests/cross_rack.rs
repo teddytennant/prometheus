@@ -233,7 +233,7 @@ fn plan_cross_rack_matches_reference_on_generated_fleets() {
         for _ in 0..n {
             fleet.push(mixed[(rng.next() as usize) % mixed.len()].to_string());
         }
-        let source = if rng.next() % 2 == 0 {
+        let source = if rng.next().is_multiple_of(2) {
             fleet[(rng.next() as usize) % fleet.len()].clone()
         } else {
             mixed[(rng.next() as usize) % mixed.len()].to_string()

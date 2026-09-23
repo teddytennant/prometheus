@@ -287,7 +287,7 @@ def _apply_op(op: Op, grid: Grid) -> Grid:
                 index = mapped
                 break
         if index is None:
-            raise ArcError(f"unknown op kind {op.kind}")
+            raise ArcError(f"unknown op kind {op.kind}") from None
     return apply_dihedral(grid, index)
 
 

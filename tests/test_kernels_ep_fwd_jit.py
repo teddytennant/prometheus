@@ -536,7 +536,7 @@ def test_ep_combine_fwd_residual_is_pytree():
     ident = jax.jit(lambda r: r)(residual)
     ident_leaves, ident_td = jax.tree_util.tree_flatten(ident)
     assert ident_td.num_leaves == treedef.num_leaves
-    for a, b in zip(leaves, ident_leaves):
+    for a, b in zip(leaves, ident_leaves, strict=True):
         if np.issubdtype(_np(a).dtype, np.floating):
             np.testing.assert_allclose(_np(a), _np(b), **TOL)
         else:

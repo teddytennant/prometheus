@@ -47,7 +47,7 @@ fn claimed_task_ids(q: &Queue) -> Vec<String> {
         .collect()
 }
 
-fn claimed_attempts_for<'a>(q: &'a Queue, task_id: &str) -> Vec<u64> {
+fn claimed_attempts_for(q: &Queue, task_id: &str) -> Vec<u64> {
     q.log()
         .iter()
         .filter(|e| e.event_type == EVENT_CLAIMED && e.task_id.as_deref() == Some(task_id))
@@ -79,7 +79,7 @@ fn claim_if_head_matches_same_as_claim() {
     let (_parent, dir) = fresh_queue_dir();
     let cfg = short_config();
     let mut q = Queue::create(&dir, cfg.clone()).expect("create");
-    let mut via_claim = Queue::create(&dir.join("via-claim"), cfg.clone()).expect("create claim");
+    let mut via_claim = Queue::create(dir.join("via-claim"), cfg.clone()).expect("create claim");
     let mut refer = RefQueue::new(cfg);
     let t0 = 1_000u64;
     q.enqueue(item_n(1), t0).expect("enqueue");

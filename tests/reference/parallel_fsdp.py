@@ -217,7 +217,7 @@ def _check_concat_shapes(arrays: Sequence[np.ndarray], axis: int) -> int:
             raise MeshError(
                 f"mismatched ranks (ndim) {arrays[0].shape} vs {arr.shape}"
             )
-        for i, (d0, d1) in enumerate(zip(arrays[0].shape, arr.shape)):
+        for i, (d0, d1) in enumerate(zip(arrays[0].shape, arr.shape, strict=True)):
             if i == axis_i:
                 continue
             if d0 != d1:

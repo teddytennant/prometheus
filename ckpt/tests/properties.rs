@@ -65,8 +65,8 @@ fn memory_store_put_get_contains_vs_reference_random_keys() {
         prod.put(&key, &bytes).expect("put");
         refer.put(&key, &bytes).expect("ref put");
         assert_eq!(prod.get(&key).unwrap(), refer.get(&key).unwrap());
-        assert_eq!(prod.contains(&key).unwrap(), true);
-        assert_eq!(prod.contains("never-written").unwrap(), false);
+        assert!(prod.contains(&key).unwrap());
+        assert!(!prod.contains("never-written").unwrap());
     }
 }
 

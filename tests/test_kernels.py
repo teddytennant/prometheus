@@ -567,7 +567,7 @@ def test_chunked_delta_rule_jax_grad_matches_chunked_delta_rule_bwd():
     ones_s = np.ones_like(_np(ns_fwd), dtype=np.float32)
     ones_bwd = kernels.chunked_delta_rule_bwd(residual, (ones_o, ones_s))
     grads = jax.grad(_sum_both, argnums=(0, 1, 2, 3, 4))(qj, kj, vj, bj, sj)
-    for got, exp in zip(grads, ones_bwd):
+    for got, exp in zip(grads, ones_bwd, strict=True):
         np.testing.assert_allclose(_np(got), _np(exp), **TOL)
 
     for i, expected in enumerate(ones_bwd):
@@ -616,18 +616,19 @@ def test_chunked_delta_rule_jax_grad_matches_fused_reverse_state_vjp():
 
     _, vjp_fn = jax.vjp(_apply, qj, kj, vj, bj, sj)
     prod_grads = vjp_fn((goj, gsj))
-    for got, exp_bwd, exp_ref in zip(prod_grads, bwd, ref_grads):
+    for got, exp_bwd, exp_ref in zip(prod_grads, bwd, ref_grads, strict=True):
         np.testing.assert_allclose(_np(got), _np(exp_bwd), **TOL)
         np.testing.assert_allclose(_np(got), exp_ref, **TOL)
 
     _, naive_vjp = jax.vjp(_naive_gated_delta_scan, qj, kj, vj, bj, sj)
     naive_grads = naive_vjp((goj, gsj))
     naive_agrees = all(
-        np.allclose(_np(n), r, **TOL) for n, r in zip(naive_grads, ref_grads)
+        np.allclose(_np(n), r, **TOL) for n, r in zip(naive_grads, ref_grads, strict=True)
     )
     if not naive_agrees:
         disagreed = [
-            not np.allclose(_np(p), _np(n), **TOL) for p, n in zip(prod_grads, naive_grads)
+            not np.allclose(_np(p), _np(n), **TOL)
+            for p, n in zip(prod_grads, naive_grads, strict=True)
         ]
         assert any(disagreed), (
             "naive jax.lax.scan autodiff disagrees with the fused reverse-state "
@@ -1574,7 +1575,7 @@ def test_v1_gpu_chunked_delta_rule_jax_grad_matches_bwd():
         jnp.asarray(state),
     )
     prod_grads = vjp_fn((jnp.asarray(go), jnp.asarray(gs)))
-    for got, exp_bwd, exp_ref in zip(prod_grads, bwd, ref_grads):
+    for got, exp_bwd, exp_ref in zip(prod_grads, bwd, ref_grads, strict=True):
         np.testing.assert_allclose(_np(got), _np(exp_bwd), **TOL)
         np.testing.assert_allclose(_np(got), exp_ref, **TOL)
 

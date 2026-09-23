@@ -195,8 +195,8 @@ fn validate_fault_kinds_are_stable_against_reference() {
         (b"{", TransportFault::MalformedJson),
     ];
     for (body, kind) in cases {
-        let err = validate_response(*body).unwrap_err();
+        let err = validate_response(body).unwrap_err();
         assert_invalid(&err, *kind);
-        assert_validate_eq(*body);
+        assert_validate_eq(body);
     }
 }

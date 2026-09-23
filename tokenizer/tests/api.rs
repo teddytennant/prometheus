@@ -211,7 +211,7 @@ fn two_trains_on_the_same_docs_and_config_match() {
 
 #[test]
 fn golden_encode_sequences_on_fixed_tiny_corpus() {
-    let tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     assert_eq!(tok.encode("hello").unwrap(), GOLDEN_HELLO);
     assert_eq!(
         tok.encode("hello hello world").unwrap(),
@@ -301,7 +301,7 @@ fn encode_bytes_roundtrip_invalid_utf8_matches_reference() {
 
 #[test]
 fn decode_unknown_id_and_specials_are_errors() {
-    let tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     assert!(matches!(tok.decode(&[0]).unwrap_err(), Error::UnknownId(0)));
     let unknown = tok.meta.vocab_size + 5;
     assert!(matches!(
@@ -320,7 +320,7 @@ fn decode_unknown_id_and_specials_are_errors() {
 
 #[test]
 fn encode_grid_one_distinct_id_per_color_inside_reserved_range() {
-    let tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     let start = tok.meta.arc_grid_token_range.start;
     let end = tok.meta.arc_grid_token_range.end;
     assert_eq!(end - start, ARC_N_COLORS);
@@ -339,7 +339,7 @@ fn encode_grid_one_distinct_id_per_color_inside_reserved_range() {
 
 #[test]
 fn encode_grid_out_of_range_color_errors() {
-    let tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     assert!(matches!(
         tok.encode_grid(&[10]).unwrap_err(),
         Error::BadColor(10)
@@ -393,7 +393,7 @@ fn tokens_per_word_beats_byte_baseline_when_merges_exist() {
 
 #[test]
 fn tokens_per_word_empty_and_single_word() {
-    let tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     assert_eq!(tok.tokens_per_word("").unwrap(), 0.0);
     assert_eq!(tok.tokens_per_word("   \n\t").unwrap(), 0.0);
     let hello = tok.tokens_per_word("hello").unwrap();
@@ -406,7 +406,7 @@ fn tokens_per_word_empty_and_single_word() {
 
 #[test]
 fn freeze_sets_flag_keeps_hash_and_encode_works() {
-    let mut tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let mut tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     let before = tok.encode("hello").unwrap();
     let hash_before = tok.meta.artifact.content_hash.clone();
     tok.freeze(FROZEN_AT).unwrap();
@@ -420,7 +420,7 @@ fn freeze_sets_flag_keeps_hash_and_encode_works() {
 
 #[test]
 fn freeze_different_timestamp_is_error() {
-    let mut tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let mut tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     tok.freeze(FROZEN_AT).unwrap();
     assert!(matches!(
         tok.freeze("2026-09-16T13:00:00Z").unwrap_err(),
@@ -435,7 +435,7 @@ fn freeze_different_timestamp_is_error() {
 
 #[test]
 fn to_contract_validates_as_prometheus_tokenizer() {
-    let mut tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let mut tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     let payload = tok.to_contract();
     assert_eq!(payload["schema_id"], SCHEMA_ID);
     assert_eq!(SCHEMA_ID, "prometheus.tokenizer");
@@ -467,7 +467,7 @@ fn to_contract_validates_as_prometheus_tokenizer() {
 
 #[test]
 fn save_load_roundtrip_and_artifact_hash() {
-    let mut tok = Tokenizer::train(&golden_corpus(), &golden_config()).unwrap();
+    let mut tok = Tokenizer::train(golden_corpus(), &golden_config()).unwrap();
     tok.freeze(FROZEN_AT).unwrap();
     let before = tok.encode("hello hello world").unwrap();
     let dir = tempfile::tempdir().unwrap();

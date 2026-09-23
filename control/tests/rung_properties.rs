@@ -103,7 +103,7 @@ fn step_checkpoint_resume_match_reference_random_walk() {
         let mut last_ckpt = prod.checkpoint();
         for _ in 0..20 {
             match rng.bounded(5) {
-                0 | 1 | 2 => {
+                0..=2 => {
                     let loss = bits_to_loss(rng.next());
                     match (prod.step(loss), refer.step(loss)) {
                         (Ok(a), Ok(b)) => {

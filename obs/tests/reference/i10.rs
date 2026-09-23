@@ -63,8 +63,6 @@
 //!
 //! Snapshot JSON round-trips via `serde_json` (finite values).
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use prometheus_obs::{
@@ -278,11 +276,7 @@ impl RefSpikeLog {
         };
 
         let page = self.spikes.iter().any(|prev| {
-            let dist = if sample.step >= prev.step {
-                sample.step - prev.step
-            } else {
-                prev.step - sample.step
-            };
+            let dist = sample.step.abs_diff(prev.step);
             dist <= self.config.page_window_steps
         });
 

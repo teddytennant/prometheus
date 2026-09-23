@@ -126,7 +126,7 @@ def _byte_id(byte: int) -> int:
 def _count_pairs(sequences: list[list[int]]) -> dict[tuple[int, int], int]:
     counts: dict[tuple[int, int], int] = {}
     for seq in sequences:
-        for left, right in zip(seq, seq[1:]):
+        for left, right in zip(seq, seq[1:], strict=False):
             pair = (left, right)
             counts[pair] = counts.get(pair, 0) + 1
     return counts

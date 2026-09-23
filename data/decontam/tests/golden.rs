@@ -8,7 +8,7 @@ use prometheus_decontam::{planted_caught, scan_shard, scan_text, Status};
 #[test]
 fn planted_eval_sentence_in_a_shard_is_caught() {
     let planted = common::planted_item();
-    let index = common::index_with(&[planted.clone()]);
+    let index = common::index_with(std::slice::from_ref(&planted));
     let shard = vec![format!(
         "training document wrapping the eval sentence: {}",
         common::PLANTED_TEXT
@@ -24,14 +24,14 @@ fn planted_eval_sentence_in_a_shard_is_caught() {
         "planted sentence must produce a flagged ngram hit: {:?}",
         report.hits
     );
-    planted_caught(&index, &[planted.clone()], &shard).expect("planted_caught");
+    planted_caught(&index, std::slice::from_ref(&planted), &shard).expect("planted_caught");
     common::assert_report_matches(&report, &reference::scan_shard(&[planted], &shard).unwrap());
 }
 
 #[test]
 fn unrelated_shard_is_clean() {
     let planted = common::planted_item();
-    let index = common::index_with(&[planted.clone()]);
+    let index = common::index_with(std::slice::from_ref(&planted));
     let shard = vec![common::UNRELATED_TEXT.to_string()];
     let report = scan_shard(&index, &shard).expect("scan_shard");
     assert_eq!(report.status, Status::Clean);

@@ -40,12 +40,15 @@ fn method_hash_is_independent_of_insertion_order() {
 fn method_hash_changes_when_index_contents_change() {
     let planted = common::planted_item();
     let unrelated = common::unrelated_item();
-    let one = common::index_with(&[planted.clone()]);
+    let one = common::index_with(std::slice::from_ref(&planted));
     let two = common::index_with(&[planted.clone(), unrelated.clone()]);
     let h1 = method_hash(&one).unwrap();
     let h2 = method_hash(&two).unwrap();
     assert_ne!(h1, h2);
-    assert_eq!(h1, reference::method_hash(&[planted.clone()]).unwrap());
+    assert_eq!(
+        h1,
+        reference::method_hash(std::slice::from_ref(&planted)).unwrap()
+    );
     assert_eq!(h2, reference::method_hash(&[planted, unrelated]).unwrap());
 }
 
@@ -71,8 +74,8 @@ fn method_hash_changes_if_ngram_n_would_change() {
 fn method_hash_changes_when_item_text_changes() {
     let a = common::item("gpqa", "q1", &common::words(8));
     let b = common::item("gpqa", "q1", &common::words(9));
-    let ha = method_hash(&common::index_with(&[a.clone()])).unwrap();
-    let hb = method_hash(&common::index_with(&[b.clone()])).unwrap();
+    let ha = method_hash(&common::index_with(std::slice::from_ref(&a))).unwrap();
+    let hb = method_hash(&common::index_with(std::slice::from_ref(&b))).unwrap();
     assert_ne!(ha, hb);
     assert_eq!(ha, reference::method_hash(&[a]).unwrap());
     assert_eq!(hb, reference::method_hash(&[b]).unwrap());

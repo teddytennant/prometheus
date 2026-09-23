@@ -171,7 +171,7 @@ fn fail_closed_on_import_torch_after_jax_gpu(script: &str) -> bool {
     };
     let same = &lines[jax_end];
     if same.contains(';') {
-        let after = same.splitn(2, ';').nth(1).unwrap_or("");
+        let after = same.split_once(';').map(|x| x.1).unwrap_or("");
         if !same.starts_with(' ')
             && !same.starts_with('\t')
             && after.split(';').any(is_import_torch_stmt)

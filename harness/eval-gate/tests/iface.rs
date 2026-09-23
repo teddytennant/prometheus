@@ -137,7 +137,7 @@ fn evalgate_public_methods_are_exactly_open_request_rotate_suite_hash() {
         let t = line.trim();
         if t.starts_with("pub fn ") {
             let after = t.trim_start_matches("pub fn ");
-            let name = after.split(|c: char| c == '<' || c == '(').next().unwrap();
+            let name = after.split(['<', '(']).next().unwrap();
             names.push(name.to_string());
         }
         // Stop at the next top-level impl/fn after this block's methods —

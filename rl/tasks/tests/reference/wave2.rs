@@ -180,7 +180,7 @@ pub fn encode_open_ended(scores: &BTreeMap<String, f64>) -> String {
 
 pub fn passing_attempt(task: &MintedTask) -> String {
     if let Some(grid) = &task.grid {
-        return encode_grids(&[grid.expected.cells.clone()]);
+        return encode_grids(std::slice::from_ref(&grid.expected.cells));
     }
     if let Some(market) = &task.market {
         return if market.outcome {
@@ -243,7 +243,7 @@ fn passing_checkpoint(cp: &Checkpoint) -> String {
         return String::from_utf8_lossy(&code.run.expected_stdout).into_owned();
     }
     if let Some(grid) = &cp.grid {
-        return encode_grids(&[grid.expected.cells.clone()]);
+        return encode_grids(std::slice::from_ref(&grid.expected.cells));
     }
     String::new()
 }
@@ -315,13 +315,7 @@ fn score_grid(expected: &Grid, attempt: &str) -> bool {
 }
 
 pub fn clamp_prob(p: f64) -> f64 {
-    if p < PROB_EPS {
-        PROB_EPS
-    } else if p > 1.0 - PROB_EPS {
-        1.0 - PROB_EPS
-    } else {
-        p
-    }
+    p.clamp(PROB_EPS, 1.0 - PROB_EPS)
 }
 
 /// Independent D2 relative log score: `ln p_model(y) - ln p_market(y)`.

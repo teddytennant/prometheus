@@ -185,10 +185,10 @@ fn all_eight_dihedrals_on_2x3_golden() {
 #[test]
 fn apply_dihedral_matches_reference_on_several_grids() {
     let col: Vec<Vec<u8>> = (0..MAX_GRID_SIZE as u8)
-        .map(|c| vec![c % N_COLORS as u8])
+        .map(|c| vec![c % N_COLORS])
         .collect();
-    let mut row = (0..N_COLORS as u8).collect::<Vec<_>>();
-    row.extend(std::iter::repeat(0).take(MAX_GRID_SIZE - N_COLORS as usize));
+    let mut row = (0..N_COLORS).collect::<Vec<_>>();
+    row.extend(std::iter::repeat_n(0, MAX_GRID_SIZE - N_COLORS as usize));
     let grids = vec![
         grid(&[&[7]]),
         grid(&[&[1, 2, 3]]),

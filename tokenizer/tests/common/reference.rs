@@ -20,7 +20,7 @@ pub const N_SPECIALS: u32 = 4;
 pub const N_BYTES: u32 = 256;
 pub const FIRST_BYTE: u32 = N_SPECIALS;
 pub const FIRST_ARC: u32 = N_SPECIALS + N_BYTES;
-pub const FIRST_MERGE: u32 = FIRST_ARC + ARC_N_COLORS as u32;
+pub const FIRST_MERGE: u32 = FIRST_ARC + ARC_N_COLORS;
 pub const MIN_VOCAB_SIZE: u32 = FIRST_MERGE + 1;
 pub const VOCAB_FILENAME: &str = "vocab.jsonl";
 pub const TOKENIZER_FILENAME: &str = "tokenizer.json";
@@ -53,7 +53,7 @@ fn layout_specials() -> SpecialTokens {
 fn arc_range() -> ArcGridTokenRange {
     ArcGridTokenRange {
         start: FIRST_ARC,
-        end: FIRST_ARC + ARC_N_COLORS as u32,
+        end: FIRST_ARC + ARC_N_COLORS,
     }
 }
 
@@ -176,7 +176,7 @@ fn artifact_bytes(
             "kind": "byte"
         })));
     }
-    for color in 0..ARC_N_COLORS as u32 {
+    for color in 0..ARC_N_COLORS {
         lines.push(canonical_json(&json!({
             "color": color,
             "id": FIRST_ARC + color,
