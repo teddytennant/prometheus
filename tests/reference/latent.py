@@ -25,6 +25,13 @@ answer_ce_at_depths: per-row CE of a shared answer id.
 stage_b: ``l_task + α l_traj + γ l_halt + β l_kl`` after ``validate_latent_config``.
 
 jacobi: ``thoughts = update(thoughts)`` for ``n_sweeps`` whole-chunk updates.
+Forward does not depend on ``truncated_sweeps``.
+
+jacobi truncated grad: same full forward unroll. Backward treats the state
+entering update index ``n_sweeps - truncated_sweeps`` (0-based) as a constant,
+then differentiates only the last ``truncated_sweeps`` updates by central
+differences. Earlier updates get no gradient. If that entrance is not the
+original thoughts, ``d(sum(output))/d(thoughts)`` is exactly zero.
 
 noisy latent: ``z = μ + clamp(σ) ⊙ ε`` and the independent 1-D Gaussian log-density
 ``-0.5 * sum[((z-μ)/s)^2 + 2 log s + log(2π)]``.
@@ -437,6 +444,93 @@ def jacobi_sweeps(
         if tuple(current.shape) != tuple(shape):
             raise LatentError("update changed shape")
     return current
+
+
+def _jacobi_update_vjp(
+    update: Callable[[Array], Array],
+    state: Array,
+    cotangent: Array,
+    eps: float,
+) -> np.ndarray:
+    """Central-difference VJP of one ``update`` call. Float64, elementwise."""
+    base = np.array(np.asarray(state, dtype=np.float64), copy=True)
+    cot = np.asarray(cotangent, dtype=np.float64)
+    if cot.shape != base.shape:
+        raise LatentError("cotangent shape mismatch")
+    acc = np.zeros(base.shape, dtype=np.float64)
+    step = float(eps)
+    for idx in np.ndindex(base.shape):
+        plus = np.array(base, copy=True)
+        minus = np.array(base, copy=True)
+        plus[idx] += step
+        minus[idx] -= step
+        y_plus = np.asarray(update(plus), dtype=np.float64)
+        y_minus = np.asarray(update(minus), dtype=np.float64)
+        if tuple(y_plus.shape) != tuple(base.shape) or tuple(y_minus.shape) != tuple(base.shape):
+            raise LatentError("update changed shape")
+        dy = (y_plus - y_minus) / (2.0 * step)
+        acc[idx] = float(np.sum(dy * cot))
+    return acc
+
+
+def jacobi_sweeps_truncated_grad(
+    thoughts: Array,
+    update: Callable[[Array], Array],
+    n_sweeps: int,
+    truncated_sweeps: int,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """``d(sum(forward))/d(thoughts)`` with truncated backprop through sweeps.
+
+    Forward matches ``jacobi_sweeps``: apply ``update`` ``n_sweeps`` times.
+    ``truncated_sweeps`` does not change that forward value.
+
+    Backward cut: before the update at index ``n_sweeps - truncated_sweeps``
+    (0-based), the incoming state is a constant (stop-gradient). Only the last
+    ``truncated_sweeps`` updates are differentiated. Earlier updates do not
+    receive gradient. ``truncated_sweeps == n_sweeps`` is the full unroll.
+
+    The derivative is with respect to the ``thoughts`` argument only. An
+    ``update`` that does not close over ``thoughts`` therefore yields an exact
+    zero when the stopped state is not ``thoughts`` itself.
+
+    Does not call production ``model.latent``. Slow central differences, FP64.
+    """
+    arr = np.asarray(thoughts, dtype=np.float64)
+    if arr.ndim != 2:
+        raise LatentError("thoughts rank != 2")
+    n_rows = int(arr.shape[0])
+    n_cols = int(arr.shape[1])
+    if n_rows < 1 or n_cols < 1:
+        raise LatentError("thoughts n>=1 and d>=1")
+    sweeps = int(n_sweeps)
+    if sweeps < 1:
+        raise LatentError("n_sweeps must be >= 1")
+    truncated = int(truncated_sweeps)
+    if truncated < 1 or truncated > sweeps:
+        raise LatentError("truncated_sweeps not in 1..=n_sweeps")
+    step = float(eps)
+    if not math.isfinite(step) or step <= 0.0:
+        raise LatentError("eps must be finite and > 0")
+
+    # Full unroll. states[i] enters update i; states[sweeps] is the forward value.
+    states: list[np.ndarray] = [np.array(arr, copy=True)]
+    shape = states[0].shape
+    for _ in range(sweeps):
+        nxt = np.asarray(update(states[-1]), dtype=np.float64)
+        if tuple(nxt.shape) != tuple(shape):
+            raise LatentError("update changed shape")
+        states.append(np.array(nxt, copy=True))
+
+    cut = sweeps - truncated
+    if cut > 0:
+        # Entrance to the kept window is stop-gradient, not thoughts.
+        return np.zeros(shape, dtype=np.float64)
+
+    cot = np.ones(shape, dtype=np.float64)
+    for step_i in range(sweeps - 1, -1, -1):
+        cot = _jacobi_update_vjp(update, states[step_i], cot, step)
+    return cot
 
 
 def clamp_sigma(sigma: Array, config: LatentConfig) -> Array:
