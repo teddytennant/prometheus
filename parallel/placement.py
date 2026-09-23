@@ -132,6 +132,13 @@ def spmd_circular_pipeline(
     ``jax.lax.axis_index("pp")`` equals the ``stage`` argument; calling the
     body outside the mesh is not a valid implementation.
 
+    An int64 activation stays int64 on the eager call, including
+    ``n_stages == 1`` and values at or above ``2**31``. ``jax.jit`` matches
+    that eager result bitwise only when 64-bit mode is already enabled for
+    the jit call. Enabling it only inside the traced body does not change
+    the dtypes JAX bound as inputs. Callers that jit this function with
+    int64 activations must enable 64-bit mode first.
+
     ``stage_fn`` must preserve the activation shape. A shape change cannot
     be ``ppermute``'d uniformly, so it raises ``parallel.MeshError``.
 
