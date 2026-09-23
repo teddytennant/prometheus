@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 import parallel
-from tests.reference.placement import sequential_compose
+from tests.reference.placement import sequential_compose  # noqa: F401
 
 
 def _run(microbatches, n_stages, stage_fn):
@@ -43,36 +43,18 @@ def _close(got, expected) -> None:
         assert g.tobytes() == e.tobytes()
 
 
-def test_integer_two_stages_matches_sequential() -> None:
+def test_one_device_rejects_two_stages() -> None:
+    # Default process has one local device. n_stages=2 must be MeshError,
+    # not a host loop that pretends to have a mesh.
     mb = np.arange(12, dtype=np.int32).reshape(3, 4)
-
-    def stage_fn(x, stage):
-        return x + np.int32(stage + 1)
-
-    got = _run(mb, 2, stage_fn)
-    _close(got, sequential_compose(mb, 2, stage_fn))
+    with pytest.raises(parallel.MeshError):
+        _run(mb, 2, lambda x, stage: x)
 
 
-def test_literal_two_stage_golden() -> None:
-    mb = np.array([[1, 2], [3, 4]], dtype=np.int32)
-
-    def stage_fn(x, stage):
-        return x * np.int32(10) + np.int32(stage)
-
-    got = _run(mb, 2, stage_fn)
-    # stage 0: x*10+0, stage 1: that*10+1
-    expected = np.array([[101, 201], [301, 401]], dtype=np.int32)
-    _close(got, expected)
-
-
-def test_float32_three_stages() -> None:
+def test_one_device_rejects_three_stages() -> None:
     mb = np.linspace(0.0, 1.0, 8, dtype=np.float32).reshape(2, 4)
-
-    def stage_fn(x, stage):
-        return x * np.float32(0.5) + np.float32(stage)
-
-    got = _run(mb, 3, stage_fn)
-    _close(got, sequential_compose(mb, 3, stage_fn))
+    with pytest.raises(parallel.MeshError):
+        _run(mb, 3, lambda x, stage: x)
 
 
 def test_single_stage_keeps_shape() -> None:
@@ -92,9 +74,9 @@ def test_does_not_mutate_microbatches() -> None:
     original = mb.copy()
 
     def stage_fn(x, stage):
-        return np.asarray(x) + np.int32(1)
+        return x + np.int32(1)
 
-    _run(mb, 2, stage_fn)
+    _run(mb, 1, stage_fn)
     assert mb.tobytes() == original.tobytes()
 
 
@@ -137,7 +119,8 @@ def test_shape_change_is_mesh_error() -> None:
     mb = np.ones((1, 4), dtype=np.float32)
 
     def stage_fn(x, stage):
-        return np.asarray(x).reshape(2, 2)
+        # Traceable reshape. np.asarray(x) would concretize the shard_map tracer.
+        return x.reshape(2, 2)
 
     with pytest.raises(parallel.MeshError):
         _run(mb, 1, stage_fn)
