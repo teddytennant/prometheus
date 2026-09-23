@@ -556,9 +556,12 @@ def jacobi_sweeps(
     ``update(current)`` in one shot (no sequential unroll). ``n_sweeps``
     full updates run; the return value is the state after the last sweep.
 
-    ``truncated_sweeps`` is recorded for the GPU path (backprop through
-    the last N only). On CPU the forward is the full ``n_sweeps`` either
-    way; ``truncated_sweeps`` must still sit in ``1..=n_sweeps``.
+    The forward value is the state after all ``n_sweeps`` updates, for
+    every legal ``truncated_sweeps``. The backward pass flows only
+    through the last ``truncated_sweeps`` updates: the state entering
+    that window is a constant (``stop_gradient``). Earlier updates do
+    not receive gradient. ``truncated_sweeps == n_sweeps`` is full
+    gradient. ``truncated_sweeps`` must sit in ``1..=n_sweeps``.
 
     ``n < 1``, ``n_sweeps < 1``, rank != 2, or a shape change from
     ``update`` raises ``LatentError``.
@@ -567,7 +570,10 @@ def jacobi_sweeps(
     ``truncated_sweeps`` Python ints (closed over or
     ``static_argnums``) and a JAX-traceable ``update``, must match the
     eager result at 1e-5. Must not convert traced ``thoughts`` with
-    ``numpy.asarray``.
+    ``numpy.asarray``. ``jax.grad`` of a scalar of the output, eager and
+    under that same ``jax.jit``, must match the cut above. A gradient
+    that still depends on the input when ``truncated_sweeps < n_sweeps``
+    and ``update`` is the only path from the input does not meet this.
     """
     use_jax = _is_jax(thoughts)
     current = _as_float(thoughts, use_jax)
