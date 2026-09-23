@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -555,6 +555,20 @@ pub struct Checkpointer {
     store: Arc<Mutex<Box<dyn Store>>>,
     replicas: Vec<Option<Checkpoint>>,
     save: Arc<SaveState>,
+    /// Copy on each rack id. Independent of `replicas` and of the [`Store`].
+    rack_copies: HashMap<String, RackCopy>,
+    /// Last successful destination pair per source. Lose and corrupt leave it.
+    rack_plans: HashMap<String, (String, String)>,
+}
+
+/// One rack's copy and the source that placed it.
+///
+/// The owner is what "still holds this source" means. A re-save drops a
+/// previous destination only while that owner matches, so a rack another
+/// source took after a loss is left alone.
+struct RackCopy {
+    source: String,
+    ckpt: Checkpoint,
 }
 
 impl Checkpointer {
@@ -563,6 +577,8 @@ impl Checkpointer {
             store: Arc::new(Mutex::new(persistent)),
             replicas: vec![None; MEMORY_REPLICAS],
             save: Arc::new(SaveState::new()),
+            rack_copies: HashMap::new(),
+            rack_plans: HashMap::new(),
         }
     }
 
@@ -752,8 +768,52 @@ impl Checkpointer {
         source: &str,
         racks: &[String],
     ) -> Result<(String, String)> {
-        let _ = (ckpt, source, racks);
-        unimplemented!("save_cross_rack")
+        // Same rejection as `save_in_memory` before any rack is touched.
+        let prepared = prepare_checkpoint(ckpt)?;
+        let pair = plan_cross_rack(racks, source)?;
+        if self.dest_held_by_other(&pair.0, source) || self.dest_held_by_other(&pair.1, source) {
+            return Err(CkptError::Rack(format!(
+                "destination already holds a different source than {source}"
+            )));
+        }
+        let previous = self.rack_plans.get(source).cloned();
+        self.rack_copies.insert(
+            pair.0.clone(),
+            RackCopy {
+                source: source.to_string(),
+                ckpt: prepared.clone(),
+            },
+        );
+        self.rack_copies.insert(
+            pair.1.clone(),
+            RackCopy {
+                source: source.to_string(),
+                ckpt: prepared,
+            },
+        );
+        if let Some((old_left, old_right)) = previous {
+            for old in [old_left, old_right] {
+                if old == pair.0 || old == pair.1 {
+                    continue;
+                }
+                let still_ours = self
+                    .rack_copies
+                    .get(&old)
+                    .is_some_and(|held| held.source == source);
+                if still_ours {
+                    self.rack_copies.remove(&old);
+                }
+            }
+        }
+        self.rack_plans.insert(source.to_string(), pair.clone());
+        Ok(pair)
+    }
+
+    /// True when `dest` holds a copy placed by a source other than `source`.
+    fn dest_held_by_other(&self, dest: &str, source: &str) -> bool {
+        self.rack_copies
+            .get(dest)
+            .is_some_and(|held| held.source != source)
     }
 
     /// Clone the copy on `rack` and verify it.
@@ -762,8 +822,13 @@ impl Checkpointer {
     /// [`Self::lose_rack`]). [`CkptError::HashMismatch`] if the bytes were
     /// corrupted. Does not consult the other rack.
     pub fn restore_from_rack(&self, rack: &str) -> Result<Checkpoint> {
-        let _ = rack;
-        unimplemented!("restore_from_rack")
+        let copy = self
+            .rack_copies
+            .get(rack)
+            .ok_or_else(|| CkptError::NotFound(rack.to_string()))?;
+        let ckpt = copy.ckpt.clone();
+        verify_checkpoint(&ckpt)?;
+        Ok(ckpt)
     }
 
     /// Drop the copy on `rack`. The other destination of the same save stays.
@@ -772,8 +837,10 @@ impl Checkpointer {
     /// destinations are lost, both restores fail and
     /// [`Self::cross_rack_destinations`] still returns the last pair.
     pub fn lose_rack(&mut self, rack: &str) -> Result<()> {
-        let _ = rack;
-        unimplemented!("lose_rack")
+        if self.rack_copies.remove(rack).is_none() {
+            return Err(CkptError::NotFound(rack.to_string()));
+        }
+        Ok(())
     }
 
     /// Flip one byte of the copy on `rack` only.
@@ -783,8 +850,16 @@ impl Checkpointer {
     /// [`CkptError::NotFound`] if `rack` holds nothing. [`CkptError::Rack`]
     /// if the stored checkpoint has no shard bytes to flip.
     pub fn corrupt_rack(&mut self, rack: &str) -> Result<()> {
-        let _ = rack;
-        unimplemented!("corrupt_rack")
+        let copy = self
+            .rack_copies
+            .get_mut(rack)
+            .ok_or_else(|| CkptError::NotFound(rack.to_string()))?;
+        if !flip_one_shard_byte(&mut copy.ckpt) {
+            return Err(CkptError::Rack(
+                "stored checkpoint has no shard bytes to flip".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Last successful destination pair for `source`, in walk order.
@@ -793,8 +868,10 @@ impl Checkpointer {
     /// [`Self::corrupt_rack`]. [`CkptError::NotFound`] if `source` has never
     /// saved. Not a recompute from a fleet list.
     pub fn cross_rack_destinations(&self, source: &str) -> Result<(String, String)> {
-        let _ = source;
-        unimplemented!("cross_rack_destinations")
+        self.rack_plans
+            .get(source)
+            .cloned()
+            .ok_or_else(|| CkptError::NotFound(source.to_string()))
     }
 }
 
@@ -811,6 +888,47 @@ impl Checkpointer {
 /// `"d"` is `("a","b")`; source `"c"` is `("d","a")`. `["a","b","a","c"]`
 /// with source `"b"` is `("a","c")`.
 pub fn plan_cross_rack(racks: &[String], source: &str) -> Result<(String, String)> {
-    let _ = (racks, source);
-    unimplemented!("plan_cross_rack")
+    if source.is_empty() {
+        return Err(CkptError::Rack("empty source".into()));
+    }
+    if racks.iter().any(String::is_empty) {
+        return Err(CkptError::Rack("empty rack id".into()));
+    }
+    let Some(start) = racks.iter().position(|id| id == source) else {
+        return Err(CkptError::Rack(format!(
+            "source {source} is not in the fleet"
+        )));
+    };
+    if racks.iter().collect::<HashSet<_>>().len() < 3 {
+        return Err(CkptError::Rack("fewer than 3 distinct rack ids".into()));
+    }
+    let mut chosen: Vec<&String> = Vec::new();
+    let n = racks.len();
+    for step in 1..=n {
+        let id = &racks[(start + step) % n];
+        if id == source || chosen.contains(&id) {
+            continue;
+        }
+        chosen.push(id);
+        if chosen.len() == CROSS_RACK_COPIES {
+            return Ok((chosen[0].clone(), chosen[1].clone()));
+        }
+    }
+    Err(CkptError::Rack(
+        "walk found fewer than two other racks".into(),
+    ))
+}
+
+/// Flip the first byte of the first non-empty shard, weights then optimizer.
+///
+/// Returns false, and leaves `ckpt` unchanged, when every shard is empty.
+/// That byte is the one `verify_checkpoint` will report as [`CkptError::HashMismatch`].
+fn flip_one_shard_byte(ckpt: &mut Checkpoint) -> bool {
+    for blob in ckpt.weights.iter_mut().chain(ckpt.optimizer.iter_mut()) {
+        if let Some(byte) = blob.bytes.first_mut() {
+            *byte ^= 0xff;
+            return true;
+        }
+    }
+    false
 }
