@@ -928,7 +928,9 @@ def forward(
     h, z_sum, z_n, last_probs, last_ids = apply_range(
         h, 0, prelude, z_sum, z_n, last_probs, last_ids
     )
+    # Prelude output, before iteration 0. Not stopped: live steps add it back.
     injected = h
+    # Iteration 0 runs the core on the prelude output and does not add injected.
     h, z_sum, z_n, last_probs, last_ids = apply_range(
         h, prelude, core, z_sum, z_n, last_probs, last_ids
     )
@@ -944,14 +946,28 @@ def forward(
             0, dtype=jnp.int32
         )
 
-    if r_used > 1:
-        carry, _ = jax.lax.scan(
-            core_body,
-            (h, z_sum, z_n, last_probs, last_ids),
-            xs=None,
-            length=r_used - 1,
-        )
-        h, z_sum, z_n, last_probs, last_ids = carry
+    def scan_core(
+        carry: tuple[Array, Array, Array, Array, Array], length: int
+    ) -> tuple[Array, Array, Array, Array, Array]:
+        scanned, _ = jax.lax.scan(core_body, carry, xs=None, length=length)
+        return scanned
+
+    # Both are host ints, so this branch is not traced when the window is full.
+    # A traced cond would still put stop_gradient in the full-window jaxpr.
+    effective = min(truncated_recurrence, r_used)
+    cut = r_used - effective
+    carry = (h, z_sum, z_n, last_probs, last_ids)
+    if cut == 0:
+        if r_used > 1:
+            carry = scan_core(carry, r_used - 1)
+    else:
+        # Iterations 1..cut-1, then stop the carry entering iteration `cut`.
+        prefix = cut - 1
+        if prefix > 0:
+            carry = scan_core(carry, prefix)
+        carry = jax.lax.stop_gradient(carry)
+        carry = scan_core(carry, r_used - cut)
+    h, z_sum, z_n, last_probs, last_ids = carry
     h, z_sum, z_n, last_probs, last_ids = apply_range(
         h, prelude + core, coda, z_sum, z_n, last_probs, last_ids
     )
