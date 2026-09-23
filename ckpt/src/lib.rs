@@ -924,11 +924,49 @@ pub fn plan_cross_rack(racks: &[String], source: &str) -> Result<(String, String
 /// Returns false, and leaves `ckpt` unchanged, when every shard is empty.
 /// That byte is the one `verify_checkpoint` will report as [`CkptError::HashMismatch`].
 fn flip_one_shard_byte(ckpt: &mut Checkpoint) -> bool {
-    for blob in ckpt.weights.iter_mut().chain(ckpt.optimizer.iter_mut()) {
-        if let Some(byte) = blob.bytes.first_mut() {
-            *byte ^= 0xff;
-            return true;
-        }
+    // Same match as `find_blob`: the first blob with this name and shard_rank.
+    // An earlier empty twin is that match, so a later duplicate is not flipped.
+    // An unlisted blob is never a match.
+    flip_listed_byte(&mut ckpt.weights, &ckpt.manifest.weights)
+        || flip_listed_byte(&mut ckpt.optimizer, &ckpt.manifest.optimizer)
+}
+
+fn flip_listed_byte(blobs: &mut [ShardBlob], metas: &[impl ListedShard]) -> bool {
+    for meta in metas {
+        let Some(blob) = blobs
+            .iter_mut()
+            .find(|blob| blob.name == meta.shard_name() && blob.shard_rank == meta.shard_rank())
+        else {
+            continue;
+        };
+        let Some(byte) = blob.bytes.first_mut() else {
+            continue;
+        };
+        *byte ^= 0xff;
+        return true;
     }
     false
+}
+
+trait ListedShard {
+    fn shard_name(&self) -> &str;
+    fn shard_rank(&self) -> u64;
+}
+
+impl ListedShard for WeightMeta {
+    fn shard_name(&self) -> &str {
+        &self.name
+    }
+    fn shard_rank(&self) -> u64 {
+        self.shard_rank
+    }
+}
+
+impl ListedShard for OptimizerMeta {
+    fn shard_name(&self) -> &str {
+        &self.name
+    }
+    fn shard_rank(&self) -> u64 {
+        self.shard_rank
+    }
 }
