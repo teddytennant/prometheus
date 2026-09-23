@@ -5,23 +5,62 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cpu-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  test:
+  tree:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Repo invariants
+        run: python3 .github/ci/checks.py tree
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
+      # --locked fails if uv.lock is out of date with pyproject.toml instead of
+      # quietly re-resolving on the runner.
       - name: Sync Python deps
-        run: uv sync --group dev
+        run: uv sync --locked --group dev
 
       - name: Ruff
-        run: uv run ruff check .
+        run: uv run ruff check --output-format github .
 
       - name: Pytest
-        run: uv run pytest
+        run: >
+          uv run pytest -rs
+          --strict-markers --strict-config -o xfail_strict=true
+          -p no:cacheprovider --junitxml=pytest.xml
+
+      - name: No skips besides GPU
+        if: ${{ !cancelled() && hashFiles('pytest.xml') != '' }}
+        run: python3 .github/ci/checks.py skips pytest.xml
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
 
       # Pinned to the toolchain the build machine runs, so a new stable lint
       # can't turn CI red on code that passed clippy locally.
@@ -29,13 +68,25 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cargo checks
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+
+      # Library and binary code gets every default lint. Test targets skip the
+      # purely structural ones (long signatures, index loops, nested types).
+      - name: Clippy
         run: |
-          members=$(python3 -c "import pathlib,tomllib; print(len(tomllib.loads(pathlib.Path('Cargo.toml').read_text()).get('workspace',{}).get('members') or []))")
-          if [ "$members" = "0" ]; then
-            echo "empty cargo workspace; skipping rust checks"
-            exit 0
-          fi
-          cargo fmt --all -- --check
-          cargo test --workspace
-          cargo clippy --workspace -- -D warnings
+          cargo clippy --locked --workspace -- -D warnings
+          cargo clippy --locked --workspace --all-targets -- -D warnings \
+            -A clippy::type_complexity -A clippy::too_many_arguments \
+            -A clippy::needless_range_loop -A clippy::doc_lazy_continuation \
+            -A clippy::unusual_byte_groupings
+
+      - name: Cargo test
+        run: cargo test --locked --workspace
+
+      - name: Rustdoc
+        run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
