@@ -18,6 +18,7 @@ from typing import Any
 import kernels
 import parallel.cp as _cp
 import parallel.fsdp as _fsdp
+import parallel.placement as _placement
 import parallel.schedule as _schedule
 
 Array = Any
@@ -207,6 +208,7 @@ fsdp_reduce_scatter = _fsdp.fsdp_reduce_scatter
 zero3_views = _fsdp.zero3_views
 circular_pipeline = _schedule.circular_pipeline
 pipeline_forward_schedule = _schedule.pipeline_forward_schedule
+spmd_circular_pipeline = _placement.spmd_circular_pipeline
 cp_split_seq = _cp.cp_split_seq
 cp_ring_schedule = _cp.cp_ring_schedule
 ring_attention_rank = _cp.ring_attention_rank
