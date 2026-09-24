@@ -766,7 +766,32 @@ def plan_think_layout(
     ``config`` beyond reading ``chunk_min`` / ``chunk_max``. Host-side.
     Not implemented.
     """
-    raise NotImplementedError
+    lengths = list(chunk_lengths)
+    if len(lengths) == 0:
+        raise LatentError("chunk_lengths empty")
+    for n in lengths:
+        bad_len = (
+            isinstance(n, bool)
+            or not isinstance(n, int)
+            or n < config.chunk_min
+            or n > config.chunk_max
+        )
+        if bad_len:
+            raise LatentError("chunk length out of range")
+    anchors = list(anchor_token_ids)
+    if len(anchors) == 0:
+        raise LatentError("anchor empty")
+    for tok in anchors:
+        if isinstance(tok, bool) or not isinstance(tok, int) or tok < 0:
+            raise LatentError("anchor token id")
+    anchor_ids = tuple(anchors)
+    spans: list[ThinkSpan] = []
+    last = len(lengths) - 1
+    for i, n in enumerate(lengths):
+        spans.append(ThinkSpan(SpanKind.LATENT, n, ()))
+        if i != last:
+            spans.append(ThinkSpan(SpanKind.ANCHOR, 0, anchor_ids))
+    return tuple(spans)
 
 
 def insert_discrete_tool(
@@ -796,7 +821,52 @@ def insert_discrete_tool(
     token id. Returns a new tuple. Does not mutate ``layout``. Host-side.
     Not implemented.
     """
-    raise NotImplementedError
+    if isinstance(layout, (str, bytes)) or not isinstance(layout, Sequence):
+        raise LatentError("layout")
+    spans = tuple(layout)
+    if (
+        len(spans) == 0
+        or not isinstance(spans[0], ThinkSpan)
+        or spans[0].kind is not SpanKind.LATENT
+    ):
+        raise LatentError("layout")
+    latents: list[int] = []
+    for i, span in enumerate(spans):
+        if not isinstance(span, ThinkSpan):
+            raise LatentError("layout")
+        if span.kind is SpanKind.LATENT:
+            latents.append(i)
+    for i in range(len(latents) - 1):
+        a = latents[i]
+        b = latents[i + 1]
+        kinds = [spans[j].kind for j in range(a + 1, b)]
+        n_anchor = sum(k is SpanKind.ANCHOR for k in kinds)
+        if n_anchor != 1:
+            raise LatentError("layout")
+        if SpanKind.TOOL in kinds and kinds.index(SpanKind.ANCHOR) > kinds.index(SpanKind.TOOL):
+            raise LatentError("layout")
+    # Tools may already sit after the last latent (earlier insert on that chunk).
+    if any(span.kind is not SpanKind.TOOL for span in spans[latents[-1] + 1 :]):
+        raise LatentError("layout")
+    n_chunks = len(latents)
+    bad_index = (
+        isinstance(after_chunk, bool)
+        or not isinstance(after_chunk, int)
+        or after_chunk < 0
+        or after_chunk >= n_chunks
+    )
+    if bad_index:
+        raise LatentError("after_chunk")
+    ids = list(tool_token_ids)
+    if len(ids) == 0:
+        raise LatentError("tool empty")
+    for tok in ids:
+        if isinstance(tok, bool) or not isinstance(tok, int) or tok < 0:
+            raise LatentError("tool token id")
+    insert_at = len(spans) if after_chunk == n_chunks - 1 else latents[after_chunk + 1]
+    out = list(spans)
+    out.insert(insert_at, ThinkSpan(SpanKind.TOOL, 0, tuple(ids)))
+    return tuple(out)
 
 
 def decode_thought_segment(
@@ -842,7 +912,78 @@ def decode_thought_segment(
     None`` raises ``LatentError("decoder")``; decoder rank/shape/finite
     mismatch raises ``LatentError("decoder")``. Not implemented.
     """
-    raise NotImplementedError
+    if isinstance(teacher_len, bool) or not isinstance(teacher_len, int) or teacher_len < 1:
+        raise LatentError("teacher_len")
+
+    def finite(arr: Array) -> bool:
+        if _is_tracer(arr):
+            return True
+        return bool(np.all(np.isfinite(np.asarray(arr))))
+
+    def tied(x: Array, embed: Array, norm: Array | None, jax_path: bool) -> Array:
+        xp = jnp if jax_path else np
+        y = x
+        if norm is not None:
+            ms = xp.mean(y * y)
+            y = y * (1.0 / xp.sqrt(ms + 1e-6)) * norm
+        return y @ embed.T
+
+    # teacher_len == 1 must not read decoder, even to decide the backend.
+    use_jax = _is_jax(hidden) or _is_jax(unembed)
+    if final_norm is not None and _is_jax(final_norm):
+        use_jax = True
+    h = _as_float(hidden, use_jax)
+    if h.ndim != 1 or int(h.shape[0]) < 1 or not finite(h):
+        raise LatentError("hidden")
+    d = int(h.shape[0])
+    u = _as_float(unembed, use_jax)
+    if u.ndim != 2 or int(u.shape[0]) < 1 or int(u.shape[1]) != d or not finite(u):
+        raise LatentError("unembed")
+    weight: Array | None = None
+    if final_norm is not None:
+        weight = _as_float(final_norm, use_jax)
+        if tuple(weight.shape) != (d,) or not finite(weight):
+            raise LatentError("final_norm")
+    if teacher_len == 1:
+        return tied(h, u, weight, use_jax)
+
+    if decoder is None or not isinstance(decoder, SegmentDecoder):
+        raise LatentError("decoder")
+    if (not use_jax) and (
+        _is_jax(decoder.w_in) or _is_jax(decoder.w_h) or _is_jax(decoder.bias)
+    ):
+        use_jax = True
+        h = _as_float(hidden, True)
+        u = _as_float(unembed, True)
+        if final_norm is not None:
+            weight = _as_float(final_norm, True)
+    w_in = _as_float(decoder.w_in, use_jax)
+    w_h = _as_float(decoder.w_h, use_jax)
+    bias = _as_float(decoder.bias, use_jax)
+    bad_decoder = (
+        tuple(w_in.shape) != (d, d)
+        or tuple(w_h.shape) != (d, d)
+        or tuple(bias.shape) != (d,)
+        or not finite(w_in)
+        or not finite(w_h)
+        or not finite(bias)
+    )
+    if bad_decoder:
+        raise LatentError("decoder")
+    if use_jax:
+
+        def step(state: Array, _unused: object) -> tuple[Array, Array]:
+            nxt = jnp.tanh(h @ w_in + state @ w_h + bias)
+            return nxt, tied(nxt, u, weight, True)
+
+        _carry, logits = jax.lax.scan(step, jnp.zeros_like(h), None, length=teacher_len)
+        return logits
+    state = np.zeros_like(h)
+    rows = []
+    for _ in range(teacher_len):
+        state = np.tanh(h @ w_in + state @ w_h + bias)
+        rows.append(tied(state, u, weight, False))
+    return np.stack(rows, axis=0)
 
 
 def codi_alignment(student_h: Array, teacher_h: Array) -> Array:
@@ -864,7 +1005,23 @@ def codi_alignment(student_h: Array, teacher_h: Array) -> Array:
     0-d JAX array. Numpy inputs return a numpy scalar. ``jax.jit`` must
     match eager at 1e-5. Not implemented.
     """
-    raise NotImplementedError
+    use_jax = _is_jax(student_h) or _is_jax(teacher_h)
+
+    def check(value: Array, name: str) -> Array:
+        arr = _as_float(value, use_jax)
+        if arr.ndim != 2 or int(arr.shape[0]) < 1 or int(arr.shape[1]) < 1:
+            raise LatentError(name)
+        if not _is_tracer(arr) and not bool(np.all(np.isfinite(np.asarray(arr)))):
+            raise LatentError(name)
+        return arr
+
+    student = check(student_h, "student_h")
+    teacher = check(teacher_h, "teacher_h")
+    if student.shape != teacher.shape:
+        raise LatentError("shape")
+    if use_jax:
+        return jnp.mean((student - jax.lax.stop_gradient(teacher)) ** 2)
+    return np.mean((student - teacher) ** 2)
 
 
 def stage_b_objective(
@@ -898,4 +1055,26 @@ def stage_b_objective(
     ``StageBObjective`` is a registered pytree. Do not ``numpy.asarray``
     traced values. Not implemented.
     """
-    raise NotImplementedError
+    if (
+        isinstance(align_weight, bool)
+        or not isinstance(align_weight, (int, float))
+        or not math.isfinite(align_weight)
+        or align_weight < 0
+    ):
+        raise LatentError("align_weight")
+    base = stage_b_loss(
+        halt_logits,
+        answer_logits,
+        thought_logits,
+        teacher_ids,
+        thought_mask,
+        answer_id,
+        teacher_depth,
+        config,
+    )
+    l_align = codi_alignment(student_h, teacher_h)
+    return StageBObjective(
+        stage_b=base,
+        l_align=l_align,
+        total=base.total + align_weight * l_align,
+    )
