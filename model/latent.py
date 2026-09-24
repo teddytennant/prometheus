@@ -868,28 +868,34 @@ def codi_alignment(student_h: Array, teacher_h: Array) -> Array:
 
 
 def stage_b_objective(
-    config: LatentConfig,
     halt_logits: Array,
-    answer_losses: Array,
+    answer_logits: Array,
     thought_logits: Array,
-    teacher_token_ids: Array,
+    teacher_ids: Array,
     thought_mask: Array,
-    teacher_steps: int,
-    student_boundary: Array,
-    teacher_boundary: Array,
-    align_weight: float,
+    answer_id: int,
+    teacher_depth: int,
+    config: LatentConfig,
+    student_h: Array,
+    teacher_h: Array,
+    *,
+    align_weight: float = 1.0,
 ) -> StageBObjective:
     """``stage_b_loss`` plus ``align_weight * codi_alignment`` (spec 4.3).
 
+    Arguments before ``student_h`` are exactly ``stage_b_loss``.
     ``align_weight`` must be a finite float >= 0 (bool is not a float).
     Checked first: otherwise ``LatentError("align_weight")``. Then the
     four Reverie terms are exactly ``stage_b_loss`` with the same
-    arguments and the same errors. Then ``codi_alignment`` on the two
-    boundary arrays. ``total = stage_b.total + align_weight * l_align``.
+    arguments and the same errors. Then ``codi_alignment`` on
+    ``student_h`` and ``teacher_h``. ``total = stage_b.total +
+    align_weight * l_align``.
 
-    ``jax.jit`` with ``config``, ``teacher_steps``, and ``align_weight``
-    host-side must match eager at 1e-5. ``StageBObjective`` is a
-    registered pytree. Do not ``numpy.asarray`` traced values. Not
-    implemented.
+    ``StageBObjective.stage_b`` is that ``StageBLoss``. ``l_align`` is the
+    alignment value. ``total`` is the sum above. ``align_weight`` is not
+    stored. ``jax.jit`` with ``config``, ``teacher_depth``, ``answer_id``,
+    and ``align_weight`` host-side must match eager at 1e-5.
+    ``StageBObjective`` is a registered pytree. Do not ``numpy.asarray``
+    traced values. Not implemented.
     """
     raise NotImplementedError
