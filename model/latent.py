@@ -1,8 +1,10 @@
-"""Stage-B latent reasoning (spec 4.3, 4.4, 15.5 I5).
+"""Stage-B latent reasoning (spec 4.2, 4.3, 4.4, 15.5 I5).
 
 The 2-layer MLP + norm adapter is already in ``model`` (A1 / V1 shape).
 This module is the rest of I5: PonderNet halt, thought-decode loss,
-Jacobi-style parallel thought updates, and the noisy latent policy.
+Jacobi-style parallel thought updates, the noisy latent policy, discrete
+anchors between latent chunks (spec 4.2), tied-head / small-decoder
+thought decode, and CODI boundary alignment (spec 4.3).
 
 CPU / FP32 analog of V6. Does not run a rung, import ``rl.loss``,
 import ``tests``, talk to a coordinator, or need a GPU. Arrays are
@@ -25,13 +27,21 @@ dataclass so ``jax.jit(noisy_latent)`` can return it. ``mu``, ``sigma``,
 ``HaltOutput`` / ``StageBLoss``.
 
 IS weighting of latent log-probs is ``rl.loss``, not this module.
+
+``jax.jit`` of ``decode_thought_segment``, ``codi_alignment``, and
+``stage_b_objective`` must match the eager call at 1e-5.
+``teacher_len``, ``align_weight``, and ``LatentConfig`` stay host-side
+on those entries. ``plan_think_layout`` and ``insert_discrete_tool``
+are host-side; do not jit them. ``SegmentDecoder`` and
+``StageBObjective`` must be jax.tree_util registered dataclasses.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import jax
@@ -42,7 +52,7 @@ Array = Any  # numpy.ndarray or jax.Array; FP32
 
 
 class LatentError(ValueError):
-    """A config, shape, or numeric invariant from spec 4.3 / 4.4 failed."""
+    """A config, shape, or numeric invariant from spec 4.2 / 4.3 / 4.4 failed."""
 
 
 # spec 4.2: latent chunks of 4 to 64 thoughts.
@@ -154,6 +164,68 @@ class NoisyLatent:
 jax.tree_util.register_dataclass(
     NoisyLatent,
     data_fields=("mu", "sigma", "eps", "z", "log_density"),
+    meta_fields=(),
+)
+
+
+class SpanKind(StrEnum):
+    """One piece of a think span (spec 4.2)."""
+
+    LATENT = "latent"
+    ANCHOR = "anchor"
+    TOOL = "tool"
+
+
+@dataclass(frozen=True)
+class ThinkSpan:
+    """A latent chunk, a discrete anchor, or a discrete tool call.
+
+    ``n_thoughts`` is the chunk length for ``LATENT`` and 0 otherwise.
+    ``token_ids`` is empty for ``LATENT`` and the discrete ids otherwise.
+    Host-side. Not a JAX pytree.
+    """
+
+    kind: SpanKind
+    n_thoughts: int
+    token_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SegmentDecoder:
+    """Weights of the small decoder for a multi-token teacher step (spec 4.3).
+
+    ``w_in`` and ``w_h`` are ``(d, d)``. ``bias`` is ``(d,)``. The tied
+    unembed is not stored here; the caller passes it. One-token steps do
+    not read these weights.
+    """
+
+    w_in: Array
+    w_h: Array
+    bias: Array
+
+
+@dataclass(frozen=True)
+class StageBObjective:
+    """Reverie terms plus CODI alignment (spec 4.3).
+
+    ``total`` is ``stage_b.total + align_weight * l_align``. ``l_align``
+    is ``codi_alignment``. The spec names the alignment term and not its
+    coefficient; ``align_weight`` is a caller argument.
+    """
+
+    stage_b: StageBLoss
+    l_align: float
+    total: float
+
+
+jax.tree_util.register_dataclass(
+    SegmentDecoder,
+    data_fields=("w_in", "w_h", "bias"),
+    meta_fields=(),
+)
+jax.tree_util.register_dataclass(
+    StageBObjective,
+    data_fields=("stage_b", "l_align", "total"),
     meta_fields=(),
 )
 
@@ -665,4 +737,344 @@ def noisy_latent(mu: Array, sigma: Array, eps: Array, config: LatentConfig) -> N
         eps=eps_a,
         z=z,
         log_density=-half * total,
+    )
+
+
+def plan_think_layout(
+    chunk_lengths: Sequence[int],
+    anchor_token_ids: Sequence[int],
+    config: LatentConfig,
+) -> tuple[ThinkSpan, ...]:
+    """Alternate latent chunks and one discrete anchor (spec 4.2).
+
+    Layout is latent, anchor, latent, anchor, ..., latent. The last span
+    is latent: no trailing anchor after the final chunk. Every chunk
+    length is an int in ``[config.chunk_min, config.chunk_max]`` (bool
+    is not an int). ``anchor_token_ids`` is a non-empty sequence of
+    ints >= 0, copied into each anchor span.
+
+    ``plan_think_layout((4, 8), (7, 8), config)`` is
+    ``(ThinkSpan(LATENT, 4, ()), ThinkSpan(ANCHOR, 0, (7, 8)),
+    ThinkSpan(LATENT, 8, ()))``.
+
+    Error order, first failure wins: empty ``chunk_lengths`` raises
+    ``LatentError("chunk_lengths empty")``; a length that is not an int
+    or is outside the chunk range raises
+    ``LatentError("chunk length out of range")``; empty anchors raise
+    ``LatentError("anchor empty")``; a non-int or negative anchor id
+    raises ``LatentError("anchor token id")``. Does not validate
+    ``config`` beyond reading ``chunk_min`` / ``chunk_max``. Host-side.
+    Not implemented.
+    """
+    lengths = list(chunk_lengths)
+    if len(lengths) == 0:
+        raise LatentError("chunk_lengths empty")
+    for n in lengths:
+        bad_len = (
+            isinstance(n, bool)
+            or not isinstance(n, int)
+            or n < config.chunk_min
+            or n > config.chunk_max
+        )
+        if bad_len:
+            raise LatentError("chunk length out of range")
+    anchors = list(anchor_token_ids)
+    if len(anchors) == 0:
+        raise LatentError("anchor empty")
+    for tok in anchors:
+        if isinstance(tok, bool) or not isinstance(tok, int) or tok < 0:
+            raise LatentError("anchor token id")
+    anchor_ids = tuple(anchors)
+    spans: list[ThinkSpan] = []
+    last = len(lengths) - 1
+    for i, n in enumerate(lengths):
+        spans.append(ThinkSpan(SpanKind.LATENT, n, ()))
+        if i != last:
+            spans.append(ThinkSpan(SpanKind.ANCHOR, 0, anchor_ids))
+    return tuple(spans)
+
+
+def insert_discrete_tool(
+    layout: Sequence[ThinkSpan],
+    after_chunk: int,
+    tool_token_ids: Sequence[int],
+) -> tuple[ThinkSpan, ...]:
+    """Insert a discrete tool span after a latent chunk (spec 4.2).
+
+    Tool calls are never latent. ``after_chunk`` indexes latent spans
+    in order, 0-based. The tool is appended at the end of that chunk's
+    discrete gap: after its anchor when one follows, and after any tools
+    already in that gap, before the next latent span. The last chunk has
+    no following anchor, so a tool there is appended after the final
+    latent span (and after tools already there).
+
+    A layout from ``plan_think_layout`` plus earlier calls of this
+    function is valid. A non-last gap must contain exactly one
+    ``ANCHOR``. Adjacent latent spans, a missing anchor in a non-last
+    gap, a non-span entry, or a layout that does not start and end on
+    ``LATENT`` raises ``LatentError("layout")``. ``after_chunk`` outside
+    ``0 .. n_chunks-1`` (and a bool) raises ``LatentError("after_chunk")``.
+    Empty tools raise ``LatentError("tool empty")``. A non-int or
+    negative tool id raises ``LatentError("tool token id")``.
+
+    Error order: layout, then after_chunk, then tool empty, then tool
+    token id. Returns a new tuple. Does not mutate ``layout``. Host-side.
+    Not implemented.
+    """
+    if isinstance(layout, (str, bytes)) or not isinstance(layout, Sequence):
+        raise LatentError("layout")
+    spans = tuple(layout)
+    if (
+        len(spans) == 0
+        or not isinstance(spans[0], ThinkSpan)
+        or spans[0].kind is not SpanKind.LATENT
+    ):
+        raise LatentError("layout")
+    latents: list[int] = []
+    for i, span in enumerate(spans):
+        if not isinstance(span, ThinkSpan):
+            raise LatentError("layout")
+        if span.kind is SpanKind.LATENT:
+            latents.append(i)
+    for i in range(len(latents) - 1):
+        a = latents[i]
+        b = latents[i + 1]
+        kinds = [spans[j].kind for j in range(a + 1, b)]
+        n_anchor = sum(k is SpanKind.ANCHOR for k in kinds)
+        if n_anchor != 1:
+            raise LatentError("layout")
+        if SpanKind.TOOL in kinds and kinds.index(SpanKind.ANCHOR) > kinds.index(SpanKind.TOOL):
+            raise LatentError("layout")
+    # Tools may already sit after the last latent (earlier insert on that chunk).
+    if any(span.kind is not SpanKind.TOOL for span in spans[latents[-1] + 1 :]):
+        raise LatentError("layout")
+    n_chunks = len(latents)
+    bad_index = (
+        isinstance(after_chunk, bool)
+        or not isinstance(after_chunk, int)
+        or after_chunk < 0
+        or after_chunk >= n_chunks
+    )
+    if bad_index:
+        raise LatentError("after_chunk")
+    ids = list(tool_token_ids)
+    if len(ids) == 0:
+        raise LatentError("tool empty")
+    for tok in ids:
+        if isinstance(tok, bool) or not isinstance(tok, int) or tok < 0:
+            raise LatentError("tool token id")
+    insert_at = len(spans) if after_chunk == n_chunks - 1 else latents[after_chunk + 1]
+    out = list(spans)
+    out.insert(insert_at, ThinkSpan(SpanKind.TOOL, 0, tuple(ids)))
+    return tuple(out)
+
+
+def decode_thought_segment(
+    hidden: Array,
+    teacher_len: int,
+    unembed: Array,
+    decoder: SegmentDecoder | None = None,
+    final_norm: Array | None = None,
+) -> Array:
+    """Logits for one thought decoding to a teacher step (spec 4.3).
+
+    One-token steps use the tied head only. Longer steps use the small
+    decoder, then the same tied head at every position. ``teacher_len``
+    is a host int >= 1 (bool is not an int). ``hidden`` is ``(d,)``,
+    finite, ``d >= 1``. ``unembed`` is ``(vocab, d)``, ``vocab >= 1``.
+    ``final_norm``, when given, is ``(d,)`` and is the RMSNorm weight
+    applied before the tied matmul, same formula as ``model.rms_norm``
+    (eps ``1e-6``): ``x * rsqrt(mean(x^2) + eps) * weight``. When
+    ``final_norm`` is None, the tied head is ``h @ unembed.T`` with no
+    norm.
+
+    ``teacher_len == 1`` does not read ``decoder``. A NaN decoder must
+    not affect the one-token result. Logits shape is ``(vocab,)``.
+
+    ``teacher_len > 1`` requires ``decoder``. Initial state is zeros of
+    ``hidden``'s shape and dtype. For each position ``t``:
+
+        state = tanh(hidden @ w_in + state @ w_h + bias)
+        logits[t] = tied(state)
+
+    where ``tied`` is the optional RMSNorm then ``@ unembed.T``. Result
+    shape is ``(teacher_len, vocab)``.
+
+    Numpy inputs return numpy. If any array input is JAX, promote and
+    return JAX. ``jax.jit`` with ``teacher_len`` static must match eager
+    at 1e-5. Do not ``numpy.asarray`` or Python ``float()`` on traced
+    values. ``teacher_len`` is not traced.
+
+    Error order: ``teacher_len < 1`` raises ``LatentError("teacher_len")``;
+    bad ``hidden`` raises ``LatentError("hidden")``; bad ``unembed``
+    raises ``LatentError("unembed")``; bad ``final_norm`` raises
+    ``LatentError("final_norm")``; ``teacher_len > 1`` and ``decoder is
+    None`` raises ``LatentError("decoder")``; decoder rank/shape/finite
+    mismatch raises ``LatentError("decoder")``. Not implemented.
+    """
+    if isinstance(teacher_len, bool) or not isinstance(teacher_len, int) or teacher_len < 1:
+        raise LatentError("teacher_len")
+
+    def finite(arr: Array) -> bool:
+        if _is_tracer(arr):
+            return True
+        return bool(np.all(np.isfinite(np.asarray(arr))))
+
+    def tied(x: Array, embed: Array, norm: Array | None, jax_path: bool) -> Array:
+        xp = jnp if jax_path else np
+        y = x
+        if norm is not None:
+            ms = xp.mean(y * y)
+            y = y * (1.0 / xp.sqrt(ms + 1e-6)) * norm
+        return y @ embed.T
+
+    # teacher_len == 1 must not read decoder, even to decide the backend.
+    use_jax = _is_jax(hidden) or _is_jax(unembed)
+    if final_norm is not None and _is_jax(final_norm):
+        use_jax = True
+    h = _as_float(hidden, use_jax)
+    if h.ndim != 1 or int(h.shape[0]) < 1 or not finite(h):
+        raise LatentError("hidden")
+    d = int(h.shape[0])
+    u = _as_float(unembed, use_jax)
+    if u.ndim != 2 or int(u.shape[0]) < 1 or int(u.shape[1]) != d or not finite(u):
+        raise LatentError("unembed")
+    weight: Array | None = None
+    if final_norm is not None:
+        weight = _as_float(final_norm, use_jax)
+        if tuple(weight.shape) != (d,) or not finite(weight):
+            raise LatentError("final_norm")
+    if teacher_len == 1:
+        return tied(h, u, weight, use_jax)
+
+    if decoder is None or not isinstance(decoder, SegmentDecoder):
+        raise LatentError("decoder")
+    if (not use_jax) and (
+        _is_jax(decoder.w_in) or _is_jax(decoder.w_h) or _is_jax(decoder.bias)
+    ):
+        use_jax = True
+        h = _as_float(hidden, True)
+        u = _as_float(unembed, True)
+        if final_norm is not None:
+            weight = _as_float(final_norm, True)
+    w_in = _as_float(decoder.w_in, use_jax)
+    w_h = _as_float(decoder.w_h, use_jax)
+    bias = _as_float(decoder.bias, use_jax)
+    bad_decoder = (
+        tuple(w_in.shape) != (d, d)
+        or tuple(w_h.shape) != (d, d)
+        or tuple(bias.shape) != (d,)
+        or not finite(w_in)
+        or not finite(w_h)
+        or not finite(bias)
+    )
+    if bad_decoder:
+        raise LatentError("decoder")
+    if use_jax:
+
+        def step(state: Array, _unused: object) -> tuple[Array, Array]:
+            nxt = jnp.tanh(h @ w_in + state @ w_h + bias)
+            return nxt, tied(nxt, u, weight, True)
+
+        _carry, logits = jax.lax.scan(step, jnp.zeros_like(h), None, length=teacher_len)
+        return logits
+    state = np.zeros_like(h)
+    rows = []
+    for _ in range(teacher_len):
+        state = np.tanh(h @ w_in + state @ w_h + bias)
+        rows.append(tied(state, u, weight, False))
+    return np.stack(rows, axis=0)
+
+
+def codi_alignment(student_h: Array, teacher_h: Array) -> Array:
+    """Mean squared error at segment boundaries (spec 4.3, CODI).
+
+    Both arrays are ``(n_segments, d)``, same shape, finite,
+    ``n_segments >= 1``, ``d >= 1``. The value is the mean of
+    ``(student - teacher)^2`` over every element. The teacher is Stage A
+    and is not trained through this term: on the JAX path
+    ``stop_gradient`` is applied to ``teacher_h``, so
+    ``jax.grad`` w.r.t. the teacher argument is zeros and the student
+    gradient is ``2 * (student - stop(teacher)) / numel``.
+
+    Rank != 2, shape mismatch, an empty axis, or a non-finite entry
+    raises ``LatentError`` with message ``"student_h"``,
+    ``"teacher_h"``, or ``"shape"`` respectively. Host-side non-finite
+    raises. Under jit, do not Python-branch on traced values; non-finite
+    may propagate. If either input is JAX, promote both and return a
+    0-d JAX array. Numpy inputs return a numpy scalar. ``jax.jit`` must
+    match eager at 1e-5. Not implemented.
+    """
+    use_jax = _is_jax(student_h) or _is_jax(teacher_h)
+
+    def check(value: Array, name: str) -> Array:
+        arr = _as_float(value, use_jax)
+        if arr.ndim != 2 or int(arr.shape[0]) < 1 or int(arr.shape[1]) < 1:
+            raise LatentError(name)
+        if not _is_tracer(arr) and not bool(np.all(np.isfinite(np.asarray(arr)))):
+            raise LatentError(name)
+        return arr
+
+    student = check(student_h, "student_h")
+    teacher = check(teacher_h, "teacher_h")
+    if student.shape != teacher.shape:
+        raise LatentError("shape")
+    if use_jax:
+        return jnp.mean((student - jax.lax.stop_gradient(teacher)) ** 2)
+    return np.mean((student - teacher) ** 2)
+
+
+def stage_b_objective(
+    halt_logits: Array,
+    answer_logits: Array,
+    thought_logits: Array,
+    teacher_ids: Array,
+    thought_mask: Array,
+    answer_id: int,
+    teacher_depth: int,
+    config: LatentConfig,
+    student_h: Array,
+    teacher_h: Array,
+    *,
+    align_weight: float = 1.0,
+) -> StageBObjective:
+    """``stage_b_loss`` plus ``align_weight * codi_alignment`` (spec 4.3).
+
+    Arguments before ``student_h`` are exactly ``stage_b_loss``.
+    ``align_weight`` must be a finite float >= 0 (bool is not a float).
+    Checked first: otherwise ``LatentError("align_weight")``. Then the
+    four Reverie terms are exactly ``stage_b_loss`` with the same
+    arguments and the same errors. Then ``codi_alignment`` on
+    ``student_h`` and ``teacher_h``. ``total = stage_b.total +
+    align_weight * l_align``.
+
+    ``StageBObjective.stage_b`` is that ``StageBLoss``. ``l_align`` is the
+    alignment value. ``total`` is the sum above. ``align_weight`` is not
+    stored. ``jax.jit`` with ``config``, ``teacher_depth``, ``answer_id``,
+    and ``align_weight`` host-side must match eager at 1e-5.
+    ``StageBObjective`` is a registered pytree. Do not ``numpy.asarray``
+    traced values. Not implemented.
+    """
+    if (
+        isinstance(align_weight, bool)
+        or not isinstance(align_weight, (int, float))
+        or not math.isfinite(align_weight)
+        or align_weight < 0
+    ):
+        raise LatentError("align_weight")
+    base = stage_b_loss(
+        halt_logits,
+        answer_logits,
+        thought_logits,
+        teacher_ids,
+        thought_mask,
+        answer_id,
+        teacher_depth,
+        config,
+    )
+    l_align = codi_alignment(student_h, teacher_h)
+    return StageBObjective(
+        stage_b=base,
+        l_align=l_align,
+        total=base.total + align_weight * l_align,
     )
