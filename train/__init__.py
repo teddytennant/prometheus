@@ -874,12 +874,19 @@ def train_step(
     ``grad_norm``). ``LossBreakdown`` / ``StepOutput`` array fields stay
     JAX types under jit.
     """
-    if muon_transfer:
-        raise NotImplementedError
     validate_train_config(train_config)
     t = int(step)
     if t < 1:
         raise ValueError("train_step step must be 1-based (>= 1)")
+    # bool is an int subclass; an int must not select the transfer path.
+    if not isinstance(muon_transfer, bool):
+        raise ValueError("muon_transfer")
+    # False ignores muon_weight_decay, including a non-finite or negative value.
+    muon_wd = 0.0
+    if muon_transfer:
+        muon_wd = _finite_real("muon_weight_decay", muon_weight_decay)
+        if muon_wd < 0.0:
+            raise ValueError("muon_weight_decay")
     sched = float(wsd_lr(t, train_config))
     peak = float(train_config.peak_lr)
     mult = sched / peak if peak > 0 else 0.0
@@ -922,6 +929,18 @@ def train_step(
 
     def apply_one(name: str, p: Any, g: Any, s: Any) -> tuple[Any, Any]:
         if classify_param(name, p) is ParamKind.MUON_2D:
+            if muon_transfer:
+                # Returned new_param already includes RMS scale and weight decay.
+                new_p, new_m = muon_transfer_step(
+                    p,
+                    g,
+                    s["momentum"],
+                    lr=muon_lr_t,
+                    momentum_coeff=float(train_config.muon_momentum),
+                    ns_steps=int(train_config.muon_ns_steps),
+                    weight_decay=muon_wd,
+                )
+                return _as_f32(new_p), {"momentum": _as_f32(new_m)}
             delta, new_m = muon_update(
                 g,
                 s["momentum"],
