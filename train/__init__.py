@@ -424,8 +424,8 @@ def muon_transfer_step(
     the eager pair at 1e-5. Must not call ``numpy.asarray`` or Python
     ``float()`` on traced arrays.
 
-    ``muon_update`` and ``train_step`` stay on the old scale. This
-    function is the transfer rule; it is not wired into the step yet.
+    ``muon_update`` stays on the Jordan scale. ``train_step`` uses this
+    rule only when ``muon_transfer`` is True.
     """
     lr_f = _finite_real("lr", lr)
     wd_f = _finite_real("weight_decay", weight_decay)
@@ -840,21 +840,42 @@ def train_step(
     train_config: TrainConfig,
     *,
     step: int,
+    muon_transfer: bool = False,
+    muon_weight_decay: float = 0.0,
 ) -> StepOutput:
     """One FP32-master step: forward, loss, MuonClip / AdamW, QK-clip.
 
     `step` is 1-based. Router bias balancing (aux-loss-free) updates inside
     `opt_state` from the forward's `router_probs`.
 
-    ``jax.jit(train_step)`` (with ``step``, ``model_config``, and
-    ``train_config`` closed over or ``static_argnums``) must match the eager
-    call at 1e-5 and return a pytree ``StepOutput`` (``Batch`` in, no field
-    unpack). Traced ``params`` / ``opt_state`` / batch arrays / grads
-    must not be converted with ``numpy.asarray`` or Python ``float()``.
-    Grad clip uses a finite ``jnp.where`` (no Python ``if`` on traced
+    ``muon_transfer`` defaults to False and ignores ``muon_weight_decay``.
+    That path is the Jordan-scale ``muon_update`` subtract, unchanged.
+    True is spec 5.4: each ``ParamKind.MUON_2D`` matrix is updated by
+    ``muon_transfer_step`` (Moonlight RMS scale and decoupled weight
+    decay). Use the returned ``new_param``; do not subtract a
+    ``muon_update`` delta. AdamW, QK-clip, and router-bias updates are
+    unchanged. ``muon_lr``, ``muon_momentum``, and ``ns_steps`` still
+    come from ``train_config``. The transfer ``lr`` is the same scheduled
+    ``muon_lr_t`` the Jordan path uses.
+
+    ``muon_transfer`` must be a bool, not an int. When it is True,
+    ``muon_weight_decay`` must be finite and >= 0. Those checks run after
+    ``validate_train_config`` and the 1-based step check, before the
+    forward. A bad flag is ``ValueError("muon_transfer")``. A bad decay
+    is ``ValueError("muon_weight_decay")``.
+
+    ``jax.jit(train_step)`` (with ``step``, ``model_config``,
+    ``train_config``, ``muon_transfer``, and ``muon_weight_decay`` closed
+    over or ``static_argnums``) must match the eager call at 1e-5 and
+    return a pytree ``StepOutput`` (``Batch`` in, no field unpack).
+    Traced ``params`` / ``opt_state`` / batch arrays / grads must not be
+    converted with ``numpy.asarray`` or Python ``float()``. Grad clip
+    uses a finite ``jnp.where`` (no Python ``if`` on traced
     ``grad_norm``). ``LossBreakdown`` / ``StepOutput`` array fields stay
     JAX types under jit.
     """
+    if muon_transfer:
+        raise NotImplementedError
     validate_train_config(train_config)
     t = int(step)
     if t < 1:
