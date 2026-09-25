@@ -26,7 +26,8 @@ curve. Code and H200 tests by end of 2026.
 - `contracts/` and `crates/contracts`, the versioned contracts shared by Python and Rust (F1)
 - `harness/slurm` and `harness/ledger`, the Slurm backend and experiment ledger (H7, H9)
 
-Nothing has run on an H200 yet. To run the CPU tests:
+Nothing has run on an H200 yet. [PROGRESS.md](PROGRESS.md) has the state of every
+module and the known bugs. To run the CPU tests:
 
 ```
 uv run pytest tests -m 'not gpu'
